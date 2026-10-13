@@ -203,16 +203,21 @@ class Engine:
         dec = {n: (WEAK_VEHICLE_THR if n in WEAK_VEHICLE_CLASSES and weak_band else floor[n]) for n in floor}     # decode floor (per-class NMS on all, strong outrank weak)
         return {c: (pthr if c == 0 else dec[Y.LABELS17[c]]) for c in CLASSES}, floor, weak_band, vthr
 
-    def recheck(self, img, crop, group, person_thr=0.2, vehicle_thr=None, animal_thr=None):
-        """Second look: ONE Coral pass on the full-resolution crop (x0, y0, x1, y1 in pixels) of `img`, only the classes of `group`.
-        Returns ([(score, x0, y0, x1, y1, label)] in normalised FULL-frame coordinates, timings)."""
+    def recheck(self, img, crop, group, person_thr=0.2, vehicle_thr=None, animal_thr=None, scale=1.0):
+        """Second look: ONE Coral pass on the full-resolution window (x0, y0, x1, y1 in pixels, may extend beyond the frame: the outside is grey 114) of
+        `img`, only the classes of `group`. Returns ([(score, x0, y0, x1, y1, label)] in normalised FULL-frame coordinates, clamped to 0..1, timings)."""
         H, W = img.shape[:2]
         x0, y0, x1, y1 = crop
         thr, _, _, _ = self._floors(max(person_thr, 0.01), vehicle_thr, animal_thr)
         classes = tuple(c for c in CLASSES if _group(Y.LABELS17[c]) == group)
+        thr = {c: max(0.01, v * scale) for c, v in thr.items()}               # scale < 1: decode lower so a weak positive match is seen
         t0 = time.perf_counter()
-        sub = img[y0:y1, x0:x1]
-        th, tw = sub.shape[:2]
+        th, tw = y1 - y0, x1 - x0
+        sub = img[y0:y1, x0:x1] if (x0 >= 0 and y0 >= 0 and x1 <= W and y1 <= H) else np.full((th, tw, 3), 114, np.uint8)
+        if sub.shape[:2] != (th, tw) or not (x0 >= 0 and y0 >= 0 and x1 <= W and y1 <= H):
+            ox0, oy0, ox1, oy1 = max(x0, 0), max(y0, 0), min(x1, W), min(y1, H)       # overlap with the frame, copied into the grey window
+            if ox1 > ox0 and oy1 > oy0:
+                sub[oy0 - y0:oy1 - y0, ox0 - x0:ox1 - x0] = img[oy0:oy1, ox0:ox1]
         canvas, r, left, top = self._letterbox(sub)
         t1 = time.perf_counter()
         px = self.model.detect_px(canvas, classes, {c: thr[c] for c in classes}, Y.NMS_IOU)
@@ -221,7 +226,10 @@ class Engine:
         out = []
         for d in px:
             s, a, b, c, e, label = Y.to_normalized(d, r, left, top, tw, th)
-            out.append((s, (a * tw + x0) / W, (b * th + y0) / H, (c * tw + x0) / W, (e * th + y0) / H, label))
+            fa, fc = min(1.0, max(0.0, (a * tw + x0) / W)), min(1.0, max(0.0, (c * tw + x0) / W))      # x0 / y0 may be negative
+            fb, fe = min(1.0, max(0.0, (b * th + y0) / H)), min(1.0, max(0.0, (e * th + y0) / H))
+            if fc - fa > 0.002 and fe - fb > 0.002:
+                out.append((s, fa, fb, fc, fe, label))
         return out, {"preprocess_ms": (t1 - t0) * 1e3 + tm.get("quant_ms", 0.0), "infer_ms": tm.get("infer_ms", 0.0),
                      "post_ms": tm.get("post_ms", 0.0) + (time.perf_counter() - t2) * 1e3}
 

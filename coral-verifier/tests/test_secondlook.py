@@ -52,9 +52,9 @@ def test_crop_geometry_min_size_margin_and_inside_frame():
     x0, y0, x1, y1 = SL.crop_for((0.5, 0.5, 0.52, 0.52), 1000, 800)
     assert x1 - x0 == 96 and y1 - y0 == 96                                                 # minimum crop
     x0, y0, x1, y1 = SL.crop_for((0.0, 0.0, 0.2, 0.2), 1000, 800)
-    assert (x0, y0) == (0, 0) and x1 - x0 == y1 - y0                                       # shifted inside the frame
+    assert x1 - x0 == y1 - y0 == 440 and (x0 + x1) / 2 == 100 and (y0 + y1) / 2 == 80 and x0 < 0 and y0 < 0     # NOT shifted: symmetric margin, negative offsets
     x0, y0, x1, y1 = SL.crop_for((0.0, 0.1, 1.0, 0.9), 1000, 800)
-    assert (x0, y0, x1, y1) == (0, 0, 1000, 800)                                           # never larger than the frame
+    assert (x1 - x0, y1 - y0) == (2200, 2200) and (x0 + x1) / 2 == 500 and (y0 + y1) / 2 == 400   # larger than the frame
 
 
 def test_recheck_back_mapping_to_frame_coordinates():
@@ -80,17 +80,37 @@ def test_ttl_reuse_by_object_and_expiry():
     assert m.calls == 2 and info3["n"] == 1
 
 
-def test_rejected_candidate_is_marked_and_never_reaches_the_tracker():
-    m = SeqModel(512, [[]] * 6)                                                              # the crop shows nothing
+def test_not_found_keeps_the_detection_unchanged_and_feeds_the_tracker():
+    m = SeqModel(512, [[]] * 6)                                                              # the window shows nothing (half-occluded parked car)
     eng = D.Engine(m)
+    out, info = SL.second_look(eng, IMG, [det("car", 0.30, weak=True)], CFG, {}, [], 100.0)
+    assert out[0]["second_look"] == "not_found" and out[0]["score"] == 0.30 and "first_score" not in out[0] and out[0]["weak"] is True
+    assert info["counts"]["sl_not_found"] == 1
     sess = S.Session(CFG)
     for i in range(3):
-        out, info = SL.second_look(eng, IMG, [det("person", 0.5)], CFG, {}, [], 100.0 + i * 20)
-        assert out[0]["second_look"] == "rejected" and "first_score" not in out[0] and info["counts"]["sl_rejected"] == 1
-        live = [d for d in out if d.get("second_look") != "rejected"]
-        sess.update(T0 + i * 1000, live)
-    sn = sess.snapshot()
-    assert sn["person"]["state"] == "idle" and sn["person"]["tracks"] == 0
+        out, _ = SL.second_look(eng, IMG, [det("person", 0.9)], CFG, {}, [], 200.0 + i * 20)       # strong person: not even a candidate
+        sess.update(T0 + i * 1000, [d for d in out if d.get("second_look") != "rejected"])
+    assert sess.snapshot()["person"]["present"]
+    kept, _ = SL.second_look(eng, IMG, [det("person", 0.5)], CFG, {}, [], 300.0)
+    assert kept[0]["second_look"] == "not_found" and kept[0]["score"] == 0.5                  # never dropped: it goes to the tracker as it was
+    assert [d for d in kept if d.get("second_look") != "rejected"] == kept                    # goes to the tracker
+
+
+def test_rejected_only_on_a_confident_low_match():
+    eng = D.Engine(SeqModel(512, [[it("car", -1.8)]] * 4))                                   # found again at p 0.14 < 0.5 x vehicle floor 0.40, first 0.5 < 0.6
+    sess = S.Session(CFG)
+    out, info = SL.second_look(eng, IMG, [det("car", 0.5)], CFG, {}, [], 1.0)
+    assert out[0]["second_look"] == "rejected" and out[0]["first_score"] == 0.5 and out[0]["score"] < 0.2 and info["counts"]["sl_rejected"] == 1
+    sess.update(T0, [d for d in out if d.get("second_look") != "rejected"])
+    assert sess.snapshot()["vehicle"]["tracks"] == []                                        # never reaches the vehicle tracker
+    out, _ = SL.second_look(eng, IMG, [det("car", 0.65, (0.4, 0.4, 0.6, 0.6))], CFG, {}, [], 50.0)   # first >= confirm 0.6 (new track < 0.8): never rejected
+    assert out[0]["second_look"] == "not_upgraded" and out[0]["score"] == 0.65 and "first_score" not in out[0]
+    mid = D.Engine(SeqModel(512, [[it("car", -0.6)]] * 4))                                   # found at p 0.35: between 0.2 and the floor 0.40
+    out, info = SL.second_look(mid, IMG, [det("car", 0.5)], CFG, {}, [], 1.0)
+    assert out[0]["second_look"] == "not_upgraded" and out[0]["score"] == 0.5 and info["counts"]["sl_not_upgraded"] == 1
+    hi = D.Engine(SeqModel(512, [[it("car", -0.3)]] * 4))                                    # p 0.43 >= floor 0.40 but < first 0.58: lowered
+    out, _ = SL.second_look(hi, IMG, [det("car", 0.58)], CFG, {}, [], 1.0)
+    assert out[0]["second_look"] == "lowered" and out[0]["score"] < 0.58
 
 
 def test_upgraded_candidate_can_confirm_and_lowered_is_marked():
@@ -132,7 +152,7 @@ def test_version_comes_from_config_yaml():
         pytest.skip("config.yaml not available")
     want = re.search(r'^version:\s*"?([^"\n]+)', open(p).read(), re.M).group(1)
     if "VERIFIER_VERSION" not in os.environ:
-        assert SV.VERSION == want == "0.2.1"
+        assert SV.VERSION == want == "0.2.2"
 
 
 def test_http_second_look_on_and_off_and_metrics():
@@ -160,3 +180,34 @@ def test_http_second_look_on_and_off_and_metrics():
         assert on.req("GET", "/v1/metrics")[1]["second_look"]["reused_60s"] >= 1
     finally:
         on.close()
+
+
+def test_window_outside_the_frame_is_grey_and_edge_box_keeps_symmetric_margin():
+    img = np.full((480, 640, 3), 200, np.uint8)
+    m = SeqModel(512, [[]])
+    eng = D.Engine(m)
+    win = SL.crop_for((0.0, 0.2, 0.2, 0.6), 640, 480)                    # box touching the left frame edge: 128 x 192 px, window 422 px square
+    assert win[0] < 0 and win[2] - win[0] == 422
+    eng.recheck(img, win, "person")
+    cv = m.last_canvas                                                    # RGB 512 canvas of the letterboxed window
+    assert tuple(cv[256, 5]) == (114, 114, 114)                           # outside side (left of the frame edge): grey
+    left_edge = int(round(-win[0] * 512 / 422))                           # canvas column where the frame starts
+    assert tuple(cv[256, left_edge + 20]) == (200, 200, 200) and tuple(cv[256, left_edge - 5]) == (114, 114, 114)
+    big = SL.crop_for((0.0, 0.0, 1.0, 1.0), 640, 480)                     # box = whole frame: window 1408 px, frame shrunk in the middle of grey
+    eng.recheck(img, big, "person")
+    cv = m.last_canvas
+    assert big[2] - big[0] == 1408 and tuple(cv[5, 5]) == (114, 114, 114) and tuple(cv[256, 256]) == (200, 200, 200)
+
+
+def test_back_mapping_with_negative_window_offsets():
+    img = np.full((480, 640, 3), 90, np.uint8)
+    win = SL.crop_for((0.0, 0.0, 0.2, 0.2), 640, 480)                    # window starts at negative x and y
+    assert win[0] < 0 and win[1] < 0
+    m = SeqModel(512, [[it("person", 3.0, 16, 16)]])                     # object at the window centre = the box centre (0.1, 0.1 of the frame)
+    res, _ = D.Engine(m).recheck(img, win, "person")
+    assert len(res) == 1
+    s, a, b, c, e, _l = res[0]
+    assert abs((a + c) / 2 - 0.1) < 0.02 and abs((b + e) / 2 - 0.1) < 0.02 and 0 <= a < c <= 1 and 0 <= b < e <= 1
+    b = (0.0, 0.0, 0.2, 0.2)
+    out, _ = SL.second_look(D.Engine(SeqModel(512, [[it("person", 3.0, 16, 16)]])), img, [det("person", 0.5, b)], CFG, {}, [], 1.0)
+    assert out[0]["second_look"] == "confirmed"                          # centre of the mapped detection lies inside the original edge box

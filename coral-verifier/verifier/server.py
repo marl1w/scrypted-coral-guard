@@ -146,7 +146,7 @@ class App:
         n = roll.sum("sl")
         share = lambda k: None if n <= 0 else round(roll.sum(k) / n, 3)
         return {"count_60s": int(n), "reused_60s": int(roll.sum("sl_reused")), "confirmed_share": share("sl_confirmed"),
-                "lowered_share": share("sl_lowered"), "rejected_share": share("sl_rejected")}
+                "lowered_share": share("sl_lowered"), "rejected_share": share("sl_rejected"), "not_found_share": share("sl_not_found"), "not_upgraded_share": share("sl_not_upgraded")}
 
     def metrics(self):
         st, roll, now = self.coral.stats(), self.coral.roll, time.monotonic()

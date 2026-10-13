@@ -12,7 +12,7 @@ PROC_PID_STAT = "/proc/{pid}/stat"
 DRM_RC6_GLOB = "/sys/class/drm/card*/gt/gt0/rc6_residency_ms"
 SAMPLE_EVERY_S = 5.0
 WINDOW_S = 60
-ROLL_NAMES = ("busy_ms", "inv", "frames", "stale", "r429", "sl", "sl_confirmed", "sl_lowered", "sl_rejected", "sl_reused")
+ROLL_NAMES = ("busy_ms", "inv", "frames", "stale", "r429", "sl", "sl_confirmed", "sl_lowered", "sl_rejected", "sl_not_found", "sl_not_upgraded", "sl_reused")
 try:
     CLK_TCK = os.sysconf("SC_CLK_TCK")
 except (ValueError, OSError, AttributeError):

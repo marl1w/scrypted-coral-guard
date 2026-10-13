@@ -1,9 +1,10 @@
-"""Second look: re-check uncertain detections of a frame on a full-resolution crop, inside the frame's own job (one queue slot, several invokes).
+"""Second look: re-check uncertain detections of a frame on a full-resolution window, inside the frame's own job (one queue slot, several invokes).
 Candidates: detections in the borderline band of their group (person cont_thr <= s < start_thr; vehicle weak or strong floor <= s < 0.6; animal
 animal_cont_thr <= s < animal_start_thr) plus detections that start a NEW track (no live track of the group overlaps them) while their score < 0.8.
 At most SECOND_LOOK["max"] (2) Coral passes per frame, most uncertain first (closest to the confirm threshold). A re-checked object is not looked at again
 for ttl_s: later frames reuse its result by box overlap (no invoke). Result per candidate: the best same-group detection of the crop whose centre lies
-inside the original box replaces the score (`first_score` keeps the original, `second_look` = confirmed|lowered); none found = `rejected`."""
+inside the original box replaces the score (`first_score` keeps the original, `second_look` = confirmed|lowered); nothing found = `not_found` (the detection is kept unchanged, e.g. half-occluded parked cars); found again below reject_factor x the keep floor
+while the first score was below the confirm threshold = `rejected` (dropped from the trackers)."""
 from defaults import SECOND_LOOK as _SL, DETECT_THR, WEAK_VEHICLE_CLASSES
 
 MATCH_IOU = 0.3
@@ -23,6 +24,16 @@ def iou(a, b):
 
 def confirm_thr(g, cfg):
     return cfg.start_thr if g == "person" else (_SL["vehicle_confirm"] if g == "vehicle" else cfg.animal_start_thr)
+
+
+def keep_thr(d, cfg):
+    """The floor under which the trackers would not keep the detection: person cont_thr, vehicle strong floor, animal animal_cont_thr."""
+    g = group_of(d)
+    if g == "person":
+        return cfg.cont_thr
+    if g == "vehicle":
+        return DETECT_THR["vehicle"]["bicycle"] if d["cls"] == "bicycle" else cfg.vehicle_thr
+    return cfg.animal_cont_thr
 
 
 def in_band(d, cfg):
@@ -53,22 +64,22 @@ def select(dets, cfg, tracks):
 
 
 def crop_for(box, W, H, margin=None, min_px=None):
-    """Pixel crop (x0, y0, x1, y1) around a normalised box: expanded by `margin` x box size on each side, square-ish (side = the larger expanded side,
-    at least min_px), centred on the box, kept inside the frame."""
+    """Pixel WINDOW (x0, y0, x1, y1) around a normalised box: expanded by `margin` x box size on each side, square (side = the larger expanded side,
+    at least min_px), ALWAYS centred on the box. It is NOT clamped to the frame: coordinates may be negative or exceed W/H (the part outside the
+    frame is filled grey by Engine.recheck), so the margin stays symmetric and a big box gets a window larger than the frame."""
     margin = _SL["margin"] if margin is None else margin
     min_px = _SL["min_crop_px"] if min_px is None else min_px
     bw, bh = (box[2] - box[0]) * W, (box[3] - box[1]) * H
     side = max(bw * (1 + 2 * margin), bh * (1 + 2 * margin), float(min_px))
-    cw, ch = int(round(min(side, W))), int(round(min(side, H)))
+    cw = ch = int(round(side))
     cx, cy = (box[0] + box[2]) / 2 * W, (box[1] + box[3]) / 2 * H
-    x0 = int(round(min(max(cx - cw / 2, 0), W - cw)))
-    y0 = int(round(min(max(cy - ch / 2, 0), H - ch)))
+    x0, y0 = int(round(cx - cw / 2)), int(round(cy - ch / 2))
     return x0, y0, x0 + cw, y0 + ch
 
 
 def _apply(d, status, score, cfg):
     d["second_look"] = status
-    if status == "rejected":
+    if status in ("not_found", "not_upgraded"):                                           # nothing found in the window: the detection stays exactly as it was
         return
     d["first_score"] = d["score"]
     d["score"] = round(float(score), 3)
@@ -97,8 +108,8 @@ def second_look(engine, img, dets, cfg, tracks, cache, now):
             continue
         if info["n"] >= _SL["max"]:
             continue
-        crop = crop_for(d["box"], W, H)
-        res, tm = engine.recheck(img, crop, g, cfg.cont_thr, cfg.vehicle_thr, cfg.animal_cont_thr)
+        win = crop_for(d["box"], W, H)
+        res, tm = engine.recheck(img, win, g, cfg.cont_thr, cfg.vehicle_thr, cfg.animal_cont_thr, _SL["reject_factor"])
         for k in ("preprocess_ms", "infer_ms", "post_ms"):
             info[k] += tm[k]
         info["n"] += 1
@@ -106,9 +117,15 @@ def second_look(engine, img, dets, cfg, tracks, cache, now):
         inside = [r for r in res if b[0] <= (r[1] + r[3]) / 2 <= b[2] and b[1] <= (r[2] + r[4]) / 2 <= b[3]]
         best = max(inside, key=lambda r: r[0]) if inside else None
         if best is None:
-            status, score = "rejected", 0.0
+            status, score = "not_found", 0.0                             # e.g. a half-occluded parked car: never dropped for this
+        elif best[0] >= d["score"]:
+            status, score = "confirmed", best[0]
+        elif best[0] < _SL["reject_factor"] * keep_thr(d, cfg) and d["score"] < confirm_thr(g, cfg):
+            status, score = "rejected", best[0]                          # positively found again, far below the keep floor: confident downgrade
+        elif best[0] < keep_thr(d, cfg):
+            status, score = "not_upgraded", 0.0                          # found, but weak: keep the detection exactly as it was
         else:
-            status, score = ("confirmed" if best[0] >= d["score"] else "lowered"), best[0]
+            status, score = "lowered", best[0]
         _apply(d, status, score, cfg)
         cache.append({"group": g, "box": tuple(b), "t": now, "status": status, "score": score})
         count("sl"); count("sl_" + status)
