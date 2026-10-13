@@ -44,6 +44,7 @@ TRACKER = {
     "vehicle_thr": 0.40,            # strong floor of car/truck/bus/motorcycle (bicycle fixed 0.5); the weak band is [WEAK_VEHICLE_THR, vehicle_thr)
     "animal_start_thr": 0.6,        # animal confirmation threshold
     "animal_cont_thr": 0.3,         # animal continuation threshold, also the animal decode floor
+    "second_look": True,            # re-check borderline / brand-new detections on a full-resolution crop (one extra Coral pass each, max SECOND_LOOK["max"] per frame)
     "zoom_out": 0.0,                # 0 = off; > 0 adds ONE Coral pass with the whole frame shrunk to (1 - zoom_out) on a grey canvas (large, edge-cut objects)
 }
 
@@ -70,6 +71,10 @@ VEHICLE_CONTAIN = 0.7           # a vehicle box with more than this share of its
 MOVE_REF_S = 2.0
 MOVE_DIAG_FRAC = 0.03
 MOVE_IOU = 0.7
+
+# Second look (internal constants): at most `max` re-checks per frame, ttl of a re-check result per object, crop margin (fraction of the box size on each side), minimum crop side in
+# pixels, a NEW track is re-checked when its score is below `new_track_max`, and the vehicle confirm threshold used for the borderline band and priority.
+SECOND_LOOK = {"max": 2, "ttl_s": 10.0, "margin": 0.6, "min_crop_px": 96, "new_track_max": 0.8, "vehicle_confirm": 0.6}
 
 # Display-only weak vehicles: car/truck/bus/motorcycle (not bicycle) are decoded down to WEAK_VEHICLE_THR and reported with "weak": true when the
 # score is below the vehicle threshold. They never reach the vehicle tracker or any session state.

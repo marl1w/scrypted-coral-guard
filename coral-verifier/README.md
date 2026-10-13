@@ -10,7 +10,7 @@ The HTTP contract is [API.md](API.md), the source of truth for endpoints, JSON s
 
 ## Options
 
-Three, and only three: `token` (REQUIRED, a password: with an empty one the service refuses to start, exit 2, reason in the log; clients send it as `X-Verifier-Token`), `port` (default 8750, host network; if you change it, update the `watchdog` URL in `config.yaml`) and `log_level` (default `info`). Everything else (model, thresholds, hold times, queue and safety limits) is a validated internal default in `verifier/defaults.py`; it is not user-tunable. Tracker values can still be overridden per camera at runtime with `POST /v1/cameras/{camera}/config` (see API.md).
+Three, and only three: `token` (REQUIRED, a password: with an empty one the service refuses to start, exit 2, reason in the log; clients send it as `X-Verifier-Token`), `port` (default 8750, host network; if you change it, update the `watchdog` URL in `config.yaml`) and `log_level` (default `info`). Everything else (model, thresholds, hold times, queue and safety limits) is a validated internal default in `verifier/defaults.py`; it is not user-tunable. Tracker values and the `second_look` switch (default on: borderline or brand-new detections are re-checked on a full-resolution crop inside the same request, at most 2 extra Coral passes per frame, see API.md) can be set per camera at runtime with `POST /v1/cameras/{camera}/config` (see API.md).
 
 ## Health
 

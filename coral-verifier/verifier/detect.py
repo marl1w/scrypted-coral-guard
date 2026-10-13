@@ -191,6 +191,40 @@ class Engine:
         cv2.cvtColor(self._canvas, cv2.COLOR_BGR2RGB, dst=self._rgb)
         return self._rgb, r, left, top
 
+    @staticmethod
+    def _floors(pthr, vehicle_thr, animal_thr):
+        """-> (decode thresholds {class index: thr}, report floor {label: thr}, weak band active, strong vehicle floor)."""
+        vthr = GROUP_THR["car"][1] if vehicle_thr is None else vehicle_thr          # strong floor of car/truck/bus/motorcycle (per camera)
+        athr = GROUP_THR["dog"][1] if animal_thr is None else animal_thr
+        weak_band = vthr > WEAK_VEHICLE_THR                                         # weak [WEAK_VEHICLE_THR, vthr) only above the weak floor
+        floor = {}
+        for n, (g, v) in GROUP_THR.items():
+            floor[n] = (athr if g == "animal" else (vthr if n in WEAK_VEHICLE_CLASSES else v))
+        dec = {n: (WEAK_VEHICLE_THR if n in WEAK_VEHICLE_CLASSES and weak_band else floor[n]) for n in floor}     # decode floor (per-class NMS on all, strong outrank weak)
+        return {c: (pthr if c == 0 else dec[Y.LABELS17[c]]) for c in CLASSES}, floor, weak_band, vthr
+
+    def recheck(self, img, crop, group, person_thr=0.2, vehicle_thr=None, animal_thr=None):
+        """Second look: ONE Coral pass on the full-resolution crop (x0, y0, x1, y1 in pixels) of `img`, only the classes of `group`.
+        Returns ([(score, x0, y0, x1, y1, label)] in normalised FULL-frame coordinates, timings)."""
+        H, W = img.shape[:2]
+        x0, y0, x1, y1 = crop
+        thr, _, _, _ = self._floors(max(person_thr, 0.01), vehicle_thr, animal_thr)
+        classes = tuple(c for c in CLASSES if _group(Y.LABELS17[c]) == group)
+        t0 = time.perf_counter()
+        sub = img[y0:y1, x0:x1]
+        th, tw = sub.shape[:2]
+        canvas, r, left, top = self._letterbox(sub)
+        t1 = time.perf_counter()
+        px = self.model.detect_px(canvas, classes, {c: thr[c] for c in classes}, Y.NMS_IOU)
+        t2 = time.perf_counter()
+        tm = self.model.timing
+        out = []
+        for d in px:
+            s, a, b, c, e, label = Y.to_normalized(d, r, left, top, tw, th)
+            out.append((s, (a * tw + x0) / W, (b * th + y0) / H, (c * tw + x0) / W, (e * th + y0) / H, label))
+        return out, {"preprocess_ms": (t1 - t0) * 1e3 + tm.get("quant_ms", 0.0), "infer_ms": tm.get("infer_ms", 0.0),
+                     "post_ms": tm.get("post_ms", 0.0) + (time.perf_counter() - t2) * 1e3}
+
     def detect(self, img, tiles="auto", person_thr=0.2, vehicle_thr=None, animal_thr=None, zoom_out=0.0):
         """img: BGR. Returns (detections, timings). detections: [{"cls","group","score","box":[x0,y0,x1,y1]}] sorted by score; person >= person_thr,
         vehicles and animals >= their defaults.DETECT_THR (car/truck/bus/motorcycle 0.40, bicycle 0.5, animals 0.3) plus weak vehicles [0.25, 0.40) flagged weak; each carries group person|vehicle|animal. timings: preprocess_ms, infer_ms, post_ms (summed over tiles)."""
@@ -199,14 +233,7 @@ class Engine:
         split = tiles != "1"
         hybrid = tiles == "hybrid"                                            # ranges[0] is the whole frame, the rest are tiles
         pthr = max(person_thr, 0.01)
-        vthr = GROUP_THR["car"][1] if vehicle_thr is None else vehicle_thr          # strong floor of car/truck/bus/motorcycle (per camera)
-        athr = GROUP_THR["dog"][1] if animal_thr is None else animal_thr
-        weak_band = vthr > WEAK_VEHICLE_THR                                         # weak [WEAK_VEHICLE_THR, vthr) only above the weak floor
-        floor = {}
-        for n, (g, v) in GROUP_THR.items():
-            floor[n] = (athr if g == "animal" else (vthr if n in WEAK_VEHICLE_CLASSES else v))
-        dec = {n: (WEAK_VEHICLE_THR if n in WEAK_VEHICLE_CLASSES and weak_band else floor[n]) for n in floor}     # decode floor (per-class NMS on all, strong outrank weak)
-        thr = {c: (pthr if c == 0 else dec[Y.LABELS17[c]]) for c in CLASSES}
+        thr, floor, weak_band, vthr = self._floors(pthr, vehicle_thr, animal_thr)
         pre = infer = post = 0.0
         raw = []
         ranges = tile_ranges(W, H, tiles)

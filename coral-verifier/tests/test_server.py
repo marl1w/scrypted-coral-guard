@@ -20,14 +20,14 @@ def test_health_shape_and_no_auth_needed(box):
     box.frame("c1", T0)
     h = box.req("GET", "/v1/health", auth=False)[1]
     assert h["coral_ms"]["last"] > 0 and h["cameras_active"] == 1
-    assert set(h["stages"]) == {"decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms"}
+    assert set(h["stages"]) == {"decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "second_look_ms"}
     assert all(set(v) == {"median", "p95"} and v["median"] is not None for v in h["stages"].values())
 
 
 def test_frame_reply_shape_and_session(box):
     st, r = box.frame("front_door", T0)
     assert st == 200
-    assert set(r) == {"camera", "t", "coral_ms", "queue_ms", "decode_ms", "preprocess_ms", "infer_ms", "post_ms", "total_ms", "detections", "person", "vehicle", "animal", "session"}
+    assert set(r) == {"camera", "t", "coral_ms", "queue_ms", "decode_ms", "preprocess_ms", "infer_ms", "post_ms", "second_look_ms", "total_ms", "detections", "person", "vehicle", "animal", "session"}
     assert r["camera"] == "front_door" and r["t"] == T0
     for k in ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "coral_ms"):
         assert isinstance(r[k], float) and r[k] >= 0, k

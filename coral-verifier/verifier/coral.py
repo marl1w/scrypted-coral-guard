@@ -21,14 +21,15 @@ from child import child_main
 from detect import Engine
 
 log = logging.getLogger("coral")
-STAGES = ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms")
+STAGES = ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "second_look_ms")
 
 
 class Job:
     """One frame. `finish(dets, stages)` runs in the worker (so session updates keep arrival order) and returns the reply."""
 
-    def __init__(self, img, tiles, person_thr, finish, decode_ms=0.0, deadline_ms=None, arrival=None, low=False, thr=None):
+    def __init__(self, img, tiles, person_thr, finish, decode_ms=0.0, deadline_ms=None, arrival=None, low=False, thr=None, post=None):
         self.img, self.tiles, self.person_thr, self.finish = img, tiles, person_thr, finish
+        self.post = post                                                    # optional (engine, img, dets) -> (dets, info): the second look, inside this job
         self.thr = thr or {}                                                # per-camera vehicle_thr / animal_cont_thr for the engine
         self.decode_ms, self.deadline_ms = decode_ms, deadline_ms
         self.low = low                                                      # monitoring frame (prio=low): shed first, served last
@@ -225,6 +226,20 @@ class CoralManager:
                     continue
             try:
                 dets, tm = engine.detect(job.img, job.tiles, job.person_thr, **job.thr)
+                sl_ms = 0.0
+                if job.post is not None:
+                    t_sl = time.perf_counter()
+                    try:
+                        dets, ex = job.post(engine, job.img, dets)
+                        for k in ("preprocess_ms", "infer_ms", "post_ms"):
+                            tm[k] += ex.get(k, 0.0)
+                        for name, n in ex.get("counts", {}).items():
+                            self.roll.add(name, n)
+                        sl_ms = (time.perf_counter() - t_sl) * 1e3
+                    except Y.CoralError:
+                        raise
+                    except Exception:                  # a second-look bug costs the refinement, never the frame
+                        log.exception("second look failed")
             except Y.CoralError as e:
                 self._fail(engine, str(e), job)
                 continue
@@ -234,7 +249,7 @@ class CoralManager:
                 continue
             done = self.clock()
             stages = {"decode_ms": job.decode_ms, "preprocess_ms": tm["preprocess_ms"], "infer_ms": tm["infer_ms"], "post_ms": tm["post_ms"],
-                      "queue_ms": (started - job.enq) * 1e3, "total_ms": (done - job.arrival) * 1e3 + 0.0}
+                      "queue_ms": (started - job.enq) * 1e3, "total_ms": (done - job.arrival) * 1e3 + 0.0, "second_look_ms": sl_ms}
             self.roll.add("busy_ms", stages["infer_ms"]); self.roll.add("inv"); self.roll.add("frames")
             with self.lock:
                 for k in STAGES:

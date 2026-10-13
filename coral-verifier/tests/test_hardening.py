@@ -172,7 +172,7 @@ def test_defaults_are_the_validated_values():
     d = st["defaults"]
     assert (d.start_thr, d.cont_thr, d.confirm_n, d.confirm_m, d.hold_s, d.still_s, d.still_hold_s, d.max_hold_s, d.parked_after_s, d.session_ttl_s) == \
         (0.65, 0.2, 2, 3, 8, 3, 30, 600, 120, 120)
-    assert DF.PUBLIC_OPTIONS == ("token", "port", "log_level")
+    assert DF.PUBLIC_OPTIONS == ("token", "port", "log_level") and d.second_look is True
 
 
 def test_config_yaml_exposes_only_three_options():

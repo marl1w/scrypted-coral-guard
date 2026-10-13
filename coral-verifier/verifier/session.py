@@ -53,6 +53,7 @@ class Config:
     animal_start_thr: float = _T["animal_start_thr"]
     animal_cont_thr: float = _T["animal_cont_thr"]
     zoom_out: float = _T["zoom_out"]
+    second_look: bool = _T["second_look"]
 
     def validate(self):
         for k, v in asdict(self).items():
@@ -88,6 +89,11 @@ class Config:
         for k, v in changes.items():
             if k not in known:
                 raise ValueError(f"unknown config key {k!r}"[:80])
+            if known[k] is bool:
+                if not isinstance(v, bool):
+                    raise ValueError(f"{k} must be true or false")
+                cur[k] = v
+                continue
             if isinstance(v, bool) or not isinstance(v, (int, float)):
                 raise ValueError(f"{k} must be a number")
             if not math.isfinite(v):
@@ -465,6 +471,7 @@ class Registry:
         self.defaults = defaults or Config()
         self.max_cameras = max_cameras
         self._sessions = {}
+        self._sl = {}            # camera -> second-look cache entries (see secondlook.py)
         self._over = {}          # camera -> (dict of overrides, last touched wall)
         self._next_sweep = 0.0
         self.lock = threading.RLock()
@@ -484,6 +491,8 @@ class Registry:
             self._next_sweep = wall_now + 1.0
             for cam in [c for c, s in self._sessions.items() if wall_now - s.wall > s.cfg.session_ttl_s]:
                 del self._sessions[cam]
+            for cam in [c for c in self._sl if c not in self._sessions]:
+                del self._sl[cam]
             for cam in [c for c, (_, w) in self._over.items() if wall_now - w > OVERRIDE_IDLE_S and c not in self._sessions]:
                 del self._over[cam]
 
@@ -543,8 +552,24 @@ class Registry:
             s = self._live(camera, wall_now)
             return s.snapshot(wall_now) if s else empty_snapshot()
 
+    def sl_context(self, camera, wall_now):
+        """For the second look (worker thread): boxes of the live tracks per group and a copy of the camera's re-check cache."""
+        with self.lock:
+            s = self._live(camera, wall_now)
+            tracks = {} if s is None else {"person": [tuple(t.box) for t in s.person.tracks], "vehicle": [tuple(t.box) for t in s.vehicle.tracks],
+                                           "animal": [tuple(t.box) for t in s.animal.tracks]}
+            return {"tracks": tracks, "cache": list(self._sl.get(camera, []))}
+
+    def sl_store(self, camera, cache, wall_now):
+        with self.lock:
+            if cache:
+                self._sl[camera] = cache[-16:]
+            else:
+                self._sl.pop(camera, None)
+
     def reset(self, camera):
         with self.lock:
+            self._sl.pop(camera, None)
             return self._sessions.pop(camera, None) is not None
 
     def listing(self, wall_now):

@@ -9,9 +9,28 @@ import defaults as DF
 import metrics as M
 import session as S
 import detect as D
+import secondlook as SL
 from coral import CoralManager, Job
 
-VERSION = os.environ.get("VERIFIER_VERSION", "0.1.0")
+def _read_version():
+    """Add-on version: VERIFIER_VERSION, else the `version:` of config.yaml next to the package (or one level up), else the constant."""
+    v = os.environ.get("VERIFIER_VERSION")
+    if v:
+        return v
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.path.join(here, "config.yaml"), os.path.join(here, "..", "config.yaml"), "/config.yaml"):
+        try:
+            with open(p) as f:
+                m = re.search(r'^version:\s*["\']?([0-9A-Za-z.+\-]+)', f.read(), re.M)
+            if m:
+                return m.group(1)
+        except OSError:
+            pass
+    return FALLBACK_VERSION
+
+
+FALLBACK_VERSION = "0.2.1"
+VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
 RATE_PER_S = 4
@@ -23,7 +42,7 @@ FIRST_BYTE_S = 2.0             # a NEW connection must start its request within 
 RESERVED_HEALTH_SLOTS = 4      # connections beyond max_connections that only GET /v1/health may use
 CAM_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 MODEL_FILES = {320: "yolov9-s-relu6-best_320_int8_edgetpu.tflite", 512: "yolov9-s-relu6-tpumax_512_int8_edgetpu.tflite"}
-TRACKER_KEYS = ("start_thr", "cont_thr", "confirm_n", "confirm_m", "hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s", "vehicle_thr", "animal_start_thr", "animal_cont_thr", "zoom_out")
+TRACKER_KEYS = ("start_thr", "cont_thr", "confirm_n", "confirm_m", "hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s", "vehicle_thr", "animal_start_thr", "animal_cont_thr", "zoom_out", "second_look")
 log = logging.getLogger("verifier")
 
 
@@ -122,6 +141,13 @@ class App:
                 "resets": st["resets"], "queue_depth": st["queue_depth"],
                 "cameras_active": self.registry.count(time.monotonic()), "uptime_s": int(time.monotonic() - self.t0)}
 
+    @staticmethod
+    def _sl_metrics(roll):
+        n = roll.sum("sl")
+        share = lambda k: None if n <= 0 else round(roll.sum(k) / n, 3)
+        return {"count_60s": int(n), "reused_60s": int(roll.sum("sl_reused")), "confirmed_share": share("sl_confirmed"),
+                "lowered_share": share("sl_lowered"), "rejected_share": share("sl_rejected")}
+
     def metrics(self):
         st, roll, now = self.coral.stats(), self.coral.roll, time.monotonic()
         r1 = lambda v: None if v is None else round(v, 1)
@@ -135,6 +161,7 @@ class App:
                 "stages": st["stages"],
                 "load": {"queue_depth": st["queue_depth"], "dropped_stale_total": st["dropped_stale"], "dropped_stale_60s": int(roll.sum("stale")),
                          "rejected_429_60s": int(roll.sum("r429")), "cameras_active": self.registry.count(now), "frames_60s": int(roll.sum("frames"))},
+                "second_look": self._sl_metrics(roll),
                 "host": {"cpu_pct": sv["host_cpu"], "load1": load1, "mem_used_pct": mem},
                 "process": {"cpu_pct": sv["proc_cpu"], "rss_mb": M.rss_mb()},
                 "gpu": {"available": sv["gpu_ok"], "busy_pct": sv["gpu_busy"]},
@@ -362,16 +389,25 @@ class Handler(BaseHTTPRequestHandler):
         decode_ms = (time.perf_counter() - t_dec) * 1e3
         cfg = app.registry.config(cam)
 
+        def sl_hook(engine, frame, dets):
+            now = time.monotonic()
+            ctx = app.registry.sl_context(cam, now)
+            out, info = SL.second_look(engine, frame, dets, cfg, ctx["tracks"], ctx["cache"], now)
+            app.registry.sl_store(cam, info["cache"], now)
+            return out, info
+
         def finish(dets, st):
-            sn = app.registry.update(cam, t, dets, time.monotonic())
-            shown = dets if verbose else [d for d in dets if d["score"] >= REPLY_MIN_SCORE]
+            live = [d for d in dets if d.get("second_look") != "rejected"]          # a rejected candidate never reaches the trackers
+            sn = app.registry.update(cam, t, live, time.monotonic())
+            shown = dets if verbose else [d for d in live if d["score"] >= REPLY_MIN_SCORE]
             return {"camera": cam, "t": sn["t"], "coral_ms": round(st["infer_ms"], 1), "queue_ms": round(st["queue_ms"], 1),
                     "decode_ms": round(st["decode_ms"], 2), "preprocess_ms": round(st["preprocess_ms"], 2), "infer_ms": round(st["infer_ms"], 2),
-                    "post_ms": round(st["post_ms"], 2), "total_ms": round(st["total_ms"], 2), "detections": shown,
+                    "post_ms": round(st["post_ms"], 2), "second_look_ms": round(st.get("second_look_ms", 0.0), 2), "total_ms": round(st["total_ms"], 2), "detections": shown,
                     "person": sn["person"], "vehicle": sn["vehicle"], "animal": sn["animal"], "session": sn["session"]}
 
         job = app.coral.submit(Job(img, tiles, cfg.cont_thr, finish, decode_ms, deadline, arrival, low=(prio == "low"),
-                      thr={"vehicle_thr": cfg.vehicle_thr, "animal_thr": cfg.animal_cont_thr, "zoom_out": cfg.zoom_out}))
+                      thr={"vehicle_thr": cfg.vehicle_thr, "animal_thr": cfg.animal_cont_thr, "zoom_out": cfg.zoom_out},
+                      post=sl_hook if cfg.second_look else None))
         if not job.event.wait(JOB_WAIT_S):
             job.complete(500, {"error": "timeout waiting for the Coral queue"})
         self._send(job.status, job.body)
