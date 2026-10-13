@@ -1,0 +1,61 @@
+{
+  "name": "scrypted-coral-guard",
+  "version": "0.1.0",
+  "description": "Scrypted plugin that verifies a camera's motion with a Google Coral (Edge TPU) person/vehicle detector, gates it, and holds it while someone is still there. Works only with the Coral verifier service.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "scrypted-setup-project": "scrypted-setup-project",
+    "prescrypted-setup-project": "scrypted-package-json",
+    "build": "scrypted-webpack",
+    "prepublishOnly": "NODE_ENV=production scrypted-webpack",
+    "scrypted-deploy": "scrypted-deploy",
+    "scrypted-deploy-debug": "scrypted-deploy-debug",
+    "scrypted-debug": "scrypted-debug",
+    "scrypted-package-json": "scrypted-package-json",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test out-test/test/*.test.js"
+  },
+  "keywords": [
+    "scrypted",
+    "plugin",
+    "motion",
+    "coral",
+    "guard"
+  ],
+  "scrypted": {
+    "rollup": true,
+    "name": "Coral Guard",
+    "type": "API",
+    "interfaces": [
+      "Settings",
+      "MixinProvider"
+    ],
+    "pluginDependencies": []
+  },
+  "dependencies": {
+    "@scrypted/sdk": "^0.5.59"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "terser-webpack-plugin": "^5.6.1",
+    "typescript": "^5.6.0"
+  },
+  "author": "marl1w",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/marl1w/scrypted-coral-guard.git"
+  },
+  "homepage": "https://github.com/marl1w/scrypted-coral-guard#readme",
+  "bugs": {
+    "url": "https://github.com/marl1w/scrypted-coral-guard/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "docs",
+    "package.json"
+  ]
+}

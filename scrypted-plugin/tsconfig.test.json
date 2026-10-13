@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "out-test",
+    "rootDir": ".",
+    "sourceMap": false,
+    "module": "Node16",
+    "moduleResolution": "Node16"
+  },
+  "include": [
+    "src/**/*",
+    "test/**/*"
+  ]
+}

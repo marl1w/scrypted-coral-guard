@@ -1,0 +1,9 @@
+node_modules/
+out/
+out-test/
+out-tsc/
+dist/
+*.zip
+.DS_Store
+__pycache__/
+.pytest_cache/

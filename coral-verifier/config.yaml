@@ -1,0 +1,28 @@
+name: "Coral Verifier"
+version: "0.2.0"
+slug: coral_verifier
+url: "https://github.com/marl1w/scrypted-coral-guard"
+description: "Person/vehicle verifier on a Coral Edge TPU (USB): HTTP API for post-trigger confirmation, see API.md. Owns the Coral exclusively."
+arch:
+  - amd64
+startup: application
+boot: manual
+init: false
+usb: true
+host_network: true
+watchdog: "http://[HOST]:[PORT:8750]/v1/health"
+options:
+  token: ""
+  port: 8750
+  log_level: info
+schema:
+  token: "password"
+  port: "port"
+  log_level: "list(debug|info|notice|warning|error|fatal)"
+# Deliberately NOT set: privileged, full_access, apparmor: false, kernel_modules, gpio, udev, uart, devices (no iGPU, no /dev/dri), map.
+# usb: true -> Supervisor adds a cgroup rule for /dev/bus/usb (libusb access to the Coral, 1a6e:089a before firmware load, 18d1:9302 after).
+# host_network -> the API is reachable on the host's port (default 8750) by Scrypted and Home Assistant.
+# Only token, port and log_level are options. Every tuning value is an internal default (verifier/defaults.py), validated as shipped.
+# watchdog: Supervisor polls /v1/health (host_network: the container port 8750 is used as is). It only acts when the add-on's own "Watchdog" toggle is ON
+#   (Supervisor option watchdog: true, default OFF): then an unresponsive or exited container is restarted. The URL is fixed: if you change `port`, update it.
+# token: REQUIRED (schema "password", no default). The service refuses to start (exit 2, reason in the log) when it is empty.
