@@ -78,8 +78,9 @@ test('provider: Overview first, Performance group from the poll; a failed poll m
     let st = await p.getSettings();
     assert.equal(st[0].key, 'overview');
     const groups: string[] = [];
-    for (const x of st) { const g = x.group || 'General'; if (!groups.includes(g)) groups.push(g); }
-    assert.deepEqual(groups, ['Overview', 'Performance', 'General', 'Detection thresholds']);
+    assert.ok(st.every((x: any) => !!x.group), 'no ungrouped setting');
+    for (const x of st) { if (!groups.includes(x.group)) groups.push(x.group); }
+    assert.deepEqual(groups, ['Overview', 'Performance', 'Service', 'Detection']);
     const perf = st.find((x: any) => x.key === 'performance');
     assert.equal(perf.group, 'Performance');
     assert.match(perf.value, /42 % busy/);

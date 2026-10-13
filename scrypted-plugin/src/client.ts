@@ -58,6 +58,8 @@ export interface TrackerConfig {
     vehicle_thr?: number;
     /** newer service: extra shrunk-with-border pass, 0 = off */
     zoom_out?: number;
+    /** newer service: re-check uncertain detections with a zoomed-in pass */
+    second_look?: boolean;
     animal_start_thr?: number;
     animal_cont_thr?: number;
     start_thr?: number;

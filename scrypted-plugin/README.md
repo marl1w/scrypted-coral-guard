@@ -38,6 +38,7 @@ The plugin attaches to the default (already prebuffered) stream of each enabled 
 - Coral service URL: where the verifier service listens.
 - Token: sent with every request; leave empty if the service has none.
 - Disable everywhere: kill switch, every camera passes raw motion through at once.
+- Second look (plugin-wide, on by default): re-checks uncertain detections with a zoomed-in pass on the Coral; fewer false alerts, slightly more Coral load.
 - Detection thresholds (plugin-wide, 0.05 to 0.95): Person confirm 0.65, Person keep tracking 0.20, Vehicle detect 0.40, Vehicle confirm (moving) 0.60, Animal detect 0.30, Animal confirm 0.60. A confirm value below its keep/detect partner makes that pair fall back to the defaults with a warning. They are sent to the service for every camera and also decide what the status panel draws.
 - Service health: read-only, refreshed every 30 seconds and when you save a setting.
 - Mode (per camera): Off, Shadow or Gate.

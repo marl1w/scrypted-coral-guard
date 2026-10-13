@@ -125,3 +125,22 @@ test('a service restart (uptime went down) pushes every camera configuration aga
     assert.equal(pushed, 1);
     clearInterval(p.healthTimer);
 });
+
+test('Second look: Detection group, on by default, sent with every config, a change re-posts all cameras', async () => {
+    const P = loadProvider();
+    const p: any = new P('n');
+    clearInterval(p.healthTimer);
+    p.console = { log() { }, warn() { } };
+    assert.equal(p.secondLook, true);
+    const st = await p.getSettings();
+    const s = st.find((x: any) => x.key === 'secondLook');
+    assert.equal(s.group, 'Detection');
+    assert.ok(!st.some((x: any) => x.group === 'Detection thresholds'));
+    let pushed = 0;
+    p.register({ postConfig: () => { pushed++; }, applyConfig() { }, onHealth() { } });
+    p.register({ postConfig: () => { pushed++; }, applyConfig() { }, onHealth() { } });
+    p.thresholdsChanged(); // what the setting's onPut runs
+    p.storageSettings = { values: { secondLook: false } };
+    assert.equal(pushed, 2);
+    assert.equal(p.secondLook, false);
+});

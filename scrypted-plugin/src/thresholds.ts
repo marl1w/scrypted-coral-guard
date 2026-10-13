@@ -1,4 +1,4 @@
-// Plugin-wide detection thresholds (provider settings, group 'Detection thresholds'): pushed to the service per camera and
+// Plugin-wide detection thresholds (provider settings, group 'Detection'): pushed to the service per camera and
 // used by the plugin's own decisions (vehicle confirm guard) and the panel drawing.
 
 export interface Thresholds {

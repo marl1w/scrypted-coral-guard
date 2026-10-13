@@ -251,7 +251,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** Push the tracker overrides and the plugin-wide thresholds (at start, on a change, after a service restart). */
     postConfig() {
         const person = serviceThresholds(this.thresholds);
-        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, zoom_out: this.zoomOut };
+        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true };
         this.configPosted = false;
         if (this.released || this.mode === 'off' || this.plugin.config.killSwitch)
             return;
@@ -907,7 +907,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             settings.push({ key: 'zoneNames', subgroup: 'Zones', title: 'Exclusion zones', type: 'string', multiple: true, combobox: true, choices: zones.map(z => z.name), value: zones.map(z => z.name) as any,
                 description: 'Type a name and press Enter to add an exclusion zone, then draw it with its zone editor. Remove a name to delete the zone. A detection counts only if most of its box (60 %) lies outside the zones.' } as Setting);
             for (const z of zones)
-                settings.push({ key: `zone:${z.name}`, subgroup: `Exclusion zone: ${z.name}`, title: 'Open Zone Editor', type: 'clippath', value: JSON.stringify(z.points) } as Setting);
+                settings.push({ key: `zone:${z.name}`, subgroup: 'Zones', title: `Edit zone: ${z.name}`, type: 'clippath', value: JSON.stringify(z.points) } as Setting);
         }
         const zo = settings.find(x => x.key === 'zoomOut');
         if (zo)
@@ -928,9 +928,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (mode)
             mode.description = `${this.notOutermost ? 'WARNING: not the outermost MotionSensor mixin, gating has no effect. ' : ''}${(() => { const d = this.detectGroups(); return d.length === 3 ? '' : `Detect: ${d.join(', ')} only. `; })()}${this.status.summaryLine(Date.now())}`;
         // one group: the Status panel on top, then Mode
+        // tabs (subgroups): Overview (the Status panel), Setup (Mode, Detect, Stream, Zoom-out), Zones
+        for (const x of settings)
+            if (!x.subgroup) x.subgroup = 'Setup'; // never ungrouped: no implicit 'General' tab
         return [
-            { key: 'status', title: 'Status', type: 'html', readonly: true, value: this.status.render(Date.now()) },
-            ...settings,
+            { key: 'status', subgroup: 'Overview', title: 'Status', type: 'html', readonly: true, value: this.status.render(Date.now()) },
+            ...settings.filter(x => x.subgroup === 'Setup'),
+            ...settings.filter(x => x.subgroup !== 'Setup'),
         ];
     }
 

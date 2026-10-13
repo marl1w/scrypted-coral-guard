@@ -9,7 +9,7 @@ import { MetricsRing, renderPerformance } from './performance';
 import { DEFAULT_THRESHOLDS, resolveThresholds, THRESHOLD_TITLES, Thresholds } from './thresholds';
 
 const thresholdSetting = (k: keyof Thresholds, description: string, onPut: () => void) => ({
-    group: 'Detection thresholds', title: THRESHOLD_TITLES[k], type: 'number' as const, defaultValue: DEFAULT_THRESHOLDS[k], description, onPut,
+    group: 'Detection', title: THRESHOLD_TITLES[k], type: 'number' as const, defaultValue: DEFAULT_THRESHOLDS[k], description, onPut,
 });
 
 // Marker interface: lets exactly one Coral Guard mixin exist per camera (objectdetector pattern).
@@ -51,8 +51,22 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         vehicleDetect: thresholdSetting('vehicleDetect', 'A vehicle is detected (drawn, held) from this score. Not above Vehicle confirm.', () => this.thresholdsChanged()),
         vehicleConfirm: thresholdSetting('vehicleConfirm', 'A moving vehicle confirms from this score (2 of 3 frames).', () => this.thresholdsChanged()),
         animalDetect: thresholdSetting('animalDetect', 'An animal is detected (drawn, kept) from this score. Not above Animal confirm.', () => this.thresholdsChanged()),
+        secondLook: {
+            group: 'Detection',
+            title: 'Second look',
+            description: 'Re-checks uncertain detections with a zoomed-in pass on the Coral. Fewer false alerts, slightly more Coral load.',
+            type: 'boolean',
+            defaultValue: true,
+            onPut: () => this.thresholdsChanged(),
+        },
         animalConfirm: thresholdSetting('animalConfirm', 'An animal is confirmed from this score.', () => this.thresholdsChanged()),
     });
+
+    /** 'Second look' (Detection group, default on): sent to the service as second_look. */
+    get secondLook(): boolean {
+        const v = (this.storageSettings.values as any).secondLook;
+        return v === undefined || v === null || v === '' ? true : v === true || v === 'true';
+    }
 
     private thresholdWarned = '';
     /** plugin-wide detection thresholds, clamped and checked (invalid pairs fall back to the defaults, warned once). */
@@ -186,15 +200,16 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
 
     async getSettings(): Promise<Setting[]> {
         const stored = await this.storageSettings.getSettings();
-        const isThreshold = (x: Setting) => x.group === 'Detection thresholds';
-        // groups appear in the order of their first setting: Overview, Performance, General, Detection thresholds
+        const isThreshold = (x: Setting) => x.group === 'Detection';
+        // groups appear in the order of their first setting: Overview, Performance, Service, Detection
         return [
             { key: 'overview', group: 'Overview', title: 'Overview', type: 'html', readonly: true, value: this.overview() },
             { key: 'refreshPerformance', group: 'Performance', title: 'Refresh', type: 'button', description: 'Fetch the service metrics now.' },
             { key: 'performance', group: 'Performance', title: 'Service and Coral', type: 'html', readonly: true, value: renderPerformance(Date.now(), this.perfLatest, this.perfRing, this.perfDownSince) },
-            ...stored.filter(x => !isThreshold(x)),
+            ...stored.filter(x => !isThreshold(x)).map(x => ({ ...x, group: x.group || 'Service' })), // never ungrouped: no implicit 'General'
             {
                 key: 'health',
+                group: 'Service',
                 title: 'Service health',
                 value: this.healthText,
                 readonly: true,

@@ -1066,7 +1066,7 @@ test('thresholds are posted to the service at start; an old service rejecting th
         config: async (_id: string, cfg: any) => { posted.push(cfg); if ('vehicle_thr' in cfg) { const e: any = new Error('bad'); e.status = 400; throw e; } return {}; },
     } });
     await eventually(() => posted.length === 2);
-    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, zoom_out: 0 });
+    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, zoom_out: 0, second_look: true });
     assert.deepEqual(posted[1], { start_thr: 0.65, cont_thr: 0.2 });
     assert.ok(!ctl.logs.some(l => /tracker config not applied/.test(String(l[1]))));
     await h.mixin.release();
@@ -1160,7 +1160,7 @@ test('zones: add by name, draw with the clippath editor, stored as JSON; setting
     assert.deepEqual(JSON.parse((h.mixin as any).storage.getItem('zones')), [{ name: 'Street', points: [[0, 0], [0.5, 0], [0.5, 1], [0, 1]] }]);
     const st = await h.mixin.getMixinSettings();
     const ed = st.find(x => x.key === 'zone:Street')!;
-    assert.equal(ed.type, 'clippath'); assert.equal(ed.subgroup, 'Exclusion zone: Street');
+    assert.equal(ed.type, 'clippath'); assert.equal(ed.subgroup, 'Zones');
     assert.deepEqual(st.find(x => x.key === 'zoneNames')!.value, ['Street']);
     await h.mixin.putMixinSetting('zoneNames', []);
     assert.deepEqual(JSON.parse((h.mixin as any).storage.getItem('zones')), []);
@@ -1185,5 +1185,19 @@ test('zones: a confirmed person inside an exclusion zone never raises motion in 
     const html = String((await h.mixin.getMixinSettings())[0].value);
     assert.match(html, /person 0\.90 \(masked\)/);
     assert.match(html, /<polygon points="0,0 50,0 50,100 0,100" fill="currentColor" fill-opacity="\.25"[^>]*stroke-dasharray="2 2"/);
+    await h.mixin.release();
+});
+
+test('camera settings tabs: Overview (Status only) first, then Setup (Mode, Detect, Stream, Zoom-out), then Zones', async () => {
+    const h = make({ settings: { mode: 'Shadow' } });
+    await h.mixin.putMixinSetting('zoneNames', ['Street']);
+    const st = await h.mixin.getMixinSettings();
+    assert.ok(st.every(x => !!x.subgroup), 'no ungrouped setting');
+    assert.deepEqual([...new Set(st.map(x => x.subgroup))], ['Overview', 'Setup', 'Zones'], 'exactly three tabs');
+    assert.equal(st.find(x => x.key === 'zone:Street')!.title, 'Edit zone: Street');
+    assert.deepEqual(st.map(x => [x.key, x.subgroup]), [
+        ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'],
+        ['zoneNames', 'Zones'], ['zone:Street', 'Zones'],
+    ]);
     await h.mixin.release();
 });
