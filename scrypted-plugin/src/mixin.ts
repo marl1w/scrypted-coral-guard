@@ -99,6 +99,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** when the current ffmpeg process was requested (the watchdog never counts time before it). */
     private clock: FrameClock | undefined;
     private hwDisabled = false;
+    private hwFallbacks = 0;
     private gate: PixelGate | undefined;
     private gateBusy = false;
     private lastGatePost = 0;
@@ -494,6 +495,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             triggerAt: this.scanActive ? this.loopStartedAt : undefined,
             hwaccel,
             hwFailedBefore: this.hwDisabled,
+            vaDriver: v.vaDriver || undefined,
             bySize: DEFAULTS.analysisStreamBySize,
             streamId: this.chosenStream(),
             onStream: st => {
@@ -525,7 +527,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 if (!this.streamUp) {
                     this.streamUp = true;
                     this.streamGpu = hwaccel;
-                    this.status.setStream({ name: this.streamName || undefined, connected: true, decode: hwaccel ? 'gpu' : 'cpu', warm: this.warm, gpuFailed: !hwaccel && this.hwDisabled });
+                    this.status.setStream({ name: this.streamName || undefined, connected: true, decode: hwaccel ? 'gpu' : 'cpu', warm: this.warm, gpuFailed: !hwaccel && this.hwDisabled, gpuFallbacks: this.hwFallbacks });
                 }
                 if (!this.scanActive) {
                     // warm and idle: keep only the last few frames, no network.
@@ -577,7 +579,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 }
                 if (hwaccel && err && err.startsWith(HW_FAILED_PREFIX)) {
                     this.hwDisabled = true; // sticky until the plugin restarts
-                    this.console.warn(`hardware decode failed, using software for this camera until the plugin restarts (${err})`);
+                    this.hwFallbacks++;
+                    this.console.warn(`frame source: decode GPU failed, falling back to CPU for this camera until the plugin restarts (${maskUrls(err)})`);
                     this.status.onFailure('hardware decode failed, using software');
                     this.startSource();
                     return;
@@ -589,6 +592,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (gen !== this.srcGen || this.released)
                 return;
             this.frames = undefined;
+            this.plugin.releaseHw?.(this); // a failed start holds no slot
             clearTimeout(this.streamFirstTimer);
             if (streamFailed())
                 return;

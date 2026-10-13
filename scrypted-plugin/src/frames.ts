@@ -36,7 +36,9 @@ export interface FrameOptions {
     triggerAt?: number;
     /** drop JPEG frames arriving closer than this to the previous one (harmless safety net: the fps filter already samples one per interval). */
     minGapMs?: number;
-    /** try VAAPI hardware decode (hwdownload to system memory, CPU scale). The caller falls back on 'hwaccel failed'. */
+    /** try VAAPI hardware decode (decoder returns yuv420p in system memory, CPU scale). The caller falls back on 'hwaccel failed'. */
+    /** LIBVA_DRIVER_NAME for a hardware decode ('' = leave unset). */
+    vaDriver?: string;
     hwaccel?: boolean;
     /** a GPU start already failed for this camera: this software start says so in its decode log line. */
     hwFailedBefore?: boolean;
@@ -131,7 +133,7 @@ export function streamLabels(options: any[] | undefined): StreamLabel[] {
 export const VAAPI_DEVICE = '/dev/dri/renderD128';
 /** a slow start (camera key frame wait, VAAPI init) is not a hardware failure: give it this long. */
 export const HW_FIRST_FRAME_MS = 20000;
-export const HW_RUNTIME_RE = /vaapi|hwdownload|AVHWFramesContext|Failed to sync surface|hwaccel/i;
+export const HW_RUNTIME_RE = /vaapi|va_|hwaccel|hwdownload|transfer data|sync surface|read image from surface|not implemented|AVHWFramesContext/i;
 export const HW_FAILED_PREFIX = 'hwaccel failed';
 export const PROBE_FAILED_PREFIX = 'codec probe failed';
 export const PROBE_FAILED_RE = /Could not find codec parameters/i;
@@ -157,7 +159,7 @@ export function vaapiAvailable(device = VAAPI_DEVICE): boolean {
 export function decodeArgs(hw: boolean): string[] {
     return [
         '-threads', '1', // decoder: one thread per stream (many processes should not oversubscribe the cores)
-        ...(hw ? ['-hwaccel', 'vaapi', '-hwaccel_device', VAAPI_DEVICE, '-hwaccel_output_format', 'vaapi'] : []),
+        ...(hw ? ['-hwaccel', 'vaapi', '-hwaccel_device', VAAPI_DEVICE, '-hwaccel_output_format', 'yuv420p'] : []),
     ];
 }
 
@@ -167,7 +169,7 @@ export function stderrTail(text: string, n = 15): string {
 }
 
 function chainHead(hw: boolean, fps: number): string {
-    return `fps=${fps.toFixed(4)},${hw ? 'hwdownload,format=nv12,' : ''}`;
+    return `fps=${fps.toFixed(4)},`; // hardware decode returns system-memory frames (yuv420p): no hwdownload step
 }
 
 /** Filter graph with two outputs: [v1] the JPEG frames, [v2] the tiny gray frames for the pixel gate (1 fps, area scaling). */
@@ -279,6 +281,8 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
             : ['-vf', filterChain(!!o.hwaccel, fps, width), ...jpegOut]),
     ];
 
+    if (o.hwaccel && o.vaDriver)
+        env = { ...env, LIBVA_DRIVER_NAME: o.vaDriver };
     const cp = child_process.spawn(ffmpegPath, args, { env, stdio: ['ignore', 'pipe', 'pipe', ...(o.gray ? ['pipe' as const] : [])] }) as unknown as child_process.ChildProcessWithoutNullStreams;
     if (o.gray) {
         const { width, height, onGray } = o.gray;
@@ -317,8 +321,7 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
         if (!gotFrame) {
             gotFrame = true;
             o.console.log(`frame source: first jpeg +${now - t0} ms after start`);
-            // With hwaccel the chain is `hwdownload,...`, which only accepts VAAPI surfaces: frames flowing means the GPU decoded them.
-            o.console.log(`frame source: decode ${o.hwaccel ? 'GPU(vaapi verified)' : o.hwFailedBefore ? 'CPU(requested GPU, not initialised)' : 'CPU'}`);
+            o.console.log(`frame source: decode ${o.hwaccel ? `GPU(vaapi${o.vaDriver ? `, driver ${o.vaDriver}` : ''}) verified` : o.hwFailedBefore ? 'CPU(requested GPU, not initialised)' : 'CPU'}`);
         }
         splitter.push(d, jpeg => {
             if (!sizeLogged) {
@@ -346,13 +349,13 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
             clearTimeout(hwTimer);
             if (!stopping)
                 o.console.warn(`frame source: ffmpeg ended unexpectedly (code ${code}, signal ${signal}) +${monoNow() - t0} ms after start, first jpeg: ${gotFrame ? 'yes' : 'no'}; stderr tail: ${stderrTail(lastErr) || '(empty)'}`);
-            if (code && !gotFrame && (code === 183 || PROBE_FAILED_RE.test(lastErr))) {
-                resolve(`${PROBE_FAILED_PREFIX}: ffmpeg exited ${code}; ${maskUrls(lastErr).trim().slice(-300)}`);
+            // hardware decode: ANY exit before the first JPEG (code 0 included) is a hardware failure, so the caller falls back to software
+            if (o.hwaccel && (hwTimedOut || (!stopping && (!gotFrame || (code && HW_RUNTIME_RE.test(lastErr)))))) {
+                resolve(`${HW_FAILED_PREFIX}: ${hwTimedOut ? 'no frame within ' + HW_FIRST_FRAME_MS + ' ms' : 'ffmpeg exited ' + code}; ${maskUrls(lastErr).trim().slice(-300)}`);
                 return;
             }
-            // a VAAPI problem: before the first frame any failure; later (runtime) one whose stderr names the hardware path
-            if (o.hwaccel && (hwTimedOut || (code && (!gotFrame || HW_RUNTIME_RE.test(lastErr))))) {
-                resolve(`${HW_FAILED_PREFIX}: ${hwTimedOut ? 'no frame within ' + HW_FIRST_FRAME_MS + ' ms' : 'ffmpeg exited ' + code}; ${maskUrls(lastErr).trim().slice(-300)}`);
+            if (code && !gotFrame && (code === 183 || PROBE_FAILED_RE.test(lastErr))) {
+                resolve(`${PROBE_FAILED_PREFIX}: ffmpeg exited ${code}; ${maskUrls(lastErr).trim().slice(-300)}`);
                 return;
             }
             resolve(code ? `ffmpeg exited ${code}: ${maskUrls(lastErr).trim().slice(-400)}` : undefined);

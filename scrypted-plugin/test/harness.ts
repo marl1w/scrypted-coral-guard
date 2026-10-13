@@ -76,6 +76,8 @@ const framesStub = {
         ctl.starts.push(r);
         if (ctl.hangStart)
             return new Promise(() => { });
+        if ((ctl as any).failStart)
+            return Promise.reject(new Error('getVideoStream failed'));
         let exitRes: (e?: string) => void = () => { };
         const fs = { stop: () => { r.stopped = true; }, exited: new Promise<string | undefined>(res => { exitRes = res; }) };
         r.exit = exitRes;

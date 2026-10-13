@@ -44,7 +44,7 @@ export interface EpisodeEvent {
 }
 
 export interface ServiceHealth { ok: boolean; coralMs?: number; text: string }
-export interface StreamInfo { name?: string; connected: boolean; decode: 'gpu' | 'cpu' | 'unknown'; warm: boolean; /** GPU decode was requested but did not initialise */ gpuFailed?: boolean }
+export interface StreamInfo { name?: string; connected: boolean; decode: 'gpu' | 'cpu' | 'unknown'; warm: boolean; /** GPU decode was requested but did not initialise */ gpuFailed?: boolean; /** GPU-to-CPU fallbacks of this camera since the plugin started */ gpuFallbacks?: number }
 export interface LastFrame {
     jpegBase64?: string;
     /** raw JPEG: base64 is computed lazily, only when the panel renders. */
@@ -352,7 +352,7 @@ export class CameraStatus {
             state: this.stateChip(),
             today: esc(`${t.episodes} / ${t.confirmed} / ${t.vetoed} / ${t.unflagged}`),
             p50: p === undefined ? '\u2014' : esc(fmtMs(p)),
-            decode: !this.stream?.connected ? '\u2014' : this.stream.decode === 'gpu' ? 'GPU' : this.stream.decode === 'cpu' ? 'CPU' : '?',
+            decode: !this.stream?.connected ? '\u2014' : this.stream.decode === 'gpu' ? 'GPU' : this.stream.decode === 'cpu' ? (this.stream.gpuFailed ? 'CPU (GPU failed)' : 'CPU') : '?',
             lastDetection: this.detection ? esc(relTime(this.detection.frame.atMs, nowMs)) : '\u2014',
         };
     }
@@ -378,7 +378,7 @@ export class CameraStatus {
             .concat(t.skippedFrames ? [`${t.skippedFrames} skipped frames`] : [], t.failures ? [`${t.failures} failures`] : []).join(' &middot; ');
         const lat = [two(p.confirmed) && `confirmed ${two(p.confirmed)}`, two(p.posted) && `first frame ${two(p.posted)}`].filter(Boolean).join(' &middot; ');
         const video = !this.stream ? dash
-            : this.stream.connected ? esc(`Connected, ${this.stream.decode === 'gpu' ? 'GPU decode' : this.stream.decode === 'cpu' ? 'CPU decode' : 'decode unknown'}${this.stream.warm ? ', warm' : ''}${this.stream.gpuFailed ? ' (GPU requested, not initialised)' : ''}${this.stream.name ? `, stream ${this.stream.name}` : ''}`) : `<span style="color:${C.red}">Not connected</span>`;
+            : this.stream.connected ? esc(`Connected, ${this.stream.decode === 'gpu' ? 'GPU decode' : this.stream.decode === 'cpu' ? 'CPU decode' : 'decode unknown'}${this.stream.warm ? ', warm' : ''}${this.stream.gpuFailed ? ` (GPU failed${this.stream.gpuFallbacks ? `, ${this.stream.gpuFallbacks} fallback${this.stream.gpuFallbacks === 1 ? '' : 's'}` : ''})` : ''}${this.stream.name ? `, stream ${this.stream.name}` : ''}`) : `<span style="color:${C.red}">Not connected</span>`;
         const service = !this.health ? dash
             : `${this.health.ok ? `<span style="color:${C.green}">OK</span>` : `<span style="color:${C.red}">Unavailable</span>`}${this.health.coralMs !== undefined ? esc(`, Coral ${fmtMs(this.health.coralMs)}`) : ''}${this.health.text ? ` (${esc(this.health.text)})` : ''}`;
         const result = (e: EpisodeEvent) => e.aborted ? this.chip('Aborted', C.red, false)

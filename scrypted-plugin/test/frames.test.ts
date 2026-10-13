@@ -14,6 +14,7 @@ function setup(convert?: () => Promise<any>) {
 const fs = require('fs'), path = require('path');
 if (process.argv[2] === '-version') { console.log('ffmpeg version ' + (process.env.FAKE_VERSION || '7.0.1') + ' Copyright (c) test'); process.exit(0); }
 fs.writeFileSync(path.join(__dirname, 'args.json'), JSON.stringify(process.argv.slice(2)));
+fs.writeFileSync(path.join(__dirname, 'env.txt'), process.env.LIBVA_DRIVER_NAME || '');
 fs.writeFileSync(path.join(__dirname, 'pid'), String(process.pid));
 const mode = process.env.FAKE_MODE || process.argv.join(' ').match(/MODE=(\\w+)/)?.[1] || 'frames';
 const J = n => Buffer.from([0xff, 0xd8, n, 0xff, 0x00, 0xff, 0xd9]);
@@ -23,6 +24,7 @@ if (mode === 'hwfail' && process.argv.includes('-hwaccel')) { process.stderr.wri
 if (mode === 'gray') { const g = Buffer.alloc(8 * 4, 7); try { require('fs').writeSync(3, g); require('fs').writeSync(3, g); } catch (e) {} }
 if (mode === 'hwruntime' && process.argv.includes('-hwaccel')) { process.stdout.write(Buffer.concat([Buffer.from([0xff, 0xd8, 1, 0xff, 0x00, 0xff, 0xd9])])); setTimeout(() => { process.stderr.write('[hwdownload] Failed to download frame: -5'); process.exit(251); }, 150); return; }
 if (mode === 'probe') { process.stderr.write('[rtsp @ 0x1] Could not find codec parameters for stream 0 (Video: h264): unspecified size'); process.exit(183); }
+if (mode === 'hwzero' && process.argv.includes('-hwaccel')) { process.stderr.write('[vaapi @ 0x1] Failed to read image from surface 0x4: 20 (the requested function is not implemented).'); process.exit(0); }
 if (mode === 'die') { process.stderr.write('Failed rtsp://admin:hunter2@192.0.2.1/live?token=SECRET'); process.exit(3); }
 process.stdout.write(Buffer.concat([J(1), J(2), J(3)]));
 setInterval(() => {}, 1000);
@@ -133,17 +135,19 @@ test('all frames are decoded (no -skip_frame), the fps filter samples first, sof
     await fsx.exited;
 });
 
-test('VAAPI: hwaccel args before -i, hwdownload,format=nv12 before fps/scale, never scale_vaapi', async () => {
+test('VAAPI: hwaccel args before -i with yuv420p output, no hwdownload step, never scale_vaapi', async () => {
     setup();
     const { startFrames } = loadFrames();
     const fsx = await startFrames({ camera: {} as any, inputUrl: 'rtsp://cam/live', hwaccel: true, intervalMs: 1000, prebufferMs: 0, maxWidth: 640, quality: 85, console, onFrame: () => { } });
     await sleep(300);
     const a = args();
     assert.equal(a[a.indexOf('-hwaccel') + 1], 'vaapi');
-    assert.equal(a[a.indexOf('-hwaccel_output_format') + 1], 'vaapi');
+    assert.equal(a[a.indexOf('-hwaccel_output_format') + 1], 'yuv420p');
+    assert.equal(a[a.indexOf('-threads') + 1], '1');
     assert.ok(a.indexOf('-hwaccel') < a.indexOf('-i'));
     const vf = a[a.indexOf('-vf') + 1];
-    assert.match(vf, /^fps=1\.0000,hwdownload,format=nv12,scale=/);
+    assert.match(vf, /^fps=1\.0000,scale=/);
+    assert.ok(!/hwdownload/.test(a.join(' ')));
     assert.ok(!/scale_vaapi/.test(a.join(' ')));
     fsx.stop();
     await fsx.exited;
@@ -191,7 +195,7 @@ test('minGapMs drops keyframes arriving closer than the frame interval; unexpect
 test('first jpeg logs the verified decode path (GPU only when frames came through the VAAPI chain)', async () => {
     setup();
     const { startFrames } = loadFrames();
-    for (const [o, want] of [[{ hwaccel: true }, /decode GPU\(vaapi verified\)/], [{ hwFailedBefore: true }, /decode CPU\(requested GPU, not initialised\)/], [{}, /decode CPU$/]] as [any, RegExp][]) {
+    for (const [o, want] of [[{ hwaccel: true }, /decode GPU\(vaapi\) verified/], [{ hwaccel: true, vaDriver: 'i965' }, /decode GPU\(vaapi, driver i965\) verified/], [{ hwFailedBefore: true }, /decode CPU\(requested GPU, not initialised\)/], [{}, /decode CPU$/]] as [any, RegExp][]) {
         const logs: string[] = [];
         const fsx = await startFrames({ camera: {} as any, inputUrl: 'rtsp://cam/live', ...o, intervalMs: 1000, prebufferMs: 0, maxWidth: 640, quality: 85, console: { log: (m: string) => logs.push(m), warn() { } } as any, onFrame: () => { } });
         for (let i = 0; i < 100 && !logs.some(l => /decode /.test(l)); i++) await sleep(20);
@@ -313,7 +317,7 @@ test('a codec-probe failure (183, no jpeg) is reported as such; the long-probe f
     process.env.FAKE_MODE = 'probe';
     try {
         const camera = { getVideoStreamOptions: async () => [opt('sub', 1280, 720)], getVideoStream: async () => ({}) };
-        const f = await startFrames({ hwaccel: true, bySize: true, camera: camera as any, intervalMs: 500, prebufferMs: 0, maxWidth: 960, quality: 85, console: { log() { }, warn() { } } as any, onFrame: () => { } });
+        const f = await startFrames({ bySize: true, camera: camera as any, intervalMs: 500, prebufferMs: 0, maxWidth: 960, quality: 85, console: { log() { }, warn() { } } as any, onFrame: () => { } });
         assert.match(String(await f.exited), new RegExp('^' + PROBE_FAILED_PREFIX));
     } finally { delete process.env.FAKE_MODE; }
     const asked: any[] = [];
@@ -358,4 +362,31 @@ test('Stream: default resolves to the first open stream, else no id; an explicit
     assert.equal(r.a.id, 'sub'); assert.equal(r.s.explicit, true); assert.equal(r.s.name, 'sub 640x480');
     r = await run([opts[0]], { streamId: 'gone' });
     assert.ok(!('id' in r.a)); assert.equal(r.s.unknown, true);
+});
+
+test('VAAPI env: LIBVA_DRIVER_NAME set only for a hardware decode with a driver; the failure matcher covers the decoder-side errors', async () => {
+    setup();
+    const { startFrames, HW_RUNTIME_RE } = loadFrames();
+    const env = () => fs.readFileSync(path.join(dir, 'env.txt'), 'utf8');
+    const run = async (o: any) => { const f = await startFrames({ camera: {} as any, inputUrl: 'rtsp://cam/live', ...o, intervalMs: 1000, prebufferMs: 0, maxWidth: 640, quality: 85, console: { log() { }, warn() { } } as any, onFrame: () => { } }); await sleep(300); f.stop(); await f.exited; };
+    await run({ hwaccel: true, vaDriver: 'i965' }); assert.equal(env(), 'i965');
+    await run({ hwaccel: false, vaDriver: 'i965' }); assert.equal(env(), '');
+    await run({ hwaccel: true }); assert.equal(env(), '');
+    for (const t of ['Failed to transfer data to output frame: -5', '[hwaccel] error', 'va_sync failed', 'Failed to sync surface 0x3', 'AVHWFramesContext init failed', 'vaapi: unsupported'])
+        assert.match(t, HW_RUNTIME_RE, t);
+    assert.doesNotMatch('Connection refused', HW_RUNTIME_RE);
+});
+
+test('hardware decode: an exit with code 0 before the first JPEG is a hardware failure (never a silent restart on the GPU)', async () => {
+    setup();
+    const { startFrames, HW_FAILED_PREFIX, HW_RUNTIME_RE } = loadFrames();
+    assert.match('Failed to read image from surface 0x4: 20 (the requested function is not implemented)', HW_RUNTIME_RE);
+    process.env.FAKE_MODE = 'hwzero';
+    try {
+        const f = await startFrames({ camera: {} as any, inputUrl: 'rtsp://cam/live', hwaccel: true, intervalMs: 1000, prebufferMs: 0, maxWidth: 640, quality: 85, console: { log() { }, warn() { } } as any, onFrame: () => { } });
+        assert.match(String(await f.exited), new RegExp('^' + HW_FAILED_PREFIX + ': ffmpeg exited 0'));
+        const g = await startFrames({ camera: {} as any, inputUrl: 'rtsp://cam/live', hwaccel: false, intervalMs: 1000, prebufferMs: 0, maxWidth: 640, quality: 85, console: { log() { }, warn() { } } as any, onFrame: () => { } });
+        await sleep(200); g.stop();
+        assert.equal(await g.exited, undefined, 'software start is unaffected');
+    } finally { delete process.env.FAKE_MODE; }
 });

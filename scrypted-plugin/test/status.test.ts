@@ -176,7 +176,7 @@ test('weak candidates: dashed dim boxes labelled possible, caption says no perso
     assert.match(h, /possible 0\.26/);
     assert.match(h, /Last analysed just now: no person \(weak candidate 0\.26\), 33 ms/);
     s.setStream({ connected: true, decode: 'cpu', warm: true, gpuFailed: true });
-    assert.match(s.render(T0), /CPU decode, warm \(GPU requested, not initialised\)/);
+    assert.match(s.render(T0), /CPU decode, warm \(GPU failed\)/);
 });
 
 test('vetoed episodes show the verdict latency; the thumbnail base64 is computed lazily from the raw JPEG', () => {

@@ -390,7 +390,7 @@ test('Hardware decode: a hwaccel failure restarts once in software and stays in 
         ctl.starts[0].exit('hwaccel failed: ffmpeg exited 1');
         await eventually(() => ctl.starts.length === 2, 3000, 'software restart');
         assert.equal(ctl.starts[1].o.hwaccel, false);
-        assert.ok(ctl.logs.some(l => /hardware decode failed/.test(String(l[1]))));
+        assert.ok(ctl.logs.some(l => /decode GPU failed, falling back to CPU/.test(String(l[1]))));
         await h.mixin.release();
     }
     finally { (ctl as any).vaapi = false; }
@@ -667,7 +667,7 @@ test('GPU slot lifecycle at the mixin: held while a hardware process runs, freed
         await eventually(() => ctl.starts.length === 1);
         assert.equal(ctl.starts[0].o.hwaccel, true);
         assert.equal(h.plugin.hw.size, 1);
-        assert.ok(ctl.logs.some(l => /GPU decode slots: 1\/6 used/.test(String(l[1]))));
+        assert.ok(ctl.logs.some(l => /GPU decode slots: 1\/64 used/.test(String(l[1]))));
         ctl.starts[0].exit('hwaccel failed: ffmpeg exited 1');
         await eventually(() => ctl.starts.length === 2, 3000);
         assert.equal(ctl.starts[1].o.hwaccel, false);
@@ -1200,4 +1200,45 @@ test('camera settings tabs: Overview (Status only) first, then Setup (Mode, Dete
         ['zoneNames', 'Zones'], ['zone:Street', 'Zones'],
     ]);
     await h.mixin.release();
+});
+
+test('GPU decode: on for every camera (cap 64, driver i965); a fallback or a failed start releases the slot at once', async () => {
+    const { DEFAULTS } = require('../src/defaults') as typeof import('../src/defaults');
+    (ctl as any).vaapi = true;
+    try {
+        const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', hwDecode: 'Auto', maxHwCameras: 64, vaDriver: 'i965' } });
+        assert.equal(DEFAULTS.maxHwCameras, 64);
+        await eventually(() => ctl.starts.length === 1);
+        assert.equal(ctl.starts[0].o.hwaccel, true); assert.equal(ctl.starts[0].o.vaDriver, 'i965');
+        assert.equal(h.plugin.hwSlotsUsed, 1);
+        ctl.starts[0].exit('hwaccel failed: ffmpeg exited 1; Failed to transfer data to output frame');
+        await eventually(() => ctl.starts.length === 2);
+        assert.equal(ctl.starts[1].o.hwaccel, false);
+        assert.equal(h.plugin.hwSlotsUsed, 0, 'software fallback holds no slot');
+        await h.mixin.release();
+        (ctl as any).failStart = true;
+        const k = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', hwDecode: 'Auto', maxHwCameras: 64 } });
+        await eventually(() => ctl.starts.length >= 1);
+        await sleep(30);
+        assert.equal(k.plugin.hwSlotsUsed, 0, 'a failed start holds no slot');
+        await k.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; (ctl as any).failStart = false; }
+});
+
+test('a GPU start that exits 0 before any frame falls back to software on the next start and never loops on the GPU', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', hwDecode: 'Auto' } });
+        await eventually(() => ctl.starts.length === 1);
+        assert.equal(ctl.starts[0].o.hwaccel, true);
+        ctl.starts[0].exit('hwaccel failed: ffmpeg exited 0; Failed to read image from surface');
+        await eventually(() => ctl.starts.length === 2);
+        assert.equal(ctl.starts[1].o.hwaccel, false);
+        ctl.starts[1].exit('ffmpeg exited 1: x');
+        await eventually(() => ctl.starts.length === 3, 4000);
+        assert.equal(ctl.starts[2].o.hwaccel, false, 'stays in software');
+        await h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
 });
