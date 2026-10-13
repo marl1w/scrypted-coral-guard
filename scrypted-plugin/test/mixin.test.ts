@@ -1202,14 +1202,16 @@ test('camera settings tabs: Overview (Status only) first, then Setup (Mode, Dete
     await h.mixin.release();
 });
 
-test('GPU decode: on for every camera (cap 64, driver i965); a fallback or a failed start releases the slot at once', async () => {
+test('GPU decode: on by default for every camera (cap 64, default VA driver, no LIBVA_DRIVER_NAME); a fallback or a failed start releases the slot at once', async () => {
     const { DEFAULTS } = require('../src/defaults') as typeof import('../src/defaults');
     (ctl as any).vaapi = true;
     try {
-        const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', hwDecode: 'Auto', maxHwCameras: 64, vaDriver: 'i965' } });
-        assert.equal(DEFAULTS.maxHwCameras, 64);
+        const src = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'src', 'defaults.ts'), 'utf8');
+        assert.match(src, /hwDecode: 'Auto'/); assert.match(src, /maxHwCameras: 64,/); assert.match(src, /vaDriver: '',/);
+        const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', hwDecode: 'Auto' } });
+        assert.equal(DEFAULTS.maxHwCameras, 64); assert.equal(DEFAULTS.vaDriver, '');
         await eventually(() => ctl.starts.length === 1);
-        assert.equal(ctl.starts[0].o.hwaccel, true); assert.equal(ctl.starts[0].o.vaDriver, 'i965');
+        assert.equal(ctl.starts[0].o.hwaccel, true); assert.equal(ctl.starts[0].o.vaDriver, undefined, 'LIBVA_DRIVER_NAME left unset');
         assert.equal(h.plugin.hwSlotsUsed, 1);
         ctl.starts[0].exit('hwaccel failed: ffmpeg exited 1; Failed to transfer data to output frame');
         await eventually(() => ctl.starts.length === 2);

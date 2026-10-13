@@ -19,7 +19,7 @@ export const DEFAULTS = {
      * 'Auto': try VAAPI (every frame is decoded, at 1 fps downstream), fall back to software per camera on failure;
      * 'Off': software only.
      */
-    hwDecode: 'Off' as string,
+    hwDecode: 'Auto' as string,
     /** idle cameras post a fresh frame (low priority, no reset) about this often, jittered per camera: continuous tracking of standing people, animals and vehicles; about one Coral frame every 2 s per camera, shed first when the queue is full. */
     heartbeatMs: 2000,
     /** at most this many cameras use VAAPI at once (concurrent sessions are limited); the rest decode in software. */

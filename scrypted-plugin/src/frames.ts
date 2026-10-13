@@ -36,7 +36,7 @@ export interface FrameOptions {
     triggerAt?: number;
     /** drop JPEG frames arriving closer than this to the previous one (harmless safety net: the fps filter already samples one per interval). */
     minGapMs?: number;
-    /** try VAAPI hardware decode (decoder returns yuv420p in system memory, CPU scale). The caller falls back on 'hwaccel failed'. */
+    /** try VAAPI hardware decode (decoder returns nv12 in system memory, CPU scale). The caller falls back on 'hwaccel failed'. */
     /** LIBVA_DRIVER_NAME for a hardware decode ('' = leave unset). */
     vaDriver?: string;
     hwaccel?: boolean;
@@ -159,7 +159,7 @@ export function vaapiAvailable(device = VAAPI_DEVICE): boolean {
 export function decodeArgs(hw: boolean): string[] {
     return [
         '-threads', '1', // decoder: one thread per stream (many processes should not oversubscribe the cores)
-        ...(hw ? ['-hwaccel', 'vaapi', '-hwaccel_device', VAAPI_DEVICE, '-hwaccel_output_format', 'yuv420p'] : []),
+        ...(hw ? ['-hwaccel', 'vaapi', '-hwaccel_device', VAAPI_DEVICE, '-hwaccel_output_format', 'nv12'] : []),
     ];
 }
 
@@ -169,7 +169,7 @@ export function stderrTail(text: string, n = 15): string {
 }
 
 function chainHead(hw: boolean, fps: number): string {
-    return `fps=${fps.toFixed(4)},`; // hardware decode returns system-memory frames (yuv420p): no hwdownload step
+    return `fps=${fps.toFixed(4)},`; // hardware decode returns system-memory frames (nv12): no hwdownload step
 }
 
 /** Filter graph with two outputs: [v1] the JPEG frames, [v2] the tiny gray frames for the pixel gate (1 fps, area scaling). */

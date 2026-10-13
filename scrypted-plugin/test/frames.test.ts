@@ -135,14 +135,14 @@ test('all frames are decoded (no -skip_frame), the fps filter samples first, sof
     await fsx.exited;
 });
 
-test('VAAPI: hwaccel args before -i with yuv420p output, no hwdownload step, never scale_vaapi', async () => {
+test('VAAPI: hwaccel args before -i with nv12 output, no hwdownload step, never scale_vaapi', async () => {
     setup();
     const { startFrames } = loadFrames();
     const fsx = await startFrames({ camera: {} as any, inputUrl: 'rtsp://cam/live', hwaccel: true, intervalMs: 1000, prebufferMs: 0, maxWidth: 640, quality: 85, console, onFrame: () => { } });
     await sleep(300);
     const a = args();
     assert.equal(a[a.indexOf('-hwaccel') + 1], 'vaapi');
-    assert.equal(a[a.indexOf('-hwaccel_output_format') + 1], 'yuv420p');
+    assert.equal(a[a.indexOf('-hwaccel_output_format') + 1], 'nv12');
     assert.equal(a[a.indexOf('-threads') + 1], '1');
     assert.ok(a.indexOf('-hwaccel') < a.indexOf('-i'));
     const vf = a[a.indexOf('-vf') + 1];
