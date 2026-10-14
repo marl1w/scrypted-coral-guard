@@ -45,3 +45,7 @@ Clients must fail open: any non-200 or a request taking more than 2 s means "ser
 `docker buildx build --platform linux/amd64 --target test --load -t coral-verifier-test .` then `docker run --rm coral-verifier-test` runs the pytest suite (session scenarios, differential tracker test, decode and engine pixel tests, HTTP end to end with the fake TPU in a real child process, hardening, child-kill and recovery).
 
 Without Docker: `PYTHONPATH=. python -m pytest -q tests` with numpy, opencv-python-headless and pytest installed (the fake TPU replaces the Coral).
+
+## Event journal and review page
+
+The service can record episodes (a trigger and the frames that follow) when a client posts `start`/`update`/`end` to `/v1/cameras/{camera}/episodes`. Each episode is stored under `/data/journal/<id>/` with its first, best and last JPEG (original bytes), periodic snapshots, a detections sidecar per frame and a `meta.json`; the journal is part of Home Assistant backups, closed episodes are kept 14 days or up to 2 GB, and ongoing episodes without news for 2 h are closed as stale. In Home Assistant open **Coral Guard** in the sidebar (ingress) to review events, filter them by camera, outcome, label and date, see the frames with their boxes, and label each event correct, false alarm, missed or wrong class; the summary tab shows the accuracy per camera and group. Details and the HTTP routes are in API.md.

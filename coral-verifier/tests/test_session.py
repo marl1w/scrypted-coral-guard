@@ -315,3 +315,23 @@ def test_person_track_count_bounded_by_pathological_tentatives():
         dets = [person(0.9, [0.02 + 0.075 * i, 0.05 + 0.2 * k, 0.04 + 0.075 * i, 0.09 + 0.2 * k]) for i in range(12)]
         s.update(T0 + k * 1000, dets)
     assert len(s.person.tracks) <= S.MAX_TRACKS
+
+
+def test_snapshot_track_details_and_hold_until():
+    s = new()
+    sn = s.snapshot()
+    assert sn["person"]["tracks_detail"] == [] and sn["person"]["hold_until_ms"] is None and sn["vehicle"]["hold_until_ms"] is None and sn["animal"]["hold_until_ms"] is None
+    out = run(s, [[person(0.9), car()], [], [person(0.8)]])
+    p = out[2]["person"]
+    assert p["tracks"] == 1 and len(p["tracks_detail"]) == 1
+    td = p["tracks_detail"][0]
+    assert set(td) == {"id", "box", "score", "last_seen_ms", "since_ms", "stationary"} and td["score"] == 0.8 and td["since_ms"] == T0 and td["last_seen_ms"] == T0 + 2000
+    assert td["stationary"] is False and td["box"] == [0.4, 0.3, 0.5, 0.8]
+    assert p["hold_until_ms"] == T0 + 2000 + 8000                                                    # hold_s 8 after the last match
+    assert out[1]["vehicle"]["hold_until_ms"] == T0 + 1000 * 0 + 8000 and out[1]["vehicle"]["tracks"][0]["id"] == 0
+    a = S.Session(S.Config())
+    for i in range(3):
+        a.update(T0 + i * 1000, [{"cls": "dog", "group": "animal", "score": 0.8, "box": [0.1, 0.5, 0.3, 0.8]}])
+    an = a.snapshot()["animal"]
+    assert an["present"] and an["hold_until_ms"] == T0 + 2000 + 6000
+    assert an["tracks"][0]["last_seen_ms"] == T0 + 2000 and an["tracks"][0]["box"] == [0.1, 0.5, 0.3, 0.8]

@@ -38,7 +38,7 @@ def test_frame_reply_shape_and_session(box):
     st, r = box.frame("front_door", T0 + 1000)
     p = r["person"]
     assert p["state"] == "confirmed" and p["confirmed"] and p["present"] and p["tracks"] == 1 and p["since_ms"] == T0 and p["last_seen_ms"] == T0 + 1000
-    assert r["session"] == {"frames": 2, "started_ms": T0} and r["vehicle"] == {"moving": False, "tracks": []}
+    assert r["session"] == {"frames": 2, "started_ms": T0} and r["vehicle"] == {"moving": False, "hold_until_ms": None, "tracks": []}
     st, g = box.req("GET", "/v1/cameras/front_door")
     assert st == 200 and g["person"]["present"] and "detections" not in g and g["session"]["frames"] == 2
     st, lst = box.req("GET", "/v1/cameras")

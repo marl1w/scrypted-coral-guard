@@ -19,6 +19,7 @@ SERVICE = {
     "port": 8750,
     "max_queue_age_ms": 400,        # a queued frame older than this is dropped instead of answered late
     "max_queue_depth": 8,
+    "journal_root": "/data/journal",
     "jpeg_reduce": False,           # JPEG reduced-size decode changes pixels on duo frames: off
     "max_cameras": 64,
     "max_image_pixels": 16 * 1024 * 1024,    # 16 MP decompression-bomb guard
@@ -27,6 +28,24 @@ SERVICE = {
     "max_connections": 64,
     "request_timeout_s": 5.0,
     "self_restart_after": 5,        # consecutive failed Coral recoveries before exit code 3 (watchdog restart); 0 = never
+}
+
+# Event journal (episodes with their frames, reviewed through the ingress page). `journal_root` is overridable for tests/dev only (VERIFIER_JOURNAL_ROOT).
+JOURNAL = {
+    "ring_frames": 6,               # recent frames kept in memory per camera (to pick first/best/last without disk churn)
+    "adopt_s": 5.0,                 # on `start`, ring frames received up to this long before are adopted into the episode
+    "snapshot_every_s": 600.0,      # one extra snapshot per this much frame time while an episode is ongoing
+    "snapshot_max": 12,             # cap of those extra snapshots per episode
+    "retention_days": 14.0,         # closed episodes older than this are deleted
+    "max_bytes": 2 * 1024 ** 3,     # total journal size cap: oldest closed episodes are deleted first
+    "stale_s": 7200.0,              # an ongoing episode without any update or frame for this long is closed as `stale`
+    "maintain_every_s": 30.0,
+    "queue_max": 256,               # bounded queue of journal work (frames, episode calls); frame work is dropped (counted) when full
+    "max_ongoing": 64,              # ongoing episodes in total / per camera: more starts are refused with 429
+    "max_ongoing_per_camera": 8,
+    "clamp_s": 86400.0,             # client times (t_ms) are clamped to server time +- this
+    "max_list": 200,
+    "ingress_ips": ("172.30.32.2",),   # Home Assistant Supervisor ingress gateway: requests from here with X-Ingress-Path skip the token (journal routes only)
 }
 
 # Per-camera tracker settings (name -> default); see session.Config and API.md.

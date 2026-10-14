@@ -91,7 +91,7 @@ def test_car_that_stops_returns_to_still():
 
 def test_low_score_animal_ignored_and_empty_snapshot_shape():
     s = sess()
-    assert s.snapshot()["animal"] == {"present": False, "confirmed": False, "tracks": []}
+    assert s.snapshot()["animal"] == {"present": False, "confirmed": False, "hold_until_ms": None, "tracks": []}
     s.update(T0, [dog(score=0.2)])
     assert not s.snapshot()["animal"]["present"]
 
@@ -161,7 +161,7 @@ def test_weak_vehicle_never_touches_session_state():
     for i in range(5):
         a.update(T0 + i * 1000, [])
         b.update(T0 + i * 1000, [weak])
-    assert a.snapshot() == b.snapshot() and b.snapshot()["vehicle"] == {"moving": False, "tracks": []}
+    assert a.snapshot() == b.snapshot() and b.snapshot()["vehicle"] == {"moving": False, "hold_until_ms": None, "tracks": []}
 
 
 def test_weak_flows_through_reply_without_vehicle_state():
@@ -169,7 +169,7 @@ def test_weak_flows_through_reply_without_vehicle_state():
     try:
         r = b.frame("g", T0)[1]
         assert r["detections"][0]["weak"] is True and r["detections"][0]["group"] == "vehicle"
-        assert r["vehicle"] == {"moving": False, "tracks": []}
+        assert r["vehicle"] == {"moving": False, "hold_until_ms": None, "tracks": []}
     finally:
         b.close()
 

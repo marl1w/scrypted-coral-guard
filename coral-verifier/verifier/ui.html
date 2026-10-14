@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coral Guard</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1c1e21;--mut:#6b7280;--line:#dfe3e8;--acc:#2563eb;--ok:#15803d;--bad:#b91c1c;--warn:#b45309;--chip:#eef1f5}
+@media (prefers-color-scheme:dark){:root{--bg:#111418;--card:#1b1f25;--fg:#e6e8eb;--mut:#9aa3af;--line:#2c333c;--acc:#60a5fa;--ok:#4ade80;--bad:#f87171;--warn:#fbbf24;--chip:#262c35}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+h1{font-size:16px;margin:0 12px 0 0}
+nav button,.bar button,.lbl button{border:1px solid var(--line);background:var(--chip);color:var(--fg);padding:6px 12px;border-radius:8px;cursor:pointer;font:inherit}
+nav button.on,.lbl button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.bar{display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px}
+.bar select,.bar input{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font:inherit;min-width:0}
+main{padding:0 16px 24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;cursor:pointer}
+.card .top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.card .cam{font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.mut{color:var(--mut);font-size:12px}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+.chip{background:var(--chip);border-radius:999px;padding:1px 8px;font-size:12px}
+.chip.confirmed{color:var(--ok)}.chip.vetoed,.chip.false_alarm{color:var(--bad)}.chip.aborted,.chip.stale,.chip.wrong_class,.chip.missed{color:var(--warn)}
+.thumbs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+.th{position:relative;background:#0003;border-radius:6px;overflow:hidden;aspect-ratio:16/9}
+.th img{width:100%;height:100%;object-fit:contain;display:block}
+.th svg,.big svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.th b{position:absolute;left:3px;top:2px;font-size:10px;background:#0008;color:#fff;border-radius:4px;padding:0 4px}
+#detail{position:fixed;inset:0;background:var(--bg);overflow:auto;z-index:10;padding:12px 16px 32px;display:none}
+#detail.on{display:block}
+.frames{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
+.big{position:relative;background:#0003;border-radius:8px;overflow:hidden}
+.big img{width:100%;display:block}
+table{border-collapse:collapse;width:100%;background:var(--card);border-radius:8px;overflow:hidden}
+td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;font-size:13px}
+.scroll{overflow-x:auto}
+.lbl{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+textarea{width:100%;min-height:54px;padding:6px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);font:inherit}
+.more{display:block;margin:14px auto}
+.empty{padding:40px;text-align:center;color:var(--mut)}
+</style>
+</head>
+<body>
+<header><h1>Coral Guard</h1><nav><button id="tEv" class="on">Events</button> <button id="tSu">Summary</button></nav><span class="mut" id="stat"></span></header>
+<div id="evView">
+  <div class="bar">
+    <select id="fCam"><option value="">All cameras</option></select>
+    <select id="fOut"><option value="">Any outcome</option><option>confirmed</option><option>vetoed</option><option>aborted</option><option>released</option><option>parked</option><option>stale</option></select>
+    <select id="fLab"><option value="">Any label</option><option value="none">Unlabeled</option><option>correct</option><option>false_alarm</option><option>missed</option><option>wrong_class</option></select>
+    <input type="date" id="fFrom" title="From"><input type="date" id="fTo" title="To">
+    <button id="fGo">Apply</button>
+  </div>
+  <main><div class="grid" id="grid"></div><button class="more" id="more" hidden>Load more</button><div class="empty" id="empty" hidden>No events</div></main>
+</div>
+<div id="suView" hidden><main><div class="scroll"><table id="suTable"></table></div></main></div>
+<div id="detail"></div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s), E=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.textContent=h;return e};
+const API="v1/journal";                       // relative: works behind the Home Assistant ingress path prefix
+let offset=0,total=0,loaded=0;const PAGE=24;
+async function j(url,opt){const r=await fetch(url,opt);if(!r.ok)throw new Error(r.status+" "+url);return r.json()}
+const fmtT=ms=>ms?new Date(ms).toLocaleString([],{dateStyle:"short",timeStyle:"medium"}):"-";
+const fmtD=(a,b)=>{if(!b)return"ongoing";let s=Math.max(0,Math.round((b-a)/1000));return s>=3600?(s/3600).toFixed(1)+" h":s>=60?Math.round(s/60)+" min":s+" s"};
+function svgBoxes(dets){
+  const s=document.createElementNS("http://www.w3.org/2000/svg","svg");s.setAttribute("viewBox","0 0 1 1");s.setAttribute("preserveAspectRatio","none");
+  const col={person:"#22c55e",vehicle:"#3b82f6",animal:"#f59e0b"};
+  for(const d of dets||[]){const [a,b,c,e]=d.box;const r=document.createElementNS(s.namespaceURI,"rect");
+    r.setAttribute("x",a);r.setAttribute("y",b);r.setAttribute("width",c-a);r.setAttribute("height",e-b);r.setAttribute("fill","none");
+    r.setAttribute("stroke",d.second_look==="rejected"?"#ef4444":col[d.group]||"#fff");r.setAttribute("stroke-width","2");r.setAttribute("vector-effect","non-scaling-stroke");
+    if(d.weak||d.second_look==="rejected")r.setAttribute("stroke-dasharray","4 3");s.appendChild(r)}
+  return s}
+function frameBox(id,f,cls,label){
+  const w=E("div",cls);const img=E("img");img.loading="lazy";img.src=`${API}/${encodeURIComponent(id)}/${f.name}.jpg`;img.alt=f.name;w.appendChild(img);
+  if(label)w.appendChild(E("b","",label));
+  j(`${API}/${encodeURIComponent(id)}/${f.name}.json`).then(s=>{w.appendChild(svgBoxes(s.detections));w._dets=s}).catch(()=>{});return w}
+function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.outcome||""),m.outcome||m.status));
+  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));return c}
+function card(m){
+  const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",m.camera));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
+  c.appendChild(E("div","mut",fmtT(m.start_ms)));c.appendChild(chips(m));
+  const t=E("div","thumbs");for(const role of["first","best","last"]){const f=m.frames.find(x=>x.role===role);if(f)t.appendChild(frameBox(m.id,f,"th",role))}
+  c.appendChild(t);c.onclick=()=>openDetail(m.id);return c}
+function query(){const p=new URLSearchParams();for(const[k,id]of[["camera","fCam"],["outcome","fOut"],["label","fLab"]])if($("#"+id).value)p.set(k,$("#"+id).value);
+  const f=$("#fFrom").value,t=$("#fTo").value;if(f)p.set("from",new Date(f+"T00:00:00").getTime());if(t)p.set("to",new Date(t+"T23:59:59").getTime());return p}
+async function load(reset){
+  if(reset){offset=0;loaded=0;$("#grid").replaceChildren()}
+  const p=query();p.set("limit",PAGE);p.set("offset",offset);
+  try{const r=await j(`${API}?${p}`);total=r.total;r.items.forEach(m=>$("#grid").appendChild(card(m)));offset+=r.items.length;loaded=offset;
+    $("#more").hidden=loaded>=total;$("#empty").hidden=total>0;$("#stat").textContent=total+" events"}catch(e){$("#stat").textContent="error: "+e.message}}
+async function cams(){try{const s=await j(`${API}/summary`);const set=[...new Set(s.rows.map(r=>r.camera))].sort();set.forEach(c=>{const o=E("option","",c);o.value=c;$("#fCam").appendChild(o)})}catch(e){}}
+async function openDetail(id){
+  const m=await j(`${API}/${encodeURIComponent(id)}`);const d=$("#detail");d.replaceChildren();d.classList.add("on");
+  const back=E("button","",""); back.textContent="Back";back.onclick=()=>{d.classList.remove("on");load(true)};d.appendChild(back);
+  d.appendChild(E("h2","",m.camera+" - "+fmtT(m.start_ms)));d.appendChild(E("div","mut",`${fmtD(m.start_ms,m.end_ms)}  id ${m.id}`+(m.note?"  note: "+m.note:"")));d.appendChild(chips(m));
+  const fr=E("div","frames");const order=["first","best","last"];
+  const fs=[...order.map(r=>m.frames.find(f=>f.role===r)).filter(Boolean),...m.frames.filter(f=>f.role==="snapshot")];
+  for(const f of fs){const col=E("div");const b=frameBox(m.id,f,"big",null);col.appendChild(b);col.appendChild(E("div","mut",f.role+"  "+fmtT(f.t_ms)));fr.appendChild(col)}
+  d.appendChild(fr);
+  const lb=E("div","lbl");for(const l of["correct","false_alarm","missed","wrong_class"]){const b=E("button",l===m.label?"on":"",l.replace("_"," "));b.onclick=async()=>{
+    await j(`${API}/${encodeURIComponent(id)}/label`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({label:l,note:note.value||null})});openDetail(id)};lb.appendChild(b)}
+  const note=E("textarea");note.placeholder="Note";note.value=m.label_note||"";d.appendChild(E("h3","","Label"));d.appendChild(lb);d.appendChild(note);
+  d.appendChild(E("h3","","Timeline"));const tl=E("table");for(const e of m.timeline||[]){const r=tl.insertRow();r.insertCell().textContent=fmtT(e.t_ms);r.insertCell().textContent=e.text}d.appendChild(tl);
+  d.appendChild(E("h3","","Detections"));const dt=E("div","scroll");d.appendChild(dt);
+  const tb=E("table");tb.innerHTML="<tr><th>frame</th><th>class</th><th>group</th><th>score</th><th>flags</th></tr>";dt.appendChild(tb);
+  for(const f of fs){j(`${API}/${encodeURIComponent(id)}/${f.name}.json`).then(s=>{for(const x of s.detections){const r=tb.insertRow();
+    r.insertCell().textContent=f.name;r.insertCell().textContent=x.cls;r.insertCell().textContent=x.group;r.insertCell().textContent=x.score+(x.first_score!=null?" (was "+x.first_score+")":"");
+    r.insertCell().textContent=[x.weak&&"weak",x.masked&&"masked",x.second_look].filter(Boolean).join(", ")}})}}
+async function summary(){
+  const s=await j(`${API}/summary`);const t=$("#suTable");t.replaceChildren();
+  const outs=["confirmed","vetoed","aborted","released","parked","stale","ongoing"],labs=["correct","false_alarm","missed","wrong_class","unlabeled"];
+  const h=t.insertRow();["camera","group","total",...outs,...labs,"accuracy"].forEach(x=>{const c=document.createElement("th");c.textContent=x.replace("_"," ");h.appendChild(c)});
+  for(const r of s.rows){const row=t.insertRow();const lab=r.by_label,judged=labs.slice(0,4).reduce((a,k)=>a+(lab[k]||0),0);
+    [r.camera,r.group,r.total,...outs.map(k=>r.by_outcome[k]||0),...labs.map(k=>lab[k]||0),judged?Math.round(100*(lab.correct||0)/judged)+"% of "+judged:"-"].forEach(v=>row.insertCell().textContent=v)}
+  if(!s.rows.length)t.insertRow().insertCell().textContent="No data"}
+function tab(n){$("#evView").hidden=n!=="ev";$("#suView").hidden=n!=="su";$("#tEv").className=n==="ev"?"on":"";$("#tSu").className=n==="su"?"on":"";if(n==="su")summary()}
+$("#tEv").onclick=()=>tab("ev");$("#tSu").onclick=()=>tab("su");$("#fGo").onclick=()=>load(true);$("#more").onclick=()=>load(false);
+cams();load(true);
+</script>
+</body>
+</html>

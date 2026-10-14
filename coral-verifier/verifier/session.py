@@ -186,7 +186,7 @@ def merge_dets(a, b):
 
 
 class _PTrack:
-    __slots__ = ("id", "box", "last", "last_hi", "born", "hits", "conf", "hist", "still")
+    __slots__ = ("id", "box", "last", "last_hi", "born", "hits", "conf", "hist", "still", "score")
 
 
 class PersonTracker:
@@ -242,7 +242,7 @@ class PersonTracker:
                 matched[rem[ii]] = (lo[j], False)
         for i, (d, is_hi) in matched.items():
             tr = trks[i]; box = d[1]
-            tr.box = box; tr.last = t
+            tr.box = box; tr.last = t; tr.score = d[0]
             if is_hi:
                 tr.last_hi = t
             tr.hist.append((t, box))
@@ -263,7 +263,7 @@ class PersonTracker:
             if j in used_d:
                 continue
             tr = _PTrack(); tr.id = self.nid; self.nid += 1
-            tr.box = d[1]; tr.last = t; tr.last_hi = t; tr.born = t; tr.hits = 1; tr.hist = [(t, d[1])]; tr.still = False
+            tr.box = d[1]; tr.last = t; tr.last_hi = t; tr.born = t; tr.hits = 1; tr.hist = [(t, d[1])]; tr.still = False; tr.score = d[0]
             tr.conf = c.confirm_n <= 1
             if tr.conf and self.first_conf is None:
                 self.first_conf = t
@@ -340,7 +340,8 @@ class VehicleTracker:
     def snapshot(self, eff):
         live = [tr for tr in self.tracks if self._alive(tr, eff)]
         st = lambda tr: "parked" if tr.parked else ("moving" if tr.moving else "still")
-        return {"moving": any(st(tr) == "moving" for tr in live),
+        hold = max((tr.last + (self.cfg.max_hold_s if tr.parked else self.cfg.hold_s) * 1000.0 for tr in live), default=None)
+        return {"moving": any(st(tr) == "moving" for tr in live), "hold_until_ms": None if hold is None else int(hold),
                 "tracks": [{"id": tr.id, "cls": tr.cls, "state": st(tr), "parked": tr.parked, "since_ms": int(tr.born_t)} for tr in live]}
 
 
@@ -389,7 +390,10 @@ class AnimalTracker:
         """eff: tick time advanced by the server clock (same clock as the person state; both trackers see the same frames)."""
         present = self.pt.state(eff) in ("confirmed", "holding")
         live = [tr for tr in self.tracks if eff - tr.last <= self.cfg.hold_s * 1000.0] if present else []
-        return {"present": present, "confirmed": present, "tracks": [{"id": tr.id, "cls": tr.cls, "since_ms": int(tr.born_t)} for tr in live]}
+        ptl = self.pt.live(eff) if present else []
+        hold = max((tr.last + self.pt._hold(tr) * 1000.0 for tr in ptl), default=None)
+        return {"present": present, "confirmed": present, "hold_until_ms": None if hold is None else int(hold),
+                "tracks": [{"id": tr.id, "cls": tr.cls, "since_ms": int(tr.born_t), "last_seen_ms": int(tr.last), "box": [round(v, 4) for v in tr.box]} for tr in live]}
 
 
 class Session:
@@ -449,7 +453,10 @@ class Session:
             "t": t,
             "person": {"state": state, "confirmed": present, "present": present,
                        "since_ms": int(min(tr.born for tr in live)) if live else None,
-                       "last_seen_ms": p.last_seen, "tracks": len(live)},
+                       "last_seen_ms": p.last_seen, "tracks": len(live),
+                       "tracks_detail": [{"id": tr.id, "box": [round(v, 4) for v in tr.box], "score": round(float(tr.score), 3), "last_seen_ms": int(tr.last),
+                                          "since_ms": int(tr.born), "stationary": bool(tr.still)} for tr in live],
+                       "hold_until_ms": int(max(tr.last + p._hold(tr) * 1000.0 for tr in live)) if live else None},
             "vehicle": self.vehicle.snapshot(eff),
             "animal": self.animal.snapshot(eff),
             "session": {"frames": self.frames, "started_ms": self.started_ms},
@@ -458,9 +465,10 @@ class Session:
 
 def empty_snapshot():
     return {"t": None,
-            "person": {"state": "idle", "confirmed": False, "present": False, "since_ms": None, "last_seen_ms": None, "tracks": 0},
-            "vehicle": {"moving": False, "tracks": []},
-            "animal": {"present": False, "confirmed": False, "tracks": []},
+            "person": {"state": "idle", "confirmed": False, "present": False, "since_ms": None, "last_seen_ms": None, "tracks": 0, "tracks_detail": [],
+                       "hold_until_ms": None},
+            "vehicle": {"moving": False, "hold_until_ms": None, "tracks": []},
+            "animal": {"present": False, "confirmed": False, "hold_until_ms": None, "tracks": []},
             "session": {"frames": 0, "started_ms": None}}
 
 

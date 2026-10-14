@@ -10,6 +10,7 @@ import metrics as M
 import session as S
 import detect as D
 import secondlook as SL
+from journal import Journal
 from coral import CoralManager, Job
 
 def _read_version():
@@ -87,6 +88,7 @@ def parse_options(opts):
     st["request_timeout_s"] = num("request_timeout_s", 0.2, 60.0)
     jr = merged.get("jpeg_reduce", D_["jpeg_reduce"])
     st["jpeg_reduce"] = bool(jr)
+    st["journal_root"] = str(merged.get("journal_root", D_["journal_root"]))
     try:
         st["defaults"] = S.Config().updated({k: merged[k] for k in TRACKER_KEYS if k in merged})
     except ValueError as e:
@@ -130,6 +132,10 @@ class App:
         self.t_clamped = 0
         self.sampler = M.Sampler(self.coral.child_pid)         # started by main() (tests call sample() themselves)
         self.now_ms = lambda: time.time() * 1000.0            # test seam
+        self.journal = Journal(c["journal_root"], clock=lambda: self.now_ms())
+        self.ingress_ips = set(DF.JOURNAL["ingress_ips"])
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html"), "rb") as f:
+            self.ui_html = f.read()
 
     def health(self):
         st = self.coral.stats()
@@ -162,6 +168,7 @@ class App:
                 "load": {"queue_depth": st["queue_depth"], "dropped_stale_total": st["dropped_stale"], "dropped_stale_60s": int(roll.sum("stale")),
                          "rejected_429_60s": int(roll.sum("r429")), "cameras_active": self.registry.count(now), "frames_60s": int(roll.sum("frames"))},
                 "second_look": self._sl_metrics(roll),
+                "journal": self.journal.stats(),
                 "host": {"cpu_pct": sv["host_cpu"], "load1": load1, "mem_used_pct": mem},
                 "process": {"cpu_pct": sv["proc_cpu"], "rss_mb": M.rss_mb()},
                 "gpu": {"available": sv["gpu_ok"], "busy_pct": sv["gpu_busy"]},
@@ -221,6 +228,22 @@ class Handler(BaseHTTPRequestHandler):
         self._headers_buffer.append(b"\r\n" + data)      # headers and body leave in ONE send
         self.flush_headers()
 
+    def _send_raw(self, status, data, ctype, cache="no-store"):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", cache)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self._headers_buffer.append(b"\r\n" + data)
+        self.flush_headers()
+
+    def _is_json(self):
+        return (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() == "application/json"
+
+    def _via_ingress(self):
+        """Home Assistant ingress: the request comes from the Supervisor gateway and carries X-Ingress-Path. HA has authenticated the user."""
+        return bool(self.headers.get("X-Ingress-Path")) and self.client_address[0] in self.server.app.ingress_ips
+
     def _reject(self, status, body):
         """Early rejection: the body (if any) is NOT read, the connection is closed."""
         self._send(status, body, close=True)
@@ -264,6 +287,8 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(u.query)
             if self.reserved and parts != ["v1", "health"]:       # the reserved pool is for the watchdog only
                 return self._reject(503, {"error": "too many clients"})
+            if method == "GET" and parts in ([""], ["index.html"], ["ui"]):
+                return self._send_raw(200, app.ui_html, "text/html; charset=utf-8")      # static page, no data in it: the API calls it makes are authenticated
             if parts[:1] != ["v1"]:
                 return self._reject(404, {"error": "not found"})
             if parts == ["v1", "health"]:
@@ -271,12 +296,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._reject(405, {"error": "method not allowed"})
                 h = app.health()
                 return self._send(200 if h["ok"] else 503, h)           # 503 while stalled/missing: the Supervisor watchdog and clients see an unhealthy service
-            if not self._authorized():                                  # BEFORE any body is read
+            if not (self._authorized() or (parts[1:2] == ["journal"] and self._via_ingress())):      # BEFORE any body is read; ingress only for the journal routes
                 return self._reject(401, {"error": "unauthorized"})
             if parts == ["v1", "metrics"]:
                 if method != "GET":
                     return self._reject(405, {"error": "method not allowed"})
                 return self._send(200, app.metrics())
+            if parts[1:2] == ["journal"]:
+                return self._journal(app, method, parts, q)
             if parts == ["v1", "cameras"]:
                 if method != "GET":
                     return self._reject(405, {"error": "method not allowed"})
@@ -318,6 +345,22 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send(400, {"error": "invalid JSON"})
                     except ValueError as e:
                         return self._send(400, {"error": str(e)[:200]})
+                if sub == "episodes":
+                    if method != "POST":
+                        return self._reject(405, {"error": "method not allowed"})
+                    if not self._is_json():
+                        return self._reject(415, {"error": "Content-Type must be application/json"})
+                    body = self._read_body(MAX_JSON_BYTES, True)
+                    if not isinstance(body, bytes):
+                        return
+                    try:
+                        obj = json.loads(body, parse_constant=_bad_constant)
+                        if not isinstance(obj, dict):
+                            raise ValueError("body must be a JSON object")
+                    except (json.JSONDecodeError, RecursionError, ValueError):
+                        return self._send(400, {"error": "invalid JSON object"})
+                    st, out = app.journal.episode(cam, obj)
+                    return self._send(st, out)
                 if sub == "reset":
                     if method != "POST":
                         return self._reject(405, {"error": "method not allowed"})
@@ -399,6 +442,10 @@ class Handler(BaseHTTPRequestHandler):
         def finish(dets, st):
             live = [d for d in dets if d.get("second_look") != "rejected"]          # a rejected candidate never reaches the trackers
             sn = app.registry.update(cam, t, live, time.monotonic())
+            try:
+                app.journal.record_frame_async(cam, sn["t"], body, dets)
+            except Exception:
+                log.exception("journal record failed")
             shown = dets if verbose else [d for d in live if d["score"] >= REPLY_MIN_SCORE]
             return {"camera": cam, "t": sn["t"], "coral_ms": round(st["infer_ms"], 1), "queue_ms": round(st["queue_ms"], 1),
                     "decode_ms": round(st["decode_ms"], 2), "preprocess_ms": round(st["preprocess_ms"], 2), "infer_ms": round(st["infer_ms"], 2),
@@ -411,6 +458,62 @@ class Handler(BaseHTTPRequestHandler):
         if not job.event.wait(JOB_WAIT_S):
             job.complete(500, {"error": "timeout waiting for the Coral queue"})
         self._send(job.status, job.body)
+
+    def _journal(self, app, method, parts, q):
+        j = app.journal
+        one = lambda k, d=None: (q.get(k) or [d])[0]
+
+        def num(k):
+            v = one(k)
+            if v is None or v == "":
+                return None
+            try:
+                f = float(v)
+            except ValueError:
+                raise ValueError(f"{k} must be a number")
+            if not math.isfinite(f):
+                raise ValueError(f"{k} must be finite")
+            return f
+        if not j.enabled:
+            return self._send(503, {"error": "journal unavailable"})
+        rest = parts[2:]
+        try:
+            if rest == [] and method == "GET":
+                lim, off = num("limit"), num("offset")
+                return self._send(200, j.list(one("camera"), one("outcome"), one("label"), num("from"), num("to"), 50 if lim is None else lim, 0 if off is None else off))
+            if rest == ["summary"] and method == "GET":
+                return self._send(200, j.summary())
+            if len(rest) == 1 and method == "GET":
+                m = j.get(rest[0])
+                return self._send(200, m) if m else self._send(404, {"error": "unknown episode"})
+            if len(rest) == 2 and rest[1] == "label" and method == "POST":
+                if not self._is_json():
+                    return self._reject(415, {"error": "Content-Type must be application/json"})
+                body = self._read_body(MAX_JSON_BYTES, True)
+                if not isinstance(body, bytes):
+                    return
+                try:
+                    obj = json.loads(body, parse_constant=_bad_constant)
+                    if not isinstance(obj, dict):
+                        raise ValueError("object expected")
+                except (json.JSONDecodeError, RecursionError, ValueError):
+                    return self._send(400, {"error": "invalid JSON object"})
+                st, out = j.set_label(rest[0], obj.get("label"), obj.get("note"))
+                return self._send(st, out)
+            if len(rest) == 2 and method == "GET" and "." in rest[1]:
+                name, ext = rest[1].rsplit(".", 1)
+                p = j.file(rest[0], name, ext)
+                if p is None:
+                    return self._send(404, {"error": "not found"})
+                try:
+                    with open(p, "rb") as f:
+                        data = f.read()
+                except OSError:                                    # deleted by the retention in between
+                    return self._send(404, {"error": "not found"})
+                return self._send_raw(200, data, "image/jpeg" if ext == "jpg" else "application/json", "private, max-age=300")
+        except ValueError as e:
+            return self._send(400, {"error": str(e)[:200]})
+        return self._reject(404 if method == "GET" else 405, {"error": "not found"})
 
     def do_GET(self):
         self._dispatch("GET")
@@ -546,6 +649,7 @@ def main():
         pass
     app.sampler.stop()
     app.coral.stop()                                    # kills the Coral child first
+    app.journal.stop()
     httpd.server_close()
 
 

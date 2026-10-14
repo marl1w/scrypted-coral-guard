@@ -22,7 +22,7 @@ class Box:
             self.touch(k, v)
         if items is not None:
             self.set_items(items)
-        o = {"token": TOKEN, "second_look": False}      # the second look is tested explicitly; the fake TPU repeats its items in every pass
+        o = {"token": TOKEN, "second_look": False, "journal_root": tempfile.mkdtemp(prefix="journal_")}      # the second look is tested explicitly; the fake TPU repeats its items in every pass
         o.update(opts or {})
         self.token = o["token"]
         self.spec = {"kind": "fake", "size": int(o.get("model", 512)), "ctl": self.ctl}
@@ -91,6 +91,7 @@ class Box:
     def close(self):
         try:
             self.app.coral.stop()
+            self.app.journal.stop()
             self.httpd.shutdown()
             self.httpd.server_close()
         finally:

@@ -71,7 +71,7 @@ def test_host_instant_fake(tmp_path, monkeypatch):
 def test_metrics_requires_token_and_shape(box):
     assert box.req("GET", "/v1/metrics", auth=False)[0] == 401
     st, m = box.req("GET", "/v1/metrics")
-    assert st == 200 and set(m) == {"coral", "stages", "load", "host", "process", "gpu", "second_look", "uptime_s"}
+    assert st == 200 and set(m) == {"coral", "stages", "load", "host", "process", "gpu", "second_look", "journal", "uptime_s"}
     assert set(m["coral"]) == {"state", "invoke_ms", "utilization_pct", "invocations_per_s", "resets"} and m["coral"]["state"] == "ok"
     assert set(m["load"]) == {"queue_depth", "dropped_stale_total", "dropped_stale_60s", "rejected_429_60s", "cameras_active", "frames_60s"}
     assert set(m["host"]) == {"cpu_pct", "load1", "mem_used_pct"} and set(m["process"]) == {"cpu_pct", "rss_mb"} and set(m["gpu"]) == {"available", "busy_pct"}
