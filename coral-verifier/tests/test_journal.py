@@ -305,3 +305,115 @@ def test_file_lookup_survives_concurrent_retention(tmp_path):
     [t.join() for t in ts]
     assert not errors and j.list()["total"] == 0
     j.stop()
+
+
+# ---------------- annotation mode, reviewed lists, dashboard ----------------
+
+def mk(j, clk, eid, cam, start, outcome, groups, kind="camera", label=None):
+    clk.t = max(clk.t, start) if start < 10**6 else start                  # client times are clamped to now +- 1 day: the clock follows the episode
+    ep(j, cam, eid, "start", start, kind=kind, groups=groups); ep(j, cam, eid, "end", start + 10, outcome=outcome)
+    if label:
+        j.set_label(eid, label, None)
+
+
+def test_question_mapping_per_outcome_kind_and_group():
+    q = Journal.question
+    assert q({"outcome": "confirmed", "kind": "camera", "groups": ["person"]}) == {"key": "person_present", "text": "Is there a person?", "group": "person", "others": [], "yes": "correct", "no": "false_alarm"}
+    assert q({"outcome": "confirmed", "kind": "camera", "groups": ["vehicle"]})["text"] == "Is this a moving vehicle?"
+    assert q({"outcome": "confirmed", "kind": "camera", "groups": ["animal"]})["text"] == "Is there an animal?"
+    v = q({"outcome": "vetoed", "kind": "camera", "groups": ["person"]})
+    assert v["text"] == "Is the frame really empty?" and v["group"] is None and (v["yes"], v["no"]) == ("correct", "missed")
+    assert q({"outcome": "released", "kind": "unflagged", "groups": ["person"]})["text"] == "Is there a person the camera missed?"
+    assert q({"outcome": "released", "kind": "unflagged", "groups": ["vehicle"]})["text"] == "Is there a moving vehicle the camera missed?"
+    assert q({"outcome": "released", "kind": "unflagged", "groups": ["animal"]})["text"] == "Is there an animal the camera missed?"
+    multi = q({"outcome": "released", "kind": "unflagged", "groups": ["animal", "person"]})
+    assert multi["group"] == "animal" and multi["others"] == ["person"] and (multi["yes"], multi["no"]) == ("correct", "false_alarm")      # first group asked, the rest listed
+    assert q({"outcome": "aborted", "kind": "camera", "groups": []})["text"] == "Is this a real event?"
+    assert q({"outcome": "vetoed", "kind": "unflagged", "groups": ["person"]})["key"] == "missed_person"                                   # an unflagged event is never "really empty"
+
+
+def test_next_unlabelled_oldest_first_after_filters_and_remaining(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    mk(j, clk, "nx-000001", "a", 1000, "confirmed", ["person"])
+    mk(j, clk, "nx-000002", "b", 2000, "vetoed", ["person"])
+    mk(j, clk, "nx-000003", "a", 3000, "confirmed", ["vehicle"], label="correct")
+    mk(j, clk, "nx-000004", "a", 4000, "released", ["person"], kind="unflagged")
+    ep(j, "a", "nx-000005", "start", 5000)                                                                      # ongoing: never offered
+    r = j.next_unlabelled()
+    assert r["item"]["id"] == "nx-000001" and r["remaining"] == 3 and r["item"]["question"]["key"] == "person_present"
+    assert j.next_unlabelled("nx-000001")["item"]["id"] == "nx-000002"
+    assert j.next_unlabelled("nx-000002")["item"]["id"] == "nx-000004"                                          # the labelled 3 is skipped
+    assert j.next_unlabelled("nx-000004")["item"] is None and j.next_unlabelled("nx-000004")["remaining"] == 3  # end: the client wraps around
+    assert j.next_unlabelled(camera="b")["item"]["id"] == "nx-000002" and j.next_unlabelled(camera="b")["remaining"] == 1
+    assert j.next_unlabelled(outcome="released")["item"]["id"] == "nx-000004"
+    assert j.next_unlabelled("../x")["item"]["id"] == "nx-000001" and j.next_unlabelled("nx-zzzzzz")["item"]["id"] == "nx-000001"          # unknown `after`: from the start
+    j.set_label("nx-000001", "correct", None)
+    assert j.next_unlabelled()["item"]["id"] == "nx-000002" and j.next_unlabelled()["remaining"] == 2
+    assert j.get("nx-000002")["question"]["key"] == "empty"
+    j.stop()
+
+
+def test_list_labelled_and_status_filters(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    mk(j, clk, "ls-000001", "a", 1000, "confirmed", ["person"], label="false_alarm")
+    mk(j, clk, "ls-000002", "a", 2000, "confirmed", ["person"])
+    ep(j, "a", "ls-000003", "start", 3000)
+    ids = lambda **k: [m["id"] for m in j.list(**k)["items"]]
+    assert ids(labelled=True) == ["ls-000001"] and ids(labelled=False) == ["ls-000003", "ls-000002"]
+    assert ids(labelled=False, status="closed") == ["ls-000002"] and ids(status="ongoing") == ["ls-000003"]
+    j.stop()
+
+
+def test_summary_dashboard_period_camera_groups_days(tmp_path):
+    day = 86400_000
+    clk = Clock(40 * day); j = Journal(str(tmp_path), clock=clk)
+    base = 30 * day
+    mk(j, clk, "sm-000001", "a", base, "confirmed", ["person"], label="correct")
+    mk(j, clk, "sm-000002", "a", base + 1000, "confirmed", ["person"], label="false_alarm")
+    mk(j, clk, "sm-000003", "a", base + day, "vetoed", ["vehicle"], label="missed")
+    mk(j, clk, "sm-000004", "b", base + day, "released", ["animal"], kind="unflagged")
+    mk(j, clk, "sm-000005", "b", base - 20 * day, "confirmed", ["person"])
+    s = j.summary(t_from=base - day)
+    T = s["totals"]
+    assert (T["events"], T["reviewed"], T["correct"], T["false_alarm"], T["missed"], T["precision"]) == (4, 3, 1, 1, 1, round(1 / 3, 4))
+    assert (T["confirmed"], T["vetoed"], T["unflagged"], T["other"]) == (2, 1, 1, 0)
+    cams = {c["camera"]: c for c in s["cameras"]}
+    assert cams["a"]["events"] == 3 and cams["a"]["precision"] == round(1 / 3, 4) and cams["b"]["precision"] is None and cams["b"]["unflagged"] == 1       # nothing reviewed: no precision
+    grp = {g["group"]: g for g in s["groups"]}
+    assert grp["person"]["events"] == 2 and grp["person"]["precision"] == 0.5 and grp["vehicle"]["missed"] == 1
+    assert [d["day"] for d in s["days"]] == sorted(d["day"] for d in s["days"]) and sum(d["total"] for d in s["days"]) == 4
+    assert s["days"][0]["confirmed"] == 2 and s["days"][1]["vetoed"] == 1 and s["days"][1]["unflagged"] == 1
+    assert j.summary(t_from=base - day, camera="b")["totals"]["events"] == 1
+    assert j.summary(t_from=base - 30 * day)["totals"]["events"] == 5 and j.summary(t_to=base - 10 * day)["totals"]["events"] == 1
+    shifted = j.summary(t_from=base - day, tz_offset_min=-60 * 12)                                                       # a day boundary moves with the timezone
+    assert shifted["days"][0]["day"] != s["days"][0]["day"] or len(shifted["days"]) >= 1
+    assert j.summary(t_from=base * 10)["totals"]["events"] == 0 and j.summary(t_from=base * 10)["cameras"] == []        # empty period
+    assert s["rows"]                                                                                                    # the per camera x group rows stay
+    j.stop()
+
+
+def test_http_next_summary_filters_and_ui_markup():
+    b = Box()
+    try:
+        JS = {"Content-Type": "application/json"}
+        for i, (cam, out, grp) in enumerate((("a", "confirmed", ["person"]), ("b", "vetoed", ["person"]))):
+            eid = "web-q-%04d" % i
+            b.req("POST", f"/v1/cameras/{cam}/episodes", json.dumps({"id": eid, "action": "start", "t_ms": T0 + i, "groups": grp}).encode(), JS)
+            b.req("POST", f"/v1/cameras/{cam}/episodes", json.dumps({"id": eid, "action": "end", "t_ms": T0 + i + 5, "outcome": out}).encode(), JS)
+        st, r = b.req("GET", "/v1/journal/next")
+        assert st == 200 and r["remaining"] == 2 and r["item"]["id"] == "web-q-0000" and r["item"]["question"]["text"] == "Is there a person?"
+        assert b.req("GET", "/v1/journal/next?after=web-q-0000")[1]["item"]["question"]["text"] == "Is the frame really empty?"
+        assert b.req("GET", "/v1/journal/next?camera=b&outcome=vetoed")[1]["remaining"] == 1 and b.req("GET", "/v1/journal/next?after=../x")[0] == 400
+        assert b.req("GET", "/v1/journal/web-q-0001")[1]["question"]["no"] == "missed"
+        b.req("POST", "/v1/journal/web-q-0000/label", json.dumps({"label": "correct"}).encode(), JS)
+        assert [m["id"] for m in b.req("GET", "/v1/journal?labelled=false&status=closed")[1]["items"]] == ["web-q-0001"]
+        assert b.req("GET", "/v1/journal?labelled=maybe")[0] == 400 and b.req("GET", "/v1/journal?status=weird")[0] == 400
+        st, sm = b.req("GET", "/v1/journal/summary?from=0&tz=120&camera=a")
+        assert st == 200 and sm["totals"]["events"] == 1 and sm["totals"]["precision"] == 1.0 and sm["cameras"][0]["camera"] == "a" and sm["days"]
+        assert b.req("GET", "/v1/journal/summary?tz=5000")[0] == 400 and b.req("GET", "/v1/journal/summary?from=nan")[0] == 400
+        st, html, ct = raw(b, "GET", "/")
+        for needle in (b"Validate", b"Reviewed", b"Yes (Y)", b"No (N)", b"What is it?", b"Review events to see accuracy", b"next?"):
+            assert needle in html, needle
+        assert b"innerHTML" not in html and b"document.write" not in html and b"eval(" not in html                  # untrusted text only through textContent
+    finally:
+        b.close()

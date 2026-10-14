@@ -91,9 +91,10 @@ MOVE_REF_S = 2.0
 MOVE_DIAG_FRAC = 0.03
 MOVE_IOU = 0.7
 
-# Second look (internal constants): at most `max` re-checks per frame, ttl of a re-check result per object, crop margin (fraction of the box size on each side), minimum crop side in
+# Second look (internal constants): `confirm_min` = the score the re-check must find the SAME group at for a person/animal detection to count toward starting or
+# confirming a track (otherwise it is doubtful: fed to the tracker capped at cont_thr + 0.05); at most `max` re-checks per frame, ttl of a re-check result per object, crop margin (fraction of the box size on each side), minimum crop side in
 # pixels, `reject_factor` (a re-check that finds the group again below reject_factor x its keep floor, with a first score below the confirm threshold, rejects), a NEW track is re-checked when its score is below `new_track_max`, and the vehicle confirm threshold used for the borderline band and priority.
-SECOND_LOOK = {"max": 2, "reject_factor": 0.5, "ttl_s": 10.0, "margin": 0.6, "min_crop_px": 96, "new_track_max": 0.8, "vehicle_confirm": 0.6}
+SECOND_LOOK = {"max": 2, "confirm_min": {"person": 0.40, "animal": 0.40}, "reject_factor": 0.5, "ttl_s": 10.0, "margin": 0.6, "min_crop_px": 96, "new_track_max": 0.8, "vehicle_confirm": 0.6}
 
 # Display-only weak vehicles: car/truck/bus/motorcycle (not bicycle) are decoded down to WEAK_VEHICLE_THR and reported with "weak": true when the
 # score is below the vehicle threshold. They never reach the vehicle tracker or any session state.

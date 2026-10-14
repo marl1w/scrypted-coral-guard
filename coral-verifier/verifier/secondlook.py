@@ -52,15 +52,35 @@ def has_track(d, boxes):
     return any(iou(b, t) > 0.2 or (t[0] <= cx <= t[2] and t[1] <= cy <= t[3]) for t in boxes)
 
 
+def mandatory(d, cfg, tracks):
+    """A person/animal detection at or above its start threshold that is not just continuing an already CONFIRMED track would start or confirm one."""
+    g = group_of(d)
+    if g not in ("person", "animal"):
+        return False
+    return d["score"] >= confirm_thr(g, cfg) and not has_track(d, tracks.get(g + "_conf", []))
+
+
+def doubt_cap(d, cfg):
+    return (cfg.cont_thr if group_of(d) == "person" else cfg.animal_cont_thr) + 0.05
+
+
+def tracker_view(d, cfg):
+    """The detection as the tracker sees it: a doubtful one is capped so it can continue a confirmed track but never start or confirm one."""
+    if d.get("second_look_doubt"):
+        return {**d, "score": min(d["score"], doubt_cap(d, cfg))}
+    return d
+
+
 def select(dets, cfg, tracks):
-    """-> candidates [(priority, index)] sorted most uncertain first."""
+    """-> candidate indices: mandatory (would start/confirm a person/animal track) first, then the most uncertain (closest to the confirm threshold)."""
     out = []
     for i, d in enumerate(dets):
         g = group_of(d)
-        if in_band(d, cfg) or (d["score"] < _SL["new_track_max"] and not has_track(d, tracks.get(g, []))):
-            out.append((abs(d["score"] - confirm_thr(g, cfg)), -d["score"], i))
+        m = mandatory(d, cfg, tracks)
+        if m or in_band(d, cfg) or (d["score"] < _SL["new_track_max"] and not has_track(d, tracks.get(g, []))):
+            out.append((0 if m else 1, abs(d["score"] - confirm_thr(g, cfg)), -d["score"], i))
     out.sort()
-    return [i for _, _, i in out]
+    return [x[-1] for x in out]
 
 
 def crop_for(box, W, H, margin=None, min_px=None):
@@ -100,13 +120,19 @@ def second_look(engine, img, dets, cfg, tracks, cache, now):
     count = lambda k, n=1: info["counts"].__setitem__(k, info["counts"].get(k, 0) + n)
     for i in select(dets, cfg, tracks):
         d, g = dets[i], group_of(dets[i])
+        mand = mandatory(d, cfg, tracks)                                 # evaluated on the first-pass score
         hit = next((e for e in cache if e["group"] == g and iou(e["box"], d["box"]) > MATCH_IOU), None)
         if hit is not None:                                              # re-checked recently: reuse the result, follow the object
             hit["box"] = tuple(d["box"])
             _apply(d, hit["status"], hit["score"], cfg)
+            if mand and hit.get("doubt"):
+                d["second_look_doubt"] = True
             count("sl_reused")
             continue
         if info["n"] >= _SL["max"]:
+            if mand:                                                     # the cap prevented the check: it cannot count for confirmation in this frame
+                d["second_look"], d["second_look_doubt"] = "skipped", True
+                count("sl_skipped")
             continue
         win = crop_for(d["box"], W, H)
         res, tm = engine.recheck(img, win, g, cfg.cont_thr, cfg.vehicle_thr, cfg.animal_cont_thr, _SL["reject_factor"])
@@ -126,7 +152,10 @@ def second_look(engine, img, dets, cfg, tracks, cache, now):
             status, score = "not_upgraded", 0.0                          # found, but weak: keep the detection exactly as it was
         else:
             status, score = "lowered", best[0]
+        doubt = g in _SL["confirm_min"] and (best is None or best[0] < _SL["confirm_min"][g])
         _apply(d, status, score, cfg)
-        cache.append({"group": g, "box": tuple(b), "t": now, "status": status, "score": score})
+        if mand and doubt:
+            d["second_look_doubt"] = True
+        cache.append({"group": g, "box": tuple(b), "t": now, "status": status, "score": score, "doubt": doubt})
         count("sl"); count("sl_" + status)
     return dets, info

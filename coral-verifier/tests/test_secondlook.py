@@ -27,11 +27,13 @@ def test_band_selection_and_new_track_rule():
             det("car", 0.3, (0.6, 0.1, 0.8, 0.3), weak=True), det("car", 0.5, (0.1, 0.6, 0.3, 0.9)), det("truck", 0.7, (0.5, 0.6, 0.7, 0.9)),
             det("dog", 0.4, (0.8, 0.1, 0.9, 0.3)), det("cat", 0.9, (0.8, 0.5, 0.9, 0.7))]
     got = set(SL.select(dets, CFG, {}))
-    assert got == {0, 2, 3, 4, 5}                                                         # strong vehicle 0.7 is a NEW track < 0.8: candidate; 0.9 ones are not
+    assert got == {0, 1, 2, 3, 4, 5, 6}                                                   # 0.9 person / animal would START a track: mandatory; strong vehicle 0.7 is a NEW track < 0.8
+    conf = {"person_conf": [(0.1, 0.1, 0.2, 0.3)], "animal_conf": [(0.8, 0.5, 0.9, 0.7)]}
+    assert set(SL.select(dets, CFG, conf)) == {0, 2, 3, 4, 5}                             # continuing an already CONFIRMED track needs no check
     # an existing track under the strong 0.7 truck and the strong person removes the new-track reason; band candidates stay
     tracks = {"vehicle": [(0.5, 0.6, 0.7, 0.9)], "person": [(0.1, 0.1, 0.2, 0.3)]}
-    assert set(SL.select(dets, CFG, tracks)) == {0, 2, 3, 5}
-    assert SL.select([det("person", 0.7)], CFG, {"person": [(0.4, 0.4, 0.6, 0.6)]}) == []           # 0.7 >= start_thr 0.65 and tracked
+    assert set(SL.select(dets, CFG, tracks)) == {0, 1, 2, 3, 5, 6}                       # tentative-or-any tracks do not exempt a start-level person/animal
+    assert SL.select([det("person", 0.7)], CFG, {"person": [(0.4, 0.4, 0.6, 0.6)], "person_conf": [(0.4, 0.4, 0.6, 0.6)]}) == []   # >= start_thr but continuing a confirmed track
 
 
 def test_cap_and_priority_most_uncertain_first():
@@ -152,7 +154,7 @@ def test_version_comes_from_config_yaml():
         pytest.skip("config.yaml not available")
     want = re.search(r'^version:\s*"?([^"\n]+)', open(p).read(), re.M).group(1)
     if "VERIFIER_VERSION" not in os.environ:
-        assert SV.VERSION == want == "0.3.0"
+        assert SV.VERSION == want == "0.3.2"
 
 
 def test_http_second_look_on_and_off_and_metrics():
@@ -211,3 +213,83 @@ def test_back_mapping_with_negative_window_offsets():
     b = (0.0, 0.0, 0.2, 0.2)
     out, _ = SL.second_look(D.Engine(SeqModel(512, [[it("person", 3.0, 16, 16)]])), img, [det("person", 0.5, b)], CFG, {}, [], 1.0)
     assert out[0]["second_look"] == "confirmed"                          # centre of the mapped detection lies inside the original edge box
+
+
+# ---------------- 0.3.2: a person/animal that would start or confirm a track needs a re-check that finds it again ----------------
+
+def feed(sess, t, out):
+    sess.update(t, [SL.tracker_view(d, CFG) for d in out if d.get("second_look") != "rejected"])
+
+
+def test_cushion_person_first_074_recheck_015_never_confirms():
+    eng = D.Engine(SeqModel(512, [[it("person", -1.7)]] * 8))                                # the re-check finds a person at p ~0.15
+    sess = S.Session(CFG)
+    for i in range(4):
+        out, info = SL.second_look(eng, IMG, [det("person", 0.74)], CFG, {}, [], 100.0 + i * 20)       # no cache between frames: re-checked each time
+        assert out[0]["second_look_doubt"] is True and out[0]["second_look"] in ("not_upgraded", "rejected") and out[0]["score"] <= 0.74
+        feed(sess, T0 + i * 1000, out)
+    assert not sess.snapshot()["person"]["present"] and sess.snapshot()["person"]["state"] == "idle"
+    # the 0.44 -> 0.74 story with the reuse cache: the doubt found on the 0.44 frame is reused for the 0.74 frame of the same object
+    eng2 = D.Engine(SeqModel(512, [[it("person", -1.7)]] * 8))
+    sess = S.Session(CFG)
+    out, info = SL.second_look(eng2, IMG, [det("person", 0.44)], CFG, {}, [], 100.0)
+    assert "second_look_doubt" not in out[0]                                                   # 0.44 would not start a track: not mandatory, nothing to doubt yet
+    feed(sess, T0, out)
+    out2, info2 = SL.second_look(eng2, IMG, [det("person", 0.74)], CFG, {}, info["cache"], 102.0)
+    assert info2["n"] == 0 and out2[0]["second_look_doubt"] is True and out2[0]["score"] == 0.74            # reused, shown unchanged in the reply
+    assert SL.tracker_view(out2[0], CFG)["score"] == pytest.approx(0.25)                      # cont_thr 0.2 + 0.05
+    feed(sess, T0 + 1000, out2)
+    assert not sess.snapshot()["person"]["present"]
+
+
+def test_real_person_recheck_found_confirms():
+    eng = D.Engine(SeqModel(512, [[it("person", 0.85)]] * 8))                                 # re-check p ~0.70 (>= confirm_min 0.40)
+    sess = S.Session(CFG)
+    cache = []
+    for i in range(2):
+        out, info = SL.second_look(eng, IMG, [det("person", 0.8)], CFG, {}, cache, 100.0 + i)
+        cache = info["cache"]
+        assert "second_look_doubt" not in out[0] and out[0]["second_look"] == "lowered" and out[0]["score"] > 0.65
+        feed(sess, T0 + i * 1000, out)
+    assert sess.snapshot()["person"]["present"]
+
+
+def test_confirmed_track_continues_with_doubtful_frames_and_needs_no_check():
+    sess = S.Session(CFG)
+    for i in range(2):
+        sess.update(T0 + i * 1000, [{"cls": "person", "score": 0.9, "box": [0.4, 0.3, 0.5, 0.8]}])
+    assert sess.snapshot()["person"]["present"]
+    box = [0.4, 0.3, 0.5, 0.8]
+    d = det("person", 0.9, tuple(box))
+    assert not SL.mandatory(d, CFG, {"person_conf": [tuple(box)]}) and SL.mandatory(d, CFG, {"person_conf": []})
+    doubtful = {**d, "second_look_doubt": True}
+    for i in range(2, 6):
+        sess.update(T0 + i * 1000, [SL.tracker_view(doubtful, CFG)])
+    p = sess.snapshot()["person"]
+    assert p["present"] and p["tracks"] == 1                                                    # the capped score still continues the confirmed track
+    eng = D.Engine(SeqModel(512, [[]] * 3))
+    out, info = SL.second_look(eng, IMG, [d], CFG, {"person_conf": [tuple(box)]}, [], 1.0)
+    assert info["n"] == 0 and "second_look" not in out[0]
+
+
+def test_vehicle_not_found_is_unchanged_and_animal_follows_the_person_rule():
+    eng = D.Engine(SeqModel(512, [[]] * 4))
+    out, _ = SL.second_look(eng, IMG, [det("car", 0.7)], CFG, {}, [], 1.0)
+    assert out[0]["second_look"] == "not_found" and "second_look_doubt" not in out[0] and SL.tracker_view(out[0], CFG)["score"] == 0.7
+    eng = D.Engine(SeqModel(512, [[it("dog", -1.7)]] * 4))
+    out, _ = SL.second_look(eng, IMG, [det("dog", 0.8)], CFG, {}, [], 2.0)
+    assert out[0]["second_look_doubt"] is True and SL.tracker_view(out[0], CFG)["score"] == pytest.approx(0.35)       # animal_cont_thr 0.3 + 0.05
+    eng = D.Engine(SeqModel(512, [[it("dog", 1.5)]] * 4))
+    out, _ = SL.second_look(eng, IMG, [det("dog", 0.8)], CFG, {}, [], 3.0)
+    assert "second_look_doubt" not in out[0]
+
+
+def test_cap_prevents_check_so_it_cannot_confirm_in_this_frame():
+    eng = D.Engine(SeqModel(512, [[it("person", 2.0)]] * 8))
+    dets = [det("person", 0.9, (0.0, 0.2, 0.1, 0.6)), det("person", 0.8, (0.3, 0.2, 0.4, 0.6)), det("person", 0.7, (0.6, 0.2, 0.7, 0.6)), det("car", 0.5, (0.8, 0.5, 0.95, 0.9))]
+    out, info = SL.second_look(eng, IMG, dets, CFG, {}, [], 1.0)
+    assert info["n"] == 2 and info["counts"]["sl_skipped"] == 1                                # mandatory persons come first; the car (band) gets no check
+    skipped = [d for d in out if d.get("second_look") == "skipped"]
+    assert len(skipped) == 1 and skipped[0]["second_look_doubt"] is True and skipped[0]["score"] == 0.9      # the one farthest above the confirm threshold is checked last
+    assert "second_look" not in out[3]
+    assert SL.tracker_view(skipped[0], CFG)["score"] == pytest.approx(0.25)

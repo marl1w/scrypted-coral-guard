@@ -36,6 +36,28 @@ def _str(v, name, n=200):
 
 
 class Journal:
+    @staticmethod
+    def question(m):
+        """The ONE plain-language question for the annotation mode, derived from the episode's outcome, kind and groups.
+        -> {key, text, group (the group to highlight, None = nothing relevant), others (the other groups of the episode), yes (label), no (label)}."""
+        groups = [g for g in (m.get("groups") or []) if g in GROUPS]                  # episode order: the first is the one asked about
+        g = groups[0] if groups else None
+        others = groups[1:]
+        if m.get("outcome") == "vetoed" and m.get("kind") != "unflagged":
+            return {"key": "empty", "text": "Is the frame really empty?", "group": None, "others": [], "yes": "correct", "no": "missed"}
+        if m.get("kind") == "unflagged":
+            what = {"person": "a person", "vehicle": "a moving vehicle", "animal": "an animal"}.get(g, "something")
+            return {"key": "missed_" + (g or "any"), "text": f"Is there {what} the camera missed?", "group": g, "others": others, "yes": "correct", "no": "false_alarm"}
+        if g == "vehicle":
+            return {"key": "vehicle_moving", "text": "Is this a moving vehicle?", "group": g, "others": others, "yes": "correct", "no": "false_alarm"}
+        if g in ("person", "animal"):
+            return {"key": g + "_present", "text": "Is there a person?" if g == "person" else "Is there an animal?", "group": g, "others": others, "yes": "correct", "no": "false_alarm"}
+        return {"key": "event", "text": "Is this a real event?", "group": None, "others": [], "yes": "correct", "no": "false_alarm"}
+
+    @staticmethod
+    def valid_id(eid):
+        return bool(ID_RE.match(eid or ""))
+
     def __init__(self, root, clock=None, **limits):
         self.root = root
         self.clock = clock or (lambda: time.time() * 1000.0)
@@ -367,23 +389,43 @@ class Journal:
     def _view(self, st):
         return dict(st["meta"])
 
-    def list(self, camera=None, outcome=None, label=None, t_from=None, t_to=None, limit=50, offset=0):
+    def list(self, camera=None, outcome=None, label=None, t_from=None, t_to=None, limit=50, offset=0, labelled=None, status=None):
         self._kick()
         with self.lock:
             rows = [dict(st["meta"]) for st in self.eps.values()]            # copy under the lock, filter and sort outside
         if True:
             rows = [m for m in rows if (not camera or m["camera"] == camera) and (not outcome or m["outcome"] == outcome)
                     and (not label or (m["label"] == label if label != "none" else m["label"] is None))
+                    and (labelled is None or (m["label"] is not None) == labelled) and (not status or m["status"] == status)
                     and (t_from is None or m["start_ms"] >= t_from) and (t_to is None or m["start_ms"] <= t_to)]
             rows.sort(key=lambda m: m["start_ms"], reverse=True)
             limit = max(1, min(int(limit), self.lim["max_list"]))
             offset = max(0, int(offset))
             return {"total": len(rows), "offset": offset, "items": rows[offset:offset + limit]}
 
+    def next_unlabelled(self, after=None, camera=None, outcome=None):
+        """Annotation mode: the OLDEST closed episode without a label (optionally only after episode `after` in start order, filtered by camera/outcome).
+        Returns {item, remaining}: `remaining` counts all matching unlabelled closed episodes (the returned one included)."""
+        with self.lock:
+            rows = [dict(st["meta"]) for st in self.eps.values()
+                    if st["meta"]["status"] == "closed" and st["meta"]["label"] is None and (not camera or st["meta"]["camera"] == camera)
+                    and (not outcome or st["meta"]["outcome"] == outcome)]
+            ref = self.eps.get(after) if after and ID_RE.match(after) else None
+            ref_key = None if ref is None else (ref["meta"]["start_ms"], ref["meta"]["id"])
+        rows.sort(key=lambda m: (m["start_ms"], m["id"]))
+        pick = next((m for m in rows if ref_key is None or (m["start_ms"], m["id"]) > ref_key), None)
+        if pick is not None:
+            pick["question"] = self.question(pick)
+        return {"item": pick, "remaining": len(rows)}
+
     def get(self, eid):
         with self.lock:
             st = self.eps.get(eid) if ID_RE.match(eid or "") else None
-            return None if st is None else dict(st["meta"])
+            if st is None:
+                return None
+            m = dict(st["meta"])
+        m["question"] = self.question(m)
+        return m
 
     def _flush_eid(self, eid):
         with self.lock:
@@ -435,20 +477,45 @@ class Journal:
                 return 500, {"error": "journal write failed"}
             return 200, {"id": eid, "label": label, "label_note": note}
 
-    def summary(self):
+    def summary(self, t_from=None, t_to=None, camera=None, tz_offset_min=0):
+        """Dashboard numbers. Period (episode start, epoch ms) and camera filters. Returns the per camera x group `rows` (counts by outcome and label), the
+        overall `totals`, one row per `cameras`, per `groups` and per local `days` (tz_offset_min east of UTC) with categories confirmed/vetoed/unflagged/other."""
         with self.lock:
             metas = [dict(st["meta"]) for st in self.eps.values()]
-        if True:
-            out = {}
-            for m in metas:
-                for g in (m["groups"] or ["none"]):
-                    row = out.setdefault((m["camera"], g), {"camera": m["camera"], "group": g, "total": 0, "by_outcome": {}, "by_label": {}})
-                    row["total"] += 1
-                    k = m["outcome"] or "ongoing"
-                    row["by_outcome"][k] = row["by_outcome"].get(k, 0) + 1
-                    k = m["label"] or "unlabeled"
-                    row["by_label"][k] = row["by_label"].get(k, 0) + 1
-            return {"rows": [out[k] for k in sorted(out)]}
+        metas = [m for m in metas if (t_from is None or m["start_ms"] >= t_from) and (t_to is None or m["start_ms"] <= t_to) and (not camera or m["camera"] == camera)]
+        cat = lambda m: "unflagged" if m.get("kind") == "unflagged" else (m["outcome"] if m["outcome"] in ("confirmed", "vetoed") else "other")
+
+        def acc():
+            return {"events": 0, "reviewed": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0}
+
+        def add(row, m):
+            row["events"] += 1
+            row[cat(m)] += 1
+            if m["label"]:
+                row["reviewed"] += 1
+                row[m["label"]] += 1
+
+        def fin(row):
+            row["precision"] = None if not row["reviewed"] else round(row["correct"] / row["reviewed"], 4)
+            return row
+        out, cams, groups, days, totals = {}, {}, {}, {}, acc()
+        for m in metas:
+            add(totals, m)
+            add(cams.setdefault(m["camera"], {"camera": m["camera"], **acc()}), m)
+            for g in (m["groups"] or ["none"]):
+                row = out.setdefault((m["camera"], g), {"camera": m["camera"], "group": g, "total": 0, "by_outcome": {}, "by_label": {}})
+                row["total"] += 1
+                k = m["outcome"] or "ongoing"
+                row["by_outcome"][k] = row["by_outcome"].get(k, 0) + 1
+                k = m["label"] or "unlabeled"
+                row["by_label"][k] = row["by_label"].get(k, 0) + 1
+                add(groups.setdefault(g, {"group": g, **acc()}), m)
+            day = time.strftime("%Y-%m-%d", time.gmtime(m["start_ms"] / 1000.0 + 60 * tz_offset_min))
+            d = days.setdefault(day, {"day": day, "total": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0})
+            d["total"] += 1
+            d[cat(m)] += 1
+        return {"rows": [out[k] for k in sorted(out)], "totals": fin(totals), "cameras": [fin(cams[k]) for k in sorted(cams)],
+                "groups": [fin(groups[k]) for k in sorted(groups)], "days": [days[k] for k in sorted(days)]}
 
     def stats(self):
         with self.lock:

@@ -152,7 +152,7 @@ class App:
         n = roll.sum("sl")
         share = lambda k: None if n <= 0 else round(roll.sum(k) / n, 3)
         return {"count_60s": int(n), "reused_60s": int(roll.sum("sl_reused")), "confirmed_share": share("sl_confirmed"),
-                "lowered_share": share("sl_lowered"), "rejected_share": share("sl_rejected"), "not_found_share": share("sl_not_found"), "not_upgraded_share": share("sl_not_upgraded")}
+                "lowered_share": share("sl_lowered"), "rejected_share": share("sl_rejected"), "not_found_share": share("sl_not_found"), "not_upgraded_share": share("sl_not_upgraded"), "skipped_60s": int(roll.sum("sl_skipped"))}
 
     def metrics(self):
         st, roll, now = self.coral.stats(), self.coral.roll, time.monotonic()
@@ -440,7 +440,7 @@ class Handler(BaseHTTPRequestHandler):
             return out, info
 
         def finish(dets, st):
-            live = [d for d in dets if d.get("second_look") != "rejected"]          # a rejected candidate never reaches the trackers
+            live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected"]      # rejected: never; doubtful person/animal: score capped
             sn = app.registry.update(cam, t, live, time.monotonic())
             try:
                 app.journal.record_frame_async(cam, sn["t"], body, dets)
@@ -480,9 +480,24 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if rest == [] and method == "GET":
                 lim, off = num("limit"), num("offset")
-                return self._send(200, j.list(one("camera"), one("outcome"), one("label"), num("from"), num("to"), 50 if lim is None else lim, 0 if off is None else off))
+                lab = one("labelled")
+                if lab not in (None, "", "true", "false"):
+                    raise ValueError("labelled must be true or false")
+                st_ = one("status")
+                if st_ not in (None, "", "ongoing", "closed"):
+                    raise ValueError("status must be ongoing or closed")
+                return self._send(200, j.list(one("camera"), one("outcome"), one("label"), num("from"), num("to"), 50 if lim is None else lim, 0 if off is None else off,
+                                              None if not lab else lab == "true", st_ or None))
+            if rest == ["next"] and method == "GET":
+                after = one("after")
+                if after and not Journal.valid_id(after):
+                    raise ValueError("bad after id")
+                return self._send(200, j.next_unlabelled(after or None, one("camera") or None, one("outcome") or None))
             if rest == ["summary"] and method == "GET":
-                return self._send(200, j.summary())
+                tz = num("tz")
+                if tz is not None and abs(tz) > 840:
+                    raise ValueError("tz must be minutes east of UTC within +-840")
+                return self._send(200, j.summary(num("from"), num("to"), one("camera") or None, 0 if tz is None else int(tz)))
             if len(rest) == 1 and method == "GET":
                 m = j.get(rest[0])
                 return self._send(200, m) if m else self._send(404, {"error": "unknown episode"})

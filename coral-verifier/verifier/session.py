@@ -565,7 +565,9 @@ class Registry:
         with self.lock:
             s = self._live(camera, wall_now)
             tracks = {} if s is None else {"person": [tuple(t.box) for t in s.person.tracks], "vehicle": [tuple(t.box) for t in s.vehicle.tracks],
-                                           "animal": [tuple(t.box) for t in s.animal.tracks]}
+                                           "animal": [tuple(t.box) for t in s.animal.tracks],
+                                           "person_conf": [tuple(t.box) for t in s.person.tracks if t.conf],            # confirmed tracks only
+                                           "animal_conf": [tuple(t.box) for t in s.animal.tracks] if s.animal.pt.live(s.animal._tick_t or 0) else []}
             return {"tracks": tracks, "cache": list(self._sl.get(camera, []))}
 
     def sl_store(self, camera, cache, wall_now):
