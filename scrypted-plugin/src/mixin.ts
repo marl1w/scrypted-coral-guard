@@ -13,6 +13,7 @@ import { backoffMs, Effects, Episode, Group, vehicleView, VEHICLE_HOLD_WINDOW_MS
 import { isMasked, maskReply, parseZones, Zone } from './zones';
 import type { NowInfo, NowReason, TrackedItem } from './status';
 import { DEFAULT_THRESHOLDS, serviceThresholds, Thresholds } from './thresholds';
+import { fetchSnapshot, FastPathTimer, SNAP_MAX_FAILS } from './fastpath';
 import { FrameStream, HW_FAILED_PREFIX, PROBE_FAILED_PREFIX, startFrames, streamLabels, vaapiAvailable } from './frames';
 import { FrameClock } from './preroll';
 import { viewOfReply } from './reply-view';
@@ -141,6 +142,17 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private lastPublished = false;
     private notOutermost = false;
     private verifyTimer: NodeJS.Timeout | undefined;
+    /** 'Paced frames: Camera snapshots': heartbeat timer, one snapshot in flight, consecutive failures, sticky fallback. */
+    private snapTimer: NodeJS.Timeout | undefined;
+    private snapBusy = false;
+    private snapFails = 0;
+    private snapDisabled = false;
+    private snapSetting = false;
+    /** capture time of the snapshot that opened the current scan: older pre-roll frames are dropped (t stays monotonic). */
+    private bridgeT = 0;
+    /** 'Camera AI fast path': the scan generation it started or promoted (normal priority, never behind a heartbeat). */
+    private fastGen: number | undefined;
+    private readonly fast = new FastPathTimer();
     /** the camera has no MotionSensor of its own: motion comes only from Coral Guard */
     readonly sensorless: boolean;
     private readonly ifaces: string[] | undefined;
@@ -309,6 +321,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
 
     /** called when any setting (global or per camera) changes. */
     applyConfig() {
+        const snap = !!this.plugin.pacedSnapshots;
+        if (snap !== this.snapSetting) {
+            this.snapSetting = snap;
+            this.snapDisabled = false; // a changed setting retries snapshots after a fallback
+            this.snapFails = 0;
+        }
         this.apply(this.episode.setConfig(this.episodeConfig(), monoNow()));
     }
 
@@ -408,7 +426,15 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         // never write before a genuine camera event, except a confirmation (true) or the release of our own true
         if ((this.touched || fx.motion || this.lastPublished) && this.motionDetected !== fx.motion)
             this.publish(fx.motion);
+        if (this.fast.armed && this.episode.confirmedGroups) {
+            const line = this.fast.verdict(`confirmed ${this.episode.confirmedGroups.join('+')}`, monoNow());
+            if (line) this.console.log(line);
+        }
         for (const log of fx.logs) {
+            if (log.kind === 'summary' && this.fast.armed) {
+                const line = this.fast.verdict(log.summary.confirmedAfterMs !== undefined ? 'confirmed' : 'not confirmed', monoNow());
+                if (line) this.console.log(line);
+            }
             if (log.kind === 'summary') {
                 const synth = log.summary.origin === 'synth';
                 this.synthRaised = false;
@@ -554,7 +580,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     // Keep-warm mode: running whenever the verifier is in service for this camera.
 
     private get warm() {
-        return DEFAULTS.frameProcess === 'Keep warm';
+        return DEFAULTS.frameProcess === 'Keep warm' && !this.snapPaced;
+    }
+
+    /** paced analysis from the camera's own snapshots (setting on, the camera has takePicture, no fallback yet). */
+    private get snapPaced(): boolean {
+        return !!this.plugin.pacedSnapshots && !this.snapDisabled && typeof (this.mixinDevice as any)?.takePicture === 'function';
     }
 
     private syncSource(scanning: boolean) {
@@ -568,6 +599,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.zoneTicks = [];
                 this.loopStartedAt = monoNow();
                 this.queue = [];
+                this.bridgeT = 0;
+                this.fast.scan(this.loopStartedAt);
+                if (this.snapPaced && !this.frames)
+                    this.bridgeSnapshot(); // the stream starts cold: the latest keyframe goes first
                 if (this.frames && this.warm) {
                     // hand over the warm ring as the pre-roll burst (exact capture times)
                     const cutoff = monoNow() - DEFAULTS.preRollS * 1000;
@@ -589,6 +624,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             else if (!this.frames && wantWarm && !this.warmRetry)
                 this.startSource();
         }
+        this.syncSnapTimer();
     }
 
     private startSource() {
@@ -687,6 +723,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     return;
                 }
                 const t = this.clock!.stamp(arrivedAt);
+                if (this.clock!.inBurst && t <= this.bridgeT)
+                    return; // pre-roll older than the opening snapshot: capture times must stay monotonic
                 if (this.clock!.inBurst) {
                     // pre-roll frame: sent in order, immediately, never waiting for the burst to end.
                     this.queue.push({ jpeg, t });
@@ -828,6 +866,103 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }, () => { this.hbTicks = []; /* silent: a heartbeat never degrades the camera */ }).finally(() => { this.heartbeatBusy = false; this.kick(); /* an episode frame waiting for the heartbeat goes now */ });
     }
 
+    // ---- 'Paced frames: Camera snapshots' ---------------------------------------------------
+
+    private heartbeatEligible(): boolean {
+        return this.paced && this.mode !== 'off' && !this.plugin.config.killSwitch && !this.episode.degraded && !this.episode.scanning
+            && !this.scanActive && !this.gateBusy && !this.heartbeatBusy && this.busyGen === undefined && !this.released;
+    }
+
+    private syncSnapTimer() {
+        const want = this.snapPaced && this.paced && this.mode !== 'off' && !this.plugin.config.killSwitch && !this.released;
+        if (want && !this.snapTimer) {
+            this.snapTimer = setTimeout(() => this.snapTick(), heartbeatJitter(this.id, DEFAULTS.heartbeatMs));
+            this.snapTimer.unref?.();
+        }
+        else if (!want && this.snapTimer) {
+            clearTimeout(this.snapTimer);
+            this.snapTimer = undefined;
+        }
+    }
+
+    /** one paced snapshot about every heartbeatMs, only when a heartbeat would actually be posted. */
+    private snapTick() {
+        this.snapTimer = setTimeout(() => this.snapTick(), DEFAULTS.heartbeatMs);
+        this.snapTimer.unref?.();
+        if (this.snapBusy || !this.snapPaced || !this.heartbeatEligible())
+            return;
+        this.snapBusy = true;
+        fetchSnapshot(this.mixinDevice as any, sdk.mediaManager as any, 'periodic').then(jpeg => {
+            this.snapFails = 0;
+            if (this.released || !this.snapPaced)
+                return;
+            const t = monoNow();
+            this.status.setLiveFrame(jpeg, Date.now());
+            if (!this.nextHeartbeatAt)
+                this.nextHeartbeatAt = t; // the timer already carries the per-camera jitter
+            this.heartbeatFrame(jpeg, t);
+        }, e => this.snapFailed(e)).finally(() => { this.snapBusy = false; });
+    }
+
+    /** scan start without a running stream: the camera's latest keyframe is the first frame while ffmpeg starts. */
+    private bridgeSnapshot() {
+        const sg = this.scanGen;
+        fetchSnapshot(this.mixinDevice as any, sdk.mediaManager as any, 'event').then(jpeg => {
+            this.snapFails = 0;
+            if (sg !== this.scanGen || !this.scanActive || this.released || this.lastEpisodePostAt >= this.loopStartedAt || this.queue.length)
+                return; // the stream was faster, or the scan is over
+            const t = monoNow();
+            this.bridgeT = t;
+            this.lastFrameAt = t;
+            this.queue.push({ jpeg, t });
+            this.kick();
+        }, e => this.snapFailed(e));
+    }
+
+    private snapFailed(e: unknown) {
+        if (this.released || this.snapDisabled)
+            return;
+        this.snapFails++;
+        if (this.snapFails < SNAP_MAX_FAILS)
+            return;
+        this.snapDisabled = true; // sticky until the setting changes or the plugin restarts
+        this.console.warn(`camera snapshots failed ${this.snapFails} times (${maskUrls(String((e as any)?.message || e))}), paced frames come from the stream again`);
+        this.status.onFailure('snapshots failed, using the stream');
+        this.syncSource(this.scanActive);
+    }
+
+    // ---- 'Camera AI fast path' --------------------------------------------------------------
+
+    /**
+     * A verifiable class pushed by the camera (person / vehicle / animal) starts verification at once: an idle camera opens a
+     * verified unflagged scan (the same machine as the pixel gate and heartbeat, so the same confirmation rules; the camera's
+     * motion edge merges into it), a running low-priority unflagged scan is promoted to normal priority. Never raises motion
+     * by itself, never shortens any confirmation rule.
+     */
+    private fastPath(data: any, now: number) {
+        this.fast.expire(now);
+        if (!this.plugin.aiFastPath || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || this.cameraTriggers() === 'none')
+            return;
+        const cls = (data?.detections || []).map((d: any) => String(d?.className || '').toLowerCase()).find((c: string) => !!claimGroup(c)) || 'object';
+        if (this.episode.scanning && !this.episode.synthetic)
+            return; // a camera episode is already verifying at normal priority
+        this.fast.claim(cls, now);
+        if (this.episode.scanning) {
+            this.fastGen = this.scanGen; // promote the running unflagged scan
+            this.fast.scan(now);
+            this.kick();
+            return;
+        }
+        this.synthRaised = false;
+        this.synthStartedAt = now;
+        this.lastGateOpenAt = now; // keeps the scan open for the quiet window until the camera's edge merges in
+        this.synthReason = `camera AI ${cls}`;
+        this.fastGen = this.scanGen + 1; // the scan synthStart opens below
+        this.apply(this.episode.synthStart(now));
+        if (!this.scanActive)
+            this.fastGen = undefined;
+    }
+
     private onGray(frame: Uint8Array) {
         const gate = this.gate;
         if (!gate || this.released || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || !this.paced)
@@ -852,6 +987,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const rising = value && !this.cameraRaw; // judged from the camera edge alone, whatever a pixel-gate episode is doing
         this.cameraRaw = value;
         if (rising) {
+            this.fast.edge(monoNow());
             this.claimFrom = monoNow() - 3000; // class events up to 3 s before the edge belong to this trigger
             this.unverifiedLogged = false;
         }
@@ -896,6 +1032,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
         if (this.cameraRaw)
             this.applyClaim();
+        if (verifiable)
+            this.fastPath(data, monoNow()); // after a held-back edge became a trigger: a camera episode needs no fast path
     }
 
     // ---- Triggers (plugin-wide): Camera motion, Camera AI, Paced ----
@@ -979,7 +1117,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** Send the next queued frame if none is in flight for this scan. */
     private kick() {
         const gen = this.scanGen;
-        if (this.busyGen === gen || this.released || !this.queue.length || this.heartbeatBusy)
+        if (this.busyGen === gen || this.released || !this.queue.length || (this.heartbeatBusy && this.fastGen !== gen))
             return; // one request in flight per camera: an episode frame waits for an in-flight heartbeat
         this.busyGen = gen;
         void this.send(gen);
@@ -995,6 +1133,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 return;
             this.episode.posted(monoNow());
             this.lastEpisodePostAt = monoNow();
+            if (this.fastGen === gen) this.fast.posted(this.lastEpisodePostAt);
             if (item.jpeg.length <= MAX_THUMB_JPEG_BYTES) // base64 happens lazily when the panel renders
                 this.status.setLastFrame({ jpeg: item.jpeg, boxes: [] });
             else {
@@ -1004,7 +1143,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     this.console.log(`snapshot ${Math.round(item.jpeg.length / 1024)} KB is too large for the panel thumbnail (limit ${Math.round(MAX_THUMB_JPEG_BYTES / 1024)} KB), keeping the previous one`);
                 }
             }
-            const reply = await this.plugin.client.frame(this.verifierId, item.jpeg, item.t, this.episode.synthetic);
+            const reply = await this.plugin.client.frame(this.verifierId, item.jpeg, item.t, this.episode.synthetic && this.fastGen !== gen);
             if (gen !== this.scanGen || this.released)
                 return;
             if (reply === null) {
@@ -1204,6 +1343,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (this.released)
             return; // idempotent: a replaced instance may also be released later by Scrypted
         clearTimeout(this.aiWaitTimer);
+        clearTimeout(this.snapTimer);
+        this.snapTimer = undefined;
         if (this.jId) {
             // never leave a journal episode 'in progress' across a restart or a removal
             try { this.journal('end', { outcome: 'aborted', note: 'plugin restart', timeline_event: { t_ms: Date.now(), text: 'aborted (plugin restart)' } }); } catch { /* best effort */ }

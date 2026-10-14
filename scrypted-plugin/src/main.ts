@@ -9,6 +9,7 @@ import { MetricsRing, renderPerformance } from './performance';
 import { DEFAULT_THRESHOLDS, resolveThresholds, THRESHOLD_TITLES, Thresholds } from './thresholds';
 
 export const TRIGGER_CHOICES = ['Camera motion', 'Camera AI', 'Paced'];
+export const PACED_SOURCE_CHOICES = ['Stream', 'Camera snapshots'];
 
 const thresholdSetting = (k: keyof Thresholds, description: string, onPut: () => void) => ({
     group: 'Detection', title: THRESHOLD_TITLES[k], type: 'number' as const, defaultValue: DEFAULT_THRESHOLDS[k], description, onPut,
@@ -62,6 +63,21 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
             defaultValue: TRIGGER_CHOICES,
             onPut: () => { for (const m of this.active) m.applyConfig(); },
         },
+        pacedSource: {
+            group: 'Detection',
+            title: 'Paced frames',
+            description: 'Stream: own continuous decode (pixel gate, pre-roll ring). Camera snapshots: takePicture() every ~2 s, no idle decode; only for cameras with cheap snapshots. Falls back to Stream per camera after repeated snapshot failures.',
+            choices: PACED_SOURCE_CHOICES,
+            defaultValue: 'Stream',
+            onPut: () => { for (const m of this.active) m.applyConfig(); },
+        },
+        aiFastPath: {
+            group: 'Detection',
+            title: 'Camera AI fast path',
+            description: 'A person/vehicle/animal class from the camera starts verification at once at normal priority, before the camera motion edge. Same verification rules.',
+            type: 'boolean',
+            defaultValue: true,
+        },
         secondLook: {
             group: 'Detection',
             title: 'Second look',
@@ -79,6 +95,17 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         if (typeof v === 'string') { try { v = JSON.parse(v); } catch { v = v.split(','); } }
         const out = (Array.isArray(v) ? v : []).map((x: any) => String(x).trim()).filter((x: string) => TRIGGER_CHOICES.includes(x));
         return out.length ? out : TRIGGER_CHOICES.slice();
+    }
+
+    /** 'Paced frames' (Detection group, default Stream): true = paced analysis from camera snapshots. */
+    get pacedSnapshots(): boolean {
+        return (this.storageSettings.values as any).pacedSource === 'Camera snapshots';
+    }
+
+    /** 'Camera AI fast path' (Detection group, default on). */
+    get aiFastPath(): boolean {
+        const v = (this.storageSettings.values as any).aiFastPath;
+        return v === undefined || v === null || v === '' ? true : v === true || v === 'true';
     }
 
     /** 'Second look' (Detection group, default on): sent to the service as second_look. */
