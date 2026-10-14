@@ -8,6 +8,8 @@ import { renderOverview } from './overview';
 import { MetricsRing, renderPerformance } from './performance';
 import { DEFAULT_THRESHOLDS, resolveThresholds, THRESHOLD_TITLES, Thresholds } from './thresholds';
 
+export const TRIGGER_CHOICES = ['Camera motion', 'Camera AI', 'Paced'];
+
 const thresholdSetting = (k: keyof Thresholds, description: string, onPut: () => void) => ({
     group: 'Detection', title: THRESHOLD_TITLES[k], type: 'number' as const, defaultValue: DEFAULT_THRESHOLDS[k], description, onPut,
 });
@@ -51,6 +53,15 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         vehicleDetect: thresholdSetting('vehicleDetect', 'Score that detects a vehicle.', () => this.thresholdsChanged()),
         vehicleConfirm: thresholdSetting('vehicleConfirm', 'Score that confirms a moving vehicle.', () => this.thresholdsChanged()),
         animalDetect: thresholdSetting('animalDetect', 'Score that detects an animal.', () => this.thresholdsChanged()),
+        triggers: {
+            group: 'Detection',
+            title: 'Triggers',
+            description: 'What starts an analysis.',
+            choices: TRIGGER_CHOICES,
+            multiple: true,
+            defaultValue: TRIGGER_CHOICES,
+            onPut: () => { for (const m of this.active) m.applyConfig(); },
+        },
         secondLook: {
             group: 'Detection',
             title: 'Second look',
@@ -61,6 +72,14 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         },
         animalConfirm: thresholdSetting('animalConfirm', 'Score that confirms an animal.', () => this.thresholdsChanged()),
     });
+
+    /** 'Triggers' (Detection group): empty or unparsable = all three, never none. */
+    get triggers(): string[] {
+        let v: any = (this.storageSettings.values as any).triggers;
+        if (typeof v === 'string') { try { v = JSON.parse(v); } catch { v = v.split(','); } }
+        const out = (Array.isArray(v) ? v : []).map((x: any) => String(x).trim()).filter((x: string) => TRIGGER_CHOICES.includes(x));
+        return out.length ? out : TRIGGER_CHOICES.slice();
+    }
 
     /** 'Second look' (Detection group, default on): sent to the service as second_look. */
     get secondLook(): boolean {

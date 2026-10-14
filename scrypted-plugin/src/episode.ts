@@ -268,12 +268,17 @@ export class Episode {
     }
 
     /** The camera's own raw motion changed. */
-    raw(value: boolean, now: number): Effects {
+    raw(value: boolean, now: number, trigger = true): Effects {
         const logs: LogEvent[] = [];
         let reset = false;
         if (value === this.camRaw)
             return this.out(logs);
         this.camRaw = value;
+        if (value && !trigger) {
+            // raw motion that is not a trigger (Triggers setting): known for pass-through and Shadow, starts nothing
+            this.rawEndedAt = undefined;
+            return this.out(logs);
+        }
         if (value) {
             this.rawEndedAt = undefined;
             if (this.synthRaw && (this.state === 'pending' || this.state === 'active')) {
@@ -297,6 +302,15 @@ export class Episode {
                 this.close('released', now, logs); // unverified pass-through: held by the camera's raw motion only
         }
         return this.out(logs, reset);
+    }
+
+    /** A raw edge that was held back (waiting for the camera's AI claim) becomes a trigger now. */
+    trigger(now: number): Effects {
+        if (!this.camRaw || this.passthrough || !(this.state === 'idle' || this.state === 'closed'))
+            return this.out([]);
+        this.synthRaw = false;
+        this.startPending(now, true);
+        return this.out([], true);
     }
 
     /**

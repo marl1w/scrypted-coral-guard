@@ -1,6 +1,6 @@
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { confirmedReply, ctl, holdingReply, idleReply, J, make, releaseAll, sleep } from './harness';
+import { confirmedReply, ctl, holdingReply, idleReply, J, loadProvider, make, releaseAll, sleep } from './harness';
 
 afterEach(() => releaseAll());
 import { MockServer } from './mock-server';
@@ -1502,4 +1502,87 @@ test('posting rate: 2 fps while verifying, 1 fps once confirmed (holding), back 
 test('defaults: 2 fps while verifying, 1 fps once confirmed', () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'src', 'defaults.ts'), 'utf8');
     assert.match(src, /frameIntervalMs: 500,/); assert.match(src, /holdIntervalMs: 1000,/);
+});
+
+// ---- Triggers (plugin-wide) ---------------------------------------------------------------------
+
+test('Triggers: default all; Camera motion starts on any raw edge', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    h.raw(true);
+    assert.equal(h.mixin['episode'].scanning, true);
+    await h.mixin.release();
+});
+
+test('Triggers: Camera AI only ignores raw-only edges, starts when a claim arrives within 1.5 s, or with a claim just before', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    h.plugin.triggers = ['Camera AI', 'Paced'];
+    h.raw(true);
+    assert.equal(h.mixin['episode'].scanning, false, 'held back, waiting for a claim');
+    await sleep(300);
+    h.claim('person');
+    assert.equal(h.mixin['episode'].scanning, true, 'a claim within the window triggers');
+    h.raw(false);
+    await h.mixin.release();
+    const n = make({ settings: { mode: 'Gate' } });
+    n.plugin.triggers = ['Camera AI'];
+    n.raw(true);
+    await sleep(1600);
+    n.claim('person');
+    assert.equal(n.mixin['episode'].scanning, false, 'a claim after the window does not trigger');
+    n.raw(false);
+    n.claim('car');
+    n.raw(true);
+    assert.equal(n.mixin['episode'].scanning, true, 'a claim just before the edge triggers at once');
+    await n.mixin.release();
+});
+
+test('Triggers: Shadow with Camera AI only still publishes raw for an ignored edge', async () => {
+    const h = make({ settings: { mode: 'Shadow' } });
+    h.plugin.triggers = ['Camera AI'];
+    h.raw(true);
+    await sleep(20);
+    assert.equal(motion(), true, 'Shadow publishes raw');
+    assert.equal(h.mixin['episode'].scanning, false);
+    h.raw(false);
+    await sleep(20);
+    assert.equal(motion(), false);
+    await h.mixin.release();
+});
+
+test('Triggers: a camera without ObjectDetector treats Camera AI as Camera motion (logged once)', async () => {
+    const h = make({ settings: { mode: 'Gate' }, interfaces: ['VideoCamera', 'MotionSensor', 'Camera'] });
+    h.plugin.triggers = ['Camera AI'];
+    h.raw(true);
+    assert.equal(h.mixin['episode'].scanning, true);
+    h.raw(false); h.raw(true);
+    assert.equal(ctl.logs.filter(l => /Camera AI acts as Camera motion/.test(String(l[1]))).length, 1);
+    await h.mixin.release();
+});
+
+test('Triggers: Paced only: camera edges and claims start nothing; Paced off: no heartbeat', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    h.plugin.triggers = ['Paced'];
+    h.raw(true); h.claim('person');
+    assert.equal(h.mixin['episode'].scanning, false);
+    await h.mixin.release();
+    const k = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', heartbeatMs: 1 } });
+    k.plugin.triggers = ['Camera motion'];
+    await eventually(() => ctl.starts.length >= 1);
+    frame(ctl.starts[ctl.starts.length - 1]);
+    await sleep(80);
+    assert.equal(k.calls.frame.length, 0, 'no heartbeat without Paced');
+    await k.mixin.release();
+});
+
+test('Triggers setting: Detection group, all by default, empty or junk means all', async () => {
+    const P = loadProvider();
+    const p: any = new P('n');
+    clearInterval(p.healthTimer);
+    const st = await p.getSettings();
+    const t = st.find((x: any) => x.key === 'triggers');
+    assert.equal(t.group, 'Detection');
+    assert.deepEqual(p.triggers, ['Camera motion', 'Camera AI', 'Paced']);
+    p.storageSettings = { values: { triggers: [] } }; assert.equal(p.triggers.length, 3);
+    p.storageSettings = { values: { triggers: 'junk' } }; assert.equal(p.triggers.length, 3);
+    p.storageSettings = { values: { triggers: ['Camera AI'] } }; assert.deepEqual(p.triggers, ['Camera AI']);
 });

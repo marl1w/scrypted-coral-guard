@@ -37,6 +37,8 @@ const SYNTH_MAX_MS = 20000;
 const KEYFRAME_PREBUFFER_MS = 8000;
 const MAX_THUMB_JPEG_BYTES = 118 * 1024;
 const ZOOM_LABELS: [string, number][] = [['Off', 0], ['20 %', 0.2], ['35 %', 0.35], ['50 %', 0.5]];
+/** 'Camera AI' only: how long a raw edge waits for the camera's class claim. */
+const AI_CLAIM_WAIT_MS = 1500;
 const STREAM_DEFAULT_LABEL = 'Default (already open stream)';
 /** a chosen (non-default) stream must deliver its first JPEG within this long, else the default stream is used. */
 const STREAM_FIRST_FRAME_MS = 25000;
@@ -141,6 +143,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private verifyTimer: NodeJS.Timeout | undefined;
     /** the camera has no MotionSensor of its own: motion comes only from Coral Guard */
     readonly sensorless: boolean;
+    private readonly ifaces: string[] | undefined;
 
     constructor(options: SettingsMixinDeviceOptions<VideoCamera & MotionSensor>, private plugin: GuardProvider) {
         super(options);
@@ -150,6 +153,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.episode = new Episode(this.episodeConfig(), false);
         // Sensorless: the camera has no MotionSensor of its own, so there is no raw motion; motion comes only from the
         // verified unflagged/heartbeat path (Gate), Shadow never publishes, and failing open means motion stays false.
+        this.ifaces = (options as any).mixinDeviceInterfaces;
         this.sensorless = Array.isArray((options as any).mixinDeviceInterfaces) && !(options as any).mixinDeviceInterfaces.includes(ScryptedInterface.MotionSensor);
         this.status.setSensorless(this.sensorless);
 
@@ -603,6 +607,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             return true;
         };
         clearTimeout(this.streamFirstTimer);
+        clearTimeout(this.aiWaitTimer);
         if (explicitStream) {
             this.streamFirstTimer = setTimeout(() => { streamFailed(); }, STREAM_FIRST_FRAME_MS);
             this.streamFirstTimer.unref?.();
@@ -745,7 +750,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             this.nextHeartbeatAt = now + heartbeatJitter(this.id, D.heartbeatMs);
         if (now < this.nextHeartbeatAt)
             return;
-        if (this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || this.episode.scanning || this.scanActive
+        if (!this.paced || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || this.episode.scanning || this.scanActive
             || this.gateBusy || this.heartbeatBusy || this.busyGen !== undefined)
             return; // camera raw motion does NOT stop it: a closed (released) episode keeps being analysed and can re-open
         this.nextHeartbeatAt = now + D.heartbeatMs - 100; // frames come every ~500 ms: the first one due
@@ -799,7 +804,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
 
     private onGray(frame: Uint8Array) {
         const gate = this.gate;
-        if (!gate || this.released || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded)
+        if (!gate || this.released || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || !this.paced)
             return;
         const r = gate.push(frame);
         const hit = r.open && (r.reason === 'blob' || r.reason === 'fraction');
@@ -824,6 +829,18 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             this.claimFrom = monoNow() - 3000; // class events up to 3 s before the edge belong to this trigger
             this.unverifiedLogged = false;
         }
+        clearTimeout(this.aiWaitTimer);
+        this.aiWaitTimer = undefined;
+        const cam = this.cameraTriggers();
+        if (rising && (cam === 'none' || (cam === 'ai' && !this.hasClaimSince(this.claimFrom)))) {
+            // not a trigger (yet): raw is known (pass-through, Shadow publishes it) but starts nothing
+            this.apply(this.episode.raw(true, monoNow(), false));
+            if (cam === 'ai') { // 'Camera AI': the edge counts once the camera claims a class (up to AI_CLAIM_WAIT_MS later)
+                this.aiWaitTimer = setTimeout(() => { this.aiWaitTimer = undefined; }, AI_CLAIM_WAIT_MS);
+                this.aiWaitTimer.unref?.();
+            }
+            return;
+        }
         this.apply(this.episode.raw(value, monoNow()));
         if (value)
             this.applyClaim();
@@ -845,8 +862,41 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             return;
         const now = monoNow();
         this.claimEvents = this.claimEvents.filter(e => now - e.at < 10000).concat({ at: now, groups: verifiable ? ['person'] : [], other });
+        if (this.cameraRaw && this.aiWaitTimer) {
+            // the claim the held-back edge was waiting for: it becomes a trigger now
+            clearTimeout(this.aiWaitTimer);
+            this.aiWaitTimer = undefined;
+            this.apply(this.episode.trigger(monoNow()));
+        }
         if (this.cameraRaw)
             this.applyClaim();
+    }
+
+    // ---- Triggers (plugin-wide): Camera motion, Camera AI, Paced ----
+    private aiWaitTimer: NodeJS.Timeout | undefined;
+    private aiFallbackLogged = false;
+    private get triggers(): string[] { return this.plugin.triggers ?? ['Camera motion', 'Camera AI', 'Paced']; }
+    private get paced(): boolean { return this.triggers.includes('Paced'); }
+    /** which camera raw edges start an episode: every edge, only AI-claimed ones, or none ('Paced' only) */
+    private cameraTriggers(): 'motion' | 'ai' | 'none' {
+        const t = this.triggers;
+        if (this.sensorless || t.includes('Camera motion'))
+            return 'motion';
+        if (!t.includes('Camera AI'))
+            return 'none';
+        const ifaces = this.ifaces;
+        if (Array.isArray(ifaces) && !ifaces.includes(ScryptedInterface.ObjectDetector)) {
+            if (!this.aiFallbackLogged) {
+                this.aiFallbackLogged = true;
+                this.console.log('Triggers: this camera reports no AI classes, Camera AI acts as Camera motion');
+            }
+            return 'motion';
+        }
+        return 'ai';
+    }
+    private hasClaimSince(from: number): boolean {
+        if (!this.triggers.includes('Camera AI')) return false;
+        return this.claimEvents.some(e => e.at >= from && (e.groups.length > 0 || e.other.length > 0));
     }
 
     /**
@@ -1125,6 +1175,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     }
 
     async release() {
+        clearTimeout(this.aiWaitTimer);
         if (this.jId) {
             // never leave a journal episode 'in progress' across a restart or a removal
             try { this.journal('end', { outcome: 'aborted', note: 'plugin restart', timeline_event: { t_ms: Date.now(), text: 'aborted (plugin restart)' } }); } catch { /* best effort */ }

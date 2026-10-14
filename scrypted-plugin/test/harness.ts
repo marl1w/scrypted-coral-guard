@@ -129,7 +129,7 @@ export async function releaseAll() {
 import { DEFAULTS } from '../src/defaults';
 const PRISTINE = JSON.parse(JSON.stringify(DEFAULTS));
 
-export function make(opts: { settings?: Record<string, any>; initial?: boolean; hangStart?: boolean; client?: any; persistWrites?: boolean; holdReset?: boolean; dup?: string; sensorless?: boolean } = {}) {
+export function make(opts: { settings?: Record<string, any>; initial?: boolean; hangStart?: boolean; client?: any; persistWrites?: boolean; holdReset?: boolean; dup?: string; sensorless?: boolean; interfaces?: string[] } = {}) {
     hook(true);
     (ctl as any).notified = 0;
     ctl.starts = []; ctl.listeners = 0; ctl.removed = 0; ctl.logs = []; ctl.writes = [];
@@ -151,7 +151,7 @@ export function make(opts: { settings?: Record<string, any>; initial?: boolean; 
     Object.assign(DEFAULTS, PRISTINE, { frameProcess: 'Per trigger', hwDecode: 'Off', heartbeatMs: 1e9, holdIntervalMs: 0 }, tuning);
     ctl.pre = { ...(mode === undefined ? {} : { mode }), ...(detect === undefined ? {} : { detect }) };
     const { GuardMixin } = require('../src/mixin') as typeof import('../src/mixin');
-    const mixin = new GuardMixin({ mixinDevice: {}, ...(opts.sensorless ? { mixinDeviceInterfaces: ['VideoCamera', 'Camera'] } : {}) } as any, plugin);
+    const mixin = new GuardMixin({ mixinDevice: {}, ...(opts.sensorless ? { mixinDeviceInterfaces: ['VideoCamera', 'Camera'] } : opts.interfaces ? { mixinDeviceInterfaces: opts.interfaces } : {}) } as any, plugin);
     made.push(mixin);
     return { mixin, plugin, calls, dups, raw: (v: boolean) => listenCb(null, null, v), claim: (...classes: string[]) => claimCb(null, null, { detections: classes.map(className => ({ className, score: 1 })) }), ctl };
 }
