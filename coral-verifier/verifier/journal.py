@@ -93,8 +93,18 @@ class Journal:
 
     # ---------------- single worker: ALL journal mutations and disk writes run here, never on the frame path ----------------
     def _run(self):
+        idle = self.lim["maintain_idle_s"]
+        due = time.monotonic() + idle
         while True:
-            item = self._q.get()
+            try:
+                item = self._q.get(timeout=idle)
+            except queue.Empty:                                              # no traffic: the maintenance still runs
+                self._periodic()
+                due = time.monotonic() + idle
+                continue
+            if time.monotonic() >= due:                                      # heavy traffic: it runs too
+                self._periodic()
+                due = time.monotonic() + idle
             if item is None:
                 self._q.task_done()
                 return
@@ -108,6 +118,13 @@ class Journal:
                 if evt is not None:
                     evt.set()
                 self._q.task_done()
+
+    def _periodic(self):
+        try:
+            with self.lock:
+                self._maintain(force=True)
+        except Exception:
+            log.exception("journal maintenance failed")
 
     def _call(self, fn, *args):
         """Runs fn on the worker and waits for its result (the HTTP handler threads wait here, the frame path never does)."""
@@ -276,6 +293,8 @@ class Journal:
                     if st["meta"]["status"] == "closed":
                         return 409, {"error": "episode already ended"}
                 else:
+                    self._close_stale(now)                                                  # a stale episode never counts against the caps
+                    self._purge_legacy()
                     ongoing = [s["meta"]["camera"] for s in self.eps.values() if s["meta"]["status"] == "ongoing"]
                     if len(ongoing) >= self.lim["max_ongoing"] or ongoing.count(camera) >= self.lim["max_ongoing_per_camera"]:
                         return 429, {"error": "too many ongoing episodes"}
@@ -381,8 +400,7 @@ class Journal:
                 m = st["meta"]
                 if m["status"] == "ongoing" and m["camera"] == camera:
                     try:
-                        self._link(st, t_ms, jpeg, dets)
-                        m["last_activity_ms"] = now
+                        self._link(st, t_ms, jpeg, dets)                    # frames do NOT count as activity: a camera streams forever, only the client's updates keep an episode alive
                     except OSError as e:
                         log.error("journal write failed: %s", e)
             self._maintain()
@@ -393,18 +411,24 @@ class Journal:
         if st is not None:
             shutil.rmtree(st["dir"], ignore_errors=True)
 
+    def _is_stale(self, m, now):
+        return m["status"] == "ongoing" and now - m["last_activity_ms"] > self.lim["stale_s"] * 1000.0
+
+    def _close_stale(self, now):
+        """Ongoing episodes without a client update (start / update) for stale_s are closed as `stale` (unconfirmed unflagged ones are then removed)."""
+        for st in list(self.eps.values()):
+            if self._is_stale(st["meta"], now):
+                try:
+                    self._close(st, "stale", int(st["meta"]["last_activity_ms"]))
+                except OSError as e:
+                    log.error("journal write failed: %s", e)
+
     def _maintain(self, force=False):
         now = self.clock()
         if not force and now < self._next_maint:
             return
         self._next_maint = now + self.lim["maintain_every_s"] * 1000.0
-        for st in list(self.eps.values()):                                   # stale ongoing episodes
-            m = st["meta"]
-            if m["status"] == "ongoing" and now - m["last_activity_ms"] > self.lim["stale_s"] * 1000.0:
-                try:
-                    self._close(st, "stale", int(m["last_activity_ms"]))
-                except OSError as e:
-                    log.error("journal write failed: %s", e)
+        self._close_stale(now)
         self._purge_legacy()
         cut = now - self.lim["retention_days"] * 86400_000.0
         for eid, st in list(self.eps.items()):

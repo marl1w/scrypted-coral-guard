@@ -40,6 +40,7 @@ JOURNAL = {
     "max_bytes": 2 * 1024 ** 3,     # total journal size cap: oldest closed episodes are deleted first
     "stale_s": 7200.0,              # an ongoing episode without any update or frame for this long is closed as `stale`
     "maintain_every_s": 30.0,
+    "maintain_idle_s": 300.0,       # the worker runs the maintenance at least this often, with or without traffic
     "queue_max": 256,               # bounded queue of journal work (frames, episode calls); frame work is dropped (counted) when full
     "max_ongoing": 64,              # ongoing episodes in total / per camera: more starts are refused with 429
     "max_ongoing_per_camera": 8,

@@ -582,3 +582,52 @@ def test_http_group_filter_validation():
         assert b.req("GET", "/v1/journal/summary?group=vehicle")[0] == 200
     finally:
         b.close()
+
+
+# ---------------- 0.3.7: stale episodes ----------------
+
+def test_two_hours_without_updates_closes_confirmed_and_removes_unconfirmed_unflagged_even_with_frames(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    ep(j, "c", "st-conf001", "start", 1000, groups=["person"], timeline_event={"t_ms": 1000, "text": "Person confirmed"})
+    ep(j, "c", "st-unfl001", "start", 1000, kind="unflagged", groups=["person"])                              # never confirmed
+    ep(j, "c", "st-unfl002", "start", 1000, kind="unflagged", groups=["person"], timeline_event={"t_ms": 1000, "text": "confirmed"})
+    ep(j, "c", "st-live001", "start", 1000, groups=["person"])
+    for i in range(1, 80):                                                                                    # the camera keeps streaming for 2 h 10 min: frames are NOT activity
+        clk.t += 100_000.0
+        j.record_frame("c", clk.t, b"f", [det("person", 0.7)])
+        if i == 60:
+            assert ep(j, "c", "st-live001", "update", clk.t)[0] == 200                                       # a client update keeps one alive
+    assert clk.t > 2 * H
+    j.maintain()
+    for eid in ("st-conf001", "st-unfl002"):
+        m = j.get(eid)
+        assert m["status"] == "closed" and m["outcome"] == "stale" and (tmp_path / eid / "last.jpg").exists()   # confirmed: closed as stale, kept
+    assert j.get("st-unfl001") is None and not (tmp_path / "st-unfl001").exists()                             # unconfirmed unflagged: removed
+    assert j.get("st-live001")["status"] == "ongoing"
+    clk.t += 2.1 * H
+    j.maintain()
+    assert j.get("st-live001")["status"] == "closed" and j.get("st-live001")["outcome"] == "stale"            # and it goes stale 2 h after its last update
+    j.stop()
+
+
+def test_maintenance_runs_on_the_worker_without_any_traffic(tmp_path):
+    import time as _t
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk, maintain_idle_s=0.05)
+    ep(j, "c", "idle-0001", "start", 1000, groups=["person"])
+    clk.t += 3 * H
+    for _ in range(100):                                                                                      # no frames, no API calls: only the worker's timer
+        if j.eps["idle-0001"]["meta"]["status"] == "closed":
+            break
+        _t.sleep(0.05)
+    assert j.eps["idle-0001"]["meta"]["status"] == "closed" and j.eps["idle-0001"]["meta"]["outcome"] == "stale"
+    j.stop()
+
+
+def test_stale_episodes_do_not_count_against_the_ongoing_caps(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk, max_ongoing_per_camera=2, max_ongoing=3, maintain_every_s=10**9)
+    assert ep(j, "a", "cap-00001", "start", 1000, groups=["person"])[0] == 200 and ep(j, "a", "cap-00002", "start", 1000, groups=["person"])[0] == 200
+    assert ep(j, "a", "cap-00003", "start", 1000)[0] == 429                                                    # the cap holds while they are fresh
+    clk.t += 3 * H                                                                                            # both are stale now, and no maintenance has run yet
+    assert ep(j, "a", "cap-00004", "start", clk.t)[0] == 200 and ep(j, "b", "cap-00005", "start", clk.t)[0] == 200
+    assert j.get("cap-00001")["status"] == "closed" and j.get("cap-00001")["outcome"] == "stale"
+    j.stop()
