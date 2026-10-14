@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="app-version" content="__VERSION__">
 <title>Coral Guard</title>
 <style>
 /* Home Assistant look and feel (ingress does not inject the HA theme): HA variable names and default palette, light/dark by prefers-color-scheme */
@@ -16,6 +17,7 @@
 :root{--bg:var(--primary-background-color);--card:var(--card-background-color);--fg:var(--primary-text-color);--mut:var(--secondary-text-color);--line:var(--divider-color);
  --acc:var(--primary-color);--ok:var(--success-color);--bad:var(--error-color);--warn:var(--warning-color);--chip:var(--chip-background-color)}
 *{box-sizing:border-box}
+[hidden]{display:none!important}                       /* a class with its own display (.more, .follow) must never override the hidden attribute */
 body{margin:0;font:14px/1.45 Roboto,Noto,"Helvetica Neue",system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg);-webkit-font-smoothing:antialiased}
 :focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}
 header{background:var(--app-header-background-color);color:var(--app-header-text-color);position:sticky;top:0;z-index:5;box-shadow:0 2px 4px rgba(0,0,0,.2)}
@@ -68,6 +70,21 @@ tr.row{cursor:pointer}tr.row:hover td{background:var(--chip)}
 textarea{width:100%;min-height:56px;margin-top:10px}
 .more{display:block;margin:16px auto}
 .empty{padding:40px;text-align:center;color:var(--mut)}
+/* filter menu (port of the owner's own pattern: outlined button, radio groups, dot + choices in words) */
+.toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
+.fwrap{position:relative}
+.fwrap>button{border:1px solid var(--line);position:relative}
+.fdot{width:8px;height:8px;border-radius:50%;background:var(--primary-color)}
+.fstate{font-size:13px;color:var(--mut)}
+.menu{position:absolute;top:calc(100% + 4px);left:0;z-index:12;min-width:240px;max-height:70vh;overflow:auto;padding:6px 0;display:flex;flex-direction:column;
+ background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+.menu .ml{font-size:12px;color:var(--mut);padding:6px 14px 2px}
+.menu button{display:flex;align-items:center;gap:8px;border:0;background:none;color:inherit;text-align:left;justify-content:flex-start;padding:8px 14px;border-radius:0;min-height:36px;width:100%}
+.menu button:hover,.menu button:focus-visible{background:var(--chip);outline:none}
+.menu .tick{display:inline-flex;width:18px}
+.menu hr{border:0;border-top:1px solid var(--line);margin:6px 0;width:100%}
+.menu label.date{display:grid;gap:2px;padding:0 14px 6px}
+.menu input[type=date]{min-height:40px}
 /* validate */
 .vq{font-size:28px;font-weight:500;margin:18px 0 4px;line-height:1.2}
 .vbtns{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
@@ -97,32 +114,22 @@ svg.chart text{fill:var(--mut);font-size:9px}
 <body>
 <header>
 <div class="appbar"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 8.7 8 10.2 4.6-1.5 8-5.2 8-10.2V5z" fill="#ff7f50" stroke="#d65c34" stroke-width=".9" stroke-linejoin="round"/><circle cx="11.4" cy="10.6" r="3.9" fill="#ff7f50" stroke="#fff" stroke-width="1.9"/><circle cx="11.4" cy="10.6" r="1.25" fill="#fff"/><path d="m14.2 13.4 3 3" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/></svg>
-<h1>Coral Guard</h1><span class="mut" id="stat"></span></div>
+<h1>Coral Guard <span class="mut" id="ver">v__VERSION__</span></h1><span class="mut" id="stat"></span></div>
 <nav role="tablist"><button id="tEv" class="on" role="tab">Events</button><button id="tVa" role="tab">Validate</button><button id="tRe" role="tab">Reviewed</button><button id="tSu" role="tab">Summary</button></nav>
 </header>
 
 <div id="evView">
-  <div class="bar">
-    <select id="fCam"><option value="">All cameras</option></select>
-    <select id="fOut"><option value="">Any outcome</option><option>confirmed</option><option>vetoed</option><option>aborted</option><option>released</option><option>parked</option><option>stale</option></select>
-    <select id="fLab"><option value="">Any label</option><option value="none">Unlabeled</option><option>correct</option><option>false_alarm</option><option>missed</option><option>wrong_class</option></select>
-    <input type="date" id="fFrom" title="From"><input type="date" id="fTo" title="To">
-    <button id="fGo">Apply</button>
-  </div>
+  <div class="bar"><div id="evBar"></div></div>
   <main><div class="grid" id="grid"></div><button class="more" id="more" hidden>Load more</button><div class="empty" id="empty" hidden>No events</div></main>
 </div>
 
 <div id="vaView" hidden>
-  <div class="bar"><select id="vCam"><option value="">All cameras</option></select>
-    <select id="vOut"><option value="">Any outcome</option><option>confirmed</option><option>vetoed</option><option>aborted</option><option>released</option><option>parked</option><option>stale</option></select>
-    <span class="prog" id="vProg"></span></div>
+  <div class="bar"><div id="vaBar"></div><span class="prog" id="vProg"></span></div>
   <main id="vBody"></main>
 </div>
 
 <div id="reView" hidden>
-  <div class="bar"><select id="rCam"><option value="">All cameras</option></select>
-    <select id="rLab"><option value="">Any label</option><option>correct</option><option>false_alarm</option><option>missed</option><option>wrong_class</option></select>
-    <span id="rTot" class="chips"></span></div>
+  <div class="bar"><div id="reBar"></div><span id="rTot" class="mut"></span></div>
   <main>
     <section id="rToSec"><h2 id="rToH">To review</h2><div class="empty" id="rToEmpty" hidden>Nothing to review</div><div class="grid" id="rToGrid"></div><button class="more" id="rToMore" hidden>Load more</button></section>
     <section id="rDoSec"><h2 id="rDoH">Reviewed</h2><div class="empty" id="rDoEmpty" hidden>Nothing reviewed yet</div><div class="grid" id="rDoGrid"></div><button class="more" id="rDoMore" hidden>Load more</button></section>
@@ -130,8 +137,7 @@ svg.chart text{fill:var(--mut);font-size:9px}
 </div>
 
 <div id="suView" hidden>
-  <div class="bar"><span class="seg" id="suPer"><button data-h="24">24 h</button><button data-h="168" class="on">7 d</button><button data-h="336">14 d</button></span>
-    <select id="suCam"><option value="">All cameras</option></select></div>
+  <div class="bar"><div id="suBar"></div></div>
   <main id="suBody"></main>
 </div>
 
@@ -151,7 +157,7 @@ const fmtD=(a,b)=>{if(!b)return"ongoing";let s=Math.max(0,Math.round((b-a)/1000)
 const pct=v=>v==null?"-":Math.round(v*100)+"%";
 const eid=encodeURIComponent;
 const dn=m=>m.display_name||String(m.camera||"").replace(/_\d+$/,"")||m.camera;                // display name, fallback: the id without a trailing _<digits>
-const IC={check:"M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",close:"M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
+const IC={check:"M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",filter:"M6,13H18V11H6M3,6V8H21V6M10,18H14V16H10V18Z",close:"M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
  next:"M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z",prev:"M20,11V13H8L13.5,18.5L12.08,19.92L4.16,12L12.08,4.08L13.5,5.5L8,11H20Z"};
 function icon(name){const NS="http://www.w3.org/2000/svg",s=document.createElementNS(NS,"svg");s.setAttribute("viewBox","0 0 24 24");s.setAttribute("aria-hidden","true");const p=document.createElementNS(NS,"path");p.setAttribute("d",IC[name]);s.appendChild(p);return s}
 function btn(cls,text,ic,fn){const b=E("button",cls);if(ic)b.appendChild(icon(ic));b.appendChild(document.createTextNode(text));b.onclick=fn;return b}
@@ -180,15 +186,12 @@ function framesOf(m){const order=["first","best","last"];return[...order.map(r=>
 
 /* ---------- events tab ---------- */
 let offset=0,total=0;const PAGE=24;
-function query(){const p=new URLSearchParams();for(const[k,id]of[["camera","fCam"],["outcome","fOut"],["label","fLab"]])if($("#"+id).value)p.set(k,$("#"+id).value);
-  const f=$("#fFrom").value,t=$("#fTo").value;if(f)p.set("from",new Date(f+"T00:00:00").getTime());if(t)p.set("to",new Date(t+"T23:59:59").getTime());return p}
 async function load(reset){
   if(reset){offset=0;$("#grid").replaceChildren()}
-  const p=query();p.set("limit",PAGE);p.set("offset",offset);
+  const p=fparams("ev");p.set("limit",PAGE);p.set("offset",offset);
   try{const r=await j(`${API}?${p}`);total=r.total;r.items.forEach(m=>$("#grid").appendChild(card(m)));offset+=r.items.length;
     more("#more",r.items.length,PAGE,offset,total);$("#empty").hidden=total>0;$("#stat").textContent=total+" events"}catch(e){$("#stat").textContent="error: "+e.message}}
-async function cams(){try{const s=await j(`${API}/summary`);s.cameras.slice().sort((a,b)=>dn(a).localeCompare(dn(b))).forEach(c=>{
-  for(const id of["fCam","vCam","rCam","suCam"]){const o=E("option","",dn({display_name:c.display_name,camera:c.camera}));o.value=c.camera;$("#"+id).appendChild(o)}})}catch(e){}}
+async function cams(){try{const s=await j(`${API}/summary`);CAMS=s.cameras.slice().sort((a,b)=>dn(a).localeCompare(dn(b)))}catch(e){}}
 
 /* ---------- detail (also used to change a label) ---------- */
 async function openDetail(id){
@@ -211,7 +214,7 @@ async function openDetail(id){
 
 /* ---------- validate (annotation mode): ONE plain question per event, the server derives it (item.question) ---------- */
 const V={cur:null,pre:null,hist:[],remaining:0,last:null};
-function vq(after){const p=new URLSearchParams();if(after)p.set("after",after);if($("#vCam").value)p.set("camera",$("#vCam").value);if($("#vOut").value)p.set("outcome",$("#vOut").value);return p}
+function vq(after){const p=fparams("va");if(after)p.set("after",after);return p}
 const vFetch=after=>j(`${API}/next?${vq(after)}`);
 function vPrefetch(m){V.pre=null;vFetch(m.id).then(n=>{V.pre={after:m.id,r:n};if(n.item)framesOf(n.item).forEach(f=>{new Image().src=`${API}/${eid(n.item.id)}/${f.name}.jpg`})}).catch(()=>{})}
 async function vLoad(after,labelled){
@@ -252,14 +255,14 @@ function more(sel,got,limit,off,total){$(sel).hidden=got<limit||off>=total||tota
 async function reLoad(kind,reset){
   const s=R[kind],grid=$(kind==="to"?"#rToGrid":"#rDoGrid"),my=s.seq=(s.seq||0)+1;if(reset){s.off=0;grid.replaceChildren()}
   const p=new URLSearchParams({limit:12,offset:s.off,labelled:kind==="do"?"true":"false"});if(kind==="to")p.set("status","closed");
-  if($("#rCam").value)p.set("camera",$("#rCam").value);if(kind==="do"&&$("#rLab").value)p.set("label",$("#rLab").value);
+  for(const[k,v]of fparams("re",{label:kind==="do"}))p.set(k,v);
   const r=await j(`${API}?${p}`);if(my!==s.seq)return;                       // a newer request replaced this one: never append stale items
   r.items.forEach(m=>grid.appendChild(card(m)));s.off+=r.items.length;
   more(kind==="to"?"#rToMore":"#rDoMore",r.items.length,12,s.off,r.total);$(kind==="to"?"#rToH":"#rDoH").textContent=(kind==="to"?"To review":"Reviewed")+" ("+r.total+")";
   $(kind==="to"?"#rToEmpty":"#rDoEmpty").hidden=r.total>0}                      // the empty state is ONE message outside the grid
 async function reAll(){reLoad("to",true);reLoad("do",true);
-  const t=$("#rTot");t.replaceChildren();try{const s=await j(`${API}/summary`+($("#rCam").value?"?camera="+encodeURIComponent($("#rCam").value):""));const x=s.totals;
-    for(const[k,v]of[["reviewed",x.reviewed],["to review",x.reviewable],["in progress",x.ongoing],["correct",x.correct],["false alarm",x.false_alarm],["missed",x.missed],["wrong class",x.wrong_class]])t.appendChild(E("span","chip",k+" "+v))}catch(e){}}
+  const t=$("#rTot");try{const s=await j(`${API}/summary?${sparams("re")}`);const x=s.totals;
+    t.textContent=x.reviewed+" reviewed \u00b7 "+x.reviewable+" to review \u00b7 "+x.ongoing+" in progress"}catch(e){t.textContent=""}}
 
 /* ---------- summary dashboard ---------- */
 const SU={hours:168,sort:"precision",dir:1};
@@ -277,7 +280,7 @@ function chart(days){
     const l=document.createElementNS(NS,"text");l.setAttribute("x",x+bw/2);l.setAttribute("y",base+13);l.setAttribute("text-anchor","middle");l.textContent=d.day.slice(5);s.appendChild(l)});
   return s}
 async function suLoad(){
-  const p=new URLSearchParams({from:Date.now()-SU.hours*3600e3,tz:-new Date().getTimezoneOffset()});if($("#suCam").value)p.set("camera",$("#suCam").value);
+  const p=sparams("su");p.set("tz",-new Date().getTimezoneOffset());
   const s=await j(`${API}/summary?${p}`),b=$("#suBody"),T=s.totals;b.replaceChildren();
   if(!T.events){b.appendChild(E("div","empty","No events in this period"));return}
   const k=E("div","kpis");k.appendChild(kpi("Events",T.events));k.appendChild(kpi("Reviewed",pct(T.closed?T.reviewed/T.closed:null)));
@@ -287,7 +290,7 @@ async function suLoad(){
   const cols=[["camera","Camera"],["events","Events"],["reviewed","Reviewed"],["precision","Precision"],["false_alarm","False alarms"],["missed","Missed"],["confirmed","Confirmed"],["vetoed","Vetoed"],["unflagged","Unflagged"]];
   const rows=[...s.cameras].sort((a,c)=>{const x=a[SU.sort],y=c[SU.sort];if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return (x<y?-1:x>y?1:0)*SU.dir});
   const tb=E("table"),hr=tb.insertRow();cols.forEach(([key,t])=>{const th=E("th","s",t+(SU.sort===key?(SU.dir>0?" ▲":" ▼"):""));th.onclick=()=>{SU.dir=SU.sort===key?-SU.dir:1;SU.sort=key;suLoad()};hr.appendChild(th)});
-  for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{$("#vCam").value=c.camera;$("#rCam").value=c.camera;V.hist=[];tab(c.reviewable>0?"va":"re")};   // unreviewed events: Validate, else Reviewed
+  for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{F.va.camera=F.re.camera=c.camera;hashWrite();V.hist=[];tab(c.reviewable>0?"va":"re")};   // unreviewed events: Validate, else Reviewed
     for(const[key]of cols){const td=r.insertCell();if(key==="camera")td.textContent=dn(c);else if(key==="precision"){td.appendChild(bar(c.precision));td.appendChild(document.createTextNode(c.reviewed?pct(c.precision):"-"))}else td.textContent=c[key]}}
   const sc=E("div","scroll");sc.appendChild(tb);b.appendChild(sc);
   b.appendChild(E("h2","","Categories"));const gt=E("table"),gh=gt.insertRow();["Category","Events","Precision"].forEach(x=>gh.appendChild(E("th","",x)));
@@ -297,18 +300,77 @@ async function suLoad(){
   b.appendChild(E("h2","","Per day"));const lg=E("div","legend");for(const c of["confirmed","vetoed","unflagged","other"]){const sp=E("span","");const dot=E("span","dot");dot.style.background=CAT[c];sp.appendChild(dot);sp.appendChild(document.createTextNode(c==="other"?"aborted/other":c));lg.appendChild(sp)}
   b.appendChild(lg);b.appendChild(chart(s.days))}
 
+/* ---------- filters: one outlined Filter button per tab, a menu of radio groups, state in the URL hash ---------- */
+const TABS=["ev","va","re","su"];
+const DEF={ev:"all",va:"all",re:"all",su:"7d"};                                        // default period per tab
+const PER={"24h":["24 h",24],"7d":["7 days",168],"14d":["14 days",336],all:["All time",0]};
+const LABELS={correct:"correct",false_alarm:"false alarm",missed:"missed",wrong_class:"wrong class"};
+const F={};for(const t of TABS)F[t]={camera:"",category:"",outcome:"",label:"",period:DEF[t],from:"",to:""};
+let CAMS=[];
+function dayRange(f){if(f.from||f.to)return{from:f.from?new Date(f.from+"T00:00:00").getTime():0,to:f.to?new Date(f.to+"T23:59:59").getTime():0};
+  const h=PER[f.period][1];return h?{from:Date.now()-h*3600e3,to:0}:{from:0,to:0}}
+function sparams(t){const f=F[t],p=new URLSearchParams();if(f.camera)p.set("camera",f.camera);if(f.category)p.set("group",f.category);
+  const r=dayRange(f);if(r.from)p.set("from",r.from);if(r.to)p.set("to",r.to);return p}
+function fparams(t,o){const f=F[t],p=sparams(t);if(f.outcome)p.set("outcome",f.outcome);if(o&&o.label&&f.label)p.set("label",f.label);return p}
+function summaryOf(t){const f=F[t],a=[];if(f.camera){const c=CAMS.find(x=>x.camera===f.camera);a.push(c?dn(c):f.camera)}
+  if(f.category)a.push(f.category);if(f.outcome)a.push(f.outcome);if(f.label)a.push(LABELS[f.label]||f.label);
+  if(f.from||f.to)a.push((f.from||"\u2026")+" \u2013 "+(f.to||"\u2026"));else if(f.period!==DEF[t])a.push(PER[f.period][0]);return a.join(" \u00b7 ")}
+function groupsFor(t){const f=F[t],all=["","All"];
+  const g=[{kind:"radio",id:"camera",label:"Camera",value:f.camera,options:[all,...CAMS.map(c=>[c.camera,dn(c)])]},
+    {kind:"radio",id:"category",label:"Category",value:f.category,options:[all,["person","person"],["vehicle","vehicle"],["animal","animal"]]}];
+  if(t!=="su")g.push({kind:"radio",id:"outcome",label:"Outcome",value:f.outcome,options:[all,["confirmed","confirmed"],["vetoed","vetoed"],["unflagged","unflagged"]]});
+  if(t==="re")g.push({kind:"radio",id:"label",label:"Label",value:f.label,options:[all,...Object.entries(LABELS)]});
+  g.push({kind:"radio",id:"period",label:"Period",value:f.from||f.to?"":f.period,options:Object.entries(PER).map(([k,v])=>[k,v[0]])});
+  g.push({kind:"date",id:"from",label:"From",value:f.from},{kind:"date",id:"to",label:"To",value:f.to});
+  if(summaryOf(t))g.push({kind:"action",id:"reset",label:"Reset"});return g}
+function hashWrite(){const p=new URLSearchParams();p.set("t",TAB);for(const t of TABS)for(const k in F[t]){const d=k==="period"?DEF[t]:"";if(F[t][k]!==d)p.set(t+"."+k,F[t][k])}
+  try{history.replaceState(null,"","#"+p)}catch(e){}}
+function hashRead(){let p;try{p=new URLSearchParams(String(location.hash||"").replace(/^#/,""))}catch(e){return}
+  for(const[k,v]of p){const m=/^(ev|va|re|su)\.(camera|category|outcome|label|period|from|to)$/.exec(k);if(!m)continue;
+    if(m[2]==="period"&&!PER[v])continue;if((m[2]==="from"||m[2]==="to")&&!/^\d{4}-\d{2}-\d{2}$/.test(v))continue;F[m[1]][m[2]]=v}
+  if(TABS.includes(p.get("t")))TAB=p.get("t")}
+const MENUS={};
+function filterMenu(t,mount){
+  const wrap=E("div","toolbar"),w=E("div","fwrap"),btn=E("button",""),dot=E("span","fdot"),state=E("span","fstate"),menu=E("div","menu");
+  btn.appendChild(icon("filter"));btn.appendChild(E("span","","Filter"));btn.appendChild(dot);dot.hidden=true;state.hidden=true;menu.hidden=true;
+  btn.setAttribute("aria-haspopup","menu");btn.setAttribute("aria-expanded","false");menu.setAttribute("role","menu");menu.setAttribute("aria-label","Filter");
+  w.appendChild(btn);w.appendChild(menu);wrap.appendChild(w);wrap.appendChild(state);mount.appendChild(wrap);
+  let items=[],isOpen=false;
+  const api={open:()=>isOpen,paint(){const s=summaryOf(t);dot.hidden=!s;state.hidden=!s;state.textContent=s;btn.title=s}};
+  function changed(){hashWrite();api.paint();refreshTab(t)}
+  function build(){menu.replaceChildren();items=[];
+    groupsFor(t).forEach((g,i)=>{if(i>0)menu.appendChild(E("hr"));
+      if(g.kind==="radio"){menu.appendChild(E("div","ml",g.label));for(const[v,l]of g.options){const b=E("button","");b.setAttribute("role","menuitemradio");b.setAttribute("tabindex","-1");
+        b.setAttribute("aria-checked",g.value===v?"true":"false");const tk=E("span","tick");if(g.value===v)tk.appendChild(icon("check"));b.appendChild(tk);
+        b.onclick=()=>{F[t][g.id]=v;if(g.id==="period"){F[t].from="";F[t].to=""}close(true);changed()};b.appendChild(E("span","",l));menu.appendChild(b);items.push(b)}}
+      else if(g.kind==="date"){const lb=E("label","date");lb.appendChild(E("span","ml",g.label));const inp=E("input");inp.type="date";inp.value=g.value;inp.setAttribute("aria-label",g.label);
+        inp.onchange=()=>{F[t][g.id]=inp.value;changed()};lb.appendChild(inp);menu.appendChild(lb);items.push(inp)}
+      else{const b=E("button","");b.setAttribute("role","menuitem");b.setAttribute("tabindex","-1");b.appendChild(icon("close"));b.appendChild(E("span","",g.label));
+        b.onclick=()=>{F[t]={camera:"",category:"",outcome:"",label:"",period:DEF[t],from:"",to:""};close(true);changed()};menu.appendChild(b);items.push(b)}})}
+  function outside(e){if(!w.contains(e.target))close(false)}
+  function open(){build();menu.hidden=false;isOpen=true;btn.setAttribute("aria-expanded","true");document.addEventListener("pointerdown",outside,true);
+    (items.find(i=>i.getAttribute("aria-checked")==="true")||items[0]).focus()}
+  function close(focusBtn){if(!isOpen)return;menu.hidden=true;isOpen=false;btn.setAttribute("aria-expanded","false");document.removeEventListener("pointerdown",outside,true);if(focusBtn)btn.focus()}
+  btn.onclick=()=>isOpen?close(false):open();
+  w.addEventListener("keydown",e=>{if(!isOpen)return;
+    if(e.key==="Escape"){e.preventDefault();close(true);return}if(e.key==="Tab"){close(false);return}
+    const at=items.indexOf(document.activeElement),n=items.length;
+    const to=e.key==="ArrowDown"?(at+1)%n:e.key==="ArrowUp"?(at-1+n)%n:e.key==="Home"?0:e.key==="End"?n-1:-1;
+    if(to>=0){e.preventDefault();items[to].focus()}});
+  api.close=close;api.btn=btn;return api}
+function refreshTab(t){if(t==="ev")load(true);else if(t==="va"){V.hist=[];V.pre=null;vLoad(null,false)}else if(t==="re")reAll();else suLoad();for(const k of TABS)MENUS[k]&&MENUS[k].paint()}
+
 /* ---------- tabs ---------- */
 const VIEWS={ev:"#evView",va:"#vaView",re:"#reView",su:"#suView"},BTN={ev:"#tEv",va:"#tVa",re:"#tRe",su:"#tSu"};
-function tab(n){TAB=n;for(const k in VIEWS){$(VIEWS[k]).hidden=k!==n;$(BTN[k]).className=k===n?"on":""}
+function tab(n){TAB=n;hashWrite();for(const k in VIEWS){$(VIEWS[k]).hidden=k!==n;$(BTN[k]).className=k===n?"on":""}
   if(n==="va"){V.pre=null;vLoad(null,false)}else if(n==="re")reAll();else if(n==="su")suLoad();else load(true)}
 function refresh(){if(TAB==="ev")load(true);else if(TAB==="va")vLoad(null,false);else if(TAB==="re")reAll();else suLoad()}
 for(const k in BTN)$(BTN[k]).onclick=()=>tab(k);
-$("#fGo").onclick=()=>load(true);$("#more").onclick=()=>load(false);
-$("#vCam").onchange=$("#vOut").onchange=()=>{V.hist=[];V.pre=null;vLoad(null,false)};
-$("#rCam").onchange=$("#rLab").onchange=reAll;$("#rToMore").onclick=()=>reLoad("to",false);$("#rDoMore").onclick=()=>reLoad("do",false);
-$("#suCam").onchange=suLoad;
-for(const b of document.querySelectorAll("#suPer button"))b.onclick=()=>{SU.hours=+b.dataset.h;document.querySelectorAll("#suPer button").forEach(x=>x.className=x===b?"on":"");suLoad()};
-cams();load(true);
+$("#more").onclick=()=>load(false);$("#rToMore").onclick=()=>reLoad("to",false);$("#rDoMore").onclick=()=>reLoad("do",false);
+hashRead();
+for(const t of TABS)MENUS[t]=filterMenu(t,$("#"+t+"Bar"));
+cams().then(()=>{for(const t of TABS)MENUS[t].paint()});
+tab(TAB);
 </script>
 </body>
 </html>

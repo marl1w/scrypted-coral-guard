@@ -31,7 +31,7 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.3.4"
+FALLBACK_VERSION = "0.3.5"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
@@ -136,7 +136,7 @@ class App:
         self.journal = Journal(c["journal_root"], clock=lambda: self.now_ms())
         self.ingress_ips = set(DF.JOURNAL["ingress_ips"])
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html"), "rb") as f:
-            self.ui_html = f.read()
+            self.ui_html = f.read().replace(b"__VERSION__", VERSION.encode())       # the served page names its version (never a stale page after an update)
 
     def health(self):
         st = self.coral.stats()
@@ -234,6 +234,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
+        if cache == "no-store":
+            self.send_header("Pragma", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
         self._headers_buffer.append(b"\r\n" + data)
         self.flush_headers()
@@ -308,7 +310,8 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["v1", "cameras"]:
                 if method != "GET":
                     return self._reject(405, {"error": "method not allowed"})
-                return self._send(200, {"cameras": app.registry.listing(time.monotonic())})
+                cams = app.registry.listing(time.monotonic())
+                return self._send(200, {"total": len(cams), "cameras": cams})
             if len(parts) in (3, 4) and parts[1] == "cameras":
                 cam = parts[2]
                 if not CAM_RE.match(cam):
@@ -484,21 +487,28 @@ class Handler(BaseHTTPRequestHandler):
                 lab = one("labelled")
                 if lab not in (None, "", "true", "false"):
                     raise ValueError("labelled must be true or false")
+                grp = one("group")
+                if grp not in (None, "", "person", "vehicle", "animal"):
+                    raise ValueError("group must be person, vehicle or animal")
                 st_ = one("status")
                 if st_ not in (None, "", "ongoing", "closed"):
                     raise ValueError("status must be ongoing or closed")
                 return self._send(200, j.list(one("camera"), one("outcome"), one("label"), num("from"), num("to"), 50 if lim is None else lim, 0 if off is None else off,
-                                              None if not lab else lab == "true", st_ or None))
+                                              None if not lab else lab == "true", st_ or None, grp or None))
             if rest == ["next"] and method == "GET":
                 after = one("after")
                 if after and not Journal.valid_id(after):
                     raise ValueError("bad after id")
-                return self._send(200, j.next_unlabelled(after or None, one("camera") or None, one("outcome") or None))
+                grp = one("group")
+                if grp not in (None, "", "person", "vehicle", "animal"):
+                    raise ValueError("group must be person, vehicle or animal")
+                return self._send(200, j.next_unlabelled(after or None, one("camera") or None, one("outcome") or None, grp or None, num("from"), num("to")))
             if rest == ["summary"] and method == "GET":
                 tz = num("tz")
                 if tz is not None and abs(tz) > 840:
                     raise ValueError("tz must be minutes east of UTC within +-840")
-                return self._send(200, j.summary(num("from"), num("to"), one("camera") or None, 0 if tz is None else int(tz)))
+                return self._send(200, j.summary(num("from"), num("to"), one("camera") or None, 0 if tz is None else int(tz),
+                                                  one("group") if one("group") in ("person", "vehicle", "animal") else None))
             if len(rest) == 1 and method == "GET":
                 m = j.get(rest[0])
                 return self._send(200, m) if m else self._send(404, {"error": "unknown episode"})

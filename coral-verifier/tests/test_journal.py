@@ -527,4 +527,58 @@ def test_ui_lists_render_one_empty_message_and_hide_load_more_when_empty():
     assert html.index('id="rToSec"') < html.index('id="rDoSec"') and html.index('id="rToGrid"') < html.index('id="rDoGrid"')      # Reviewed below To review
     assert 'id="rToEmpty"' in html and 'id="rDoEmpty"' in html and 'E("div","empty",kind==="to"' not in html                # one message outside the grid, never a card in it
     assert "total===0" in html and html.count("more(") >= 3                                                                    # Load more: hidden for empty / short / fully loaded lists
-    assert 'x.reviewable' in html and '"in progress"' in html and "T.reviewed/T.closed" in html and "x.events-x.reviewed" not in html
+    assert 'x.reviewable' in html and '" in progress"' in html and "T.reviewed/T.closed" in html and "x.events-x.reviewed" not in html
+
+
+def test_page_is_never_cached_names_its_version_and_lists_return_total():
+    b = Box()
+    try:
+        for path in ("/", "/ui"):
+            c = http.client.HTTPConnection("127.0.0.1", b.port, timeout=10)
+            c.request("GET", path); r = c.getresponse(); body = r.read(); c.close()
+            assert r.status == 200 and r.getheader("Cache-Control") == "no-store" and r.getheader("Pragma") == "no-cache"
+            assert b"__VERSION__" not in body and (f"v{b.app.cfg and __import__('server').VERSION}").encode() in body and b'name="app-version"' in body
+        b.frame("cam", T0)
+        st, cams = b.req("GET", "/v1/cameras")
+        assert st == 200 and cams["total"] == len(cams["cameras"]) == 1
+        st, lst = b.req("GET", "/v1/journal?limit=1")
+        assert st == 200 and lst["total"] == 0 and lst["items"] == []                                           # total is the number of matching items, not of the page
+        JS = {"Content-Type": "application/json"}
+        for i in range(3):
+            eid = "tot-%05d" % i
+            b.req("POST", "/v1/cameras/c/episodes", json.dumps({"id": eid, "action": "start", "t_ms": T0 + i, "groups": ["person"]}).encode(), JS)
+            b.req("POST", "/v1/cameras/c/episodes", json.dumps({"id": eid, "action": "end", "t_ms": T0 + i + 1, "outcome": "confirmed"}).encode(), JS)
+        lst = b.req("GET", "/v1/journal?limit=2&offset=0")[1]
+        assert lst["total"] == 3 and len(lst["items"]) == 2
+        assert b.req("GET", "/v1/journal?limit=2&offset=2")[1]["total"] == 3 and b.req("GET", "/v1/journal?camera=zzz")[1]["total"] == 0
+    finally:
+        b.close()
+
+
+def test_group_filter_category_outcomes_and_next_filters(tmp_path):
+    day = 86400_000
+    clk = Clock(40 * day); j = Journal(str(tmp_path), clock=clk)
+    mk(j, clk, "gf-000001", "a", 30 * day, "confirmed", ["person"])
+    mk(j, clk, "gf-000002", "a", 31 * day, "released", ["vehicle"])                                           # groups + released = confirmed at some point
+    mk(j, clk, "gf-000003", "b", 32 * day, "vetoed", ["person"])
+    mk(j, clk, "gf-000004", "b", 33 * day, "released", ["animal"], kind="unflagged")
+    mk(j, clk, "gf-000005", "b", 34 * day, "aborted", [])
+    ids = lambda **k: [m["id"] for m in j.list(**k)["items"]]
+    assert ids(group="person") == ["gf-000003", "gf-000001"] and ids(group="animal") == ["gf-000004"]
+    assert ids(outcome="confirmed") == ["gf-000002", "gf-000001"] and ids(outcome="vetoed") == ["gf-000003"] and ids(outcome="unflagged") == ["gf-000004"]
+    assert ids(outcome="aborted") == ["gf-000005"] and ids(outcome="other") == ["gf-000005"]                  # raw outcomes still work
+    assert j.next_unlabelled(group="vehicle")["item"]["id"] == "gf-000002" and j.next_unlabelled(group="vehicle")["remaining"] == 1
+    assert j.next_unlabelled(outcome="unflagged")["item"]["id"] == "gf-000004"
+    assert j.next_unlabelled(t_from=33 * day)["item"]["id"] == "gf-000004" and j.next_unlabelled(t_to=30 * day)["remaining"] == 1
+    assert j.summary(group="person")["totals"]["events"] == 2 and j.summary(group="person", camera="b")["totals"]["events"] == 1
+    j.stop()
+
+
+def test_http_group_filter_validation():
+    b = Box()
+    try:
+        assert b.req("GET", "/v1/journal?group=person")[0] == 200 and b.req("GET", "/v1/journal?group=dog")[0] == 400
+        assert b.req("GET", "/v1/journal/next?group=animal&from=0&to=9999999999999")[0] == 200 and b.req("GET", "/v1/journal/next?group=x")[0] == 400
+        assert b.req("GET", "/v1/journal/summary?group=vehicle")[0] == 200
+    finally:
+        b.close()

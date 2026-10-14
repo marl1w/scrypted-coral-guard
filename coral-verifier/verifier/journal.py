@@ -195,6 +195,19 @@ class Journal:
         return self._call(self._episode, camera, body, display_name) if self.enabled else (503, {"error": "journal unavailable"})
 
     @staticmethod
+    def category(m):
+        """One category per episode (summary buckets and the Outcome filter): unflagged by KIND, confirmed at any point, vetoed, else other."""
+        if m.get("kind") == "unflagged":
+            return "unflagged"
+        if Journal.confirmed(m):
+            return "confirmed"
+        return "vetoed" if m.get("outcome") == "vetoed" else "other"
+
+    @staticmethod
+    def _outcome_ok(m, outcome):
+        return Journal.category(m) == outcome if outcome in ("confirmed", "vetoed", "unflagged", "other") else m["outcome"] == outcome
+
+    @staticmethod
     def default_name(camera):
         return re.sub(r"_\d+$", "", camera) or camera
 
@@ -426,12 +439,12 @@ class Journal:
     def _view(self, st):
         return dict(st["meta"])
 
-    def list(self, camera=None, outcome=None, label=None, t_from=None, t_to=None, limit=50, offset=0, labelled=None, status=None):
+    def list(self, camera=None, outcome=None, label=None, t_from=None, t_to=None, limit=50, offset=0, labelled=None, status=None, group=None):
         self._kick()
         with self.lock:
             rows = [dict(st["meta"]) for st in self.eps.values()]            # copy under the lock, filter and sort outside
         if True:
-            rows = [m for m in rows if (not camera or m["camera"] == camera) and (not outcome or m["outcome"] == outcome)
+            rows = [m for m in rows if (not camera or m["camera"] == camera) and (not outcome or self._outcome_ok(m, outcome)) and (not group or group in m["groups"])
                     and (not label or (m["label"] == label if label != "none" else m["label"] is None))
                     and (labelled is None or (m["label"] is not None) == labelled) and (not status or m["status"] == status)
                     and (t_from is None or m["start_ms"] >= t_from) and (t_to is None or m["start_ms"] <= t_to)]
@@ -440,13 +453,14 @@ class Journal:
             offset = max(0, int(offset))
             return {"total": len(rows), "offset": offset, "items": rows[offset:offset + limit]}
 
-    def next_unlabelled(self, after=None, camera=None, outcome=None):
+    def next_unlabelled(self, after=None, camera=None, outcome=None, group=None, t_from=None, t_to=None):
         """Annotation mode: the OLDEST closed episode without a label (optionally only after episode `after` in start order, filtered by camera/outcome).
         Returns {item, remaining}: `remaining` counts all matching unlabelled closed episodes (the returned one included)."""
         with self.lock:
             rows = [dict(st["meta"]) for st in self.eps.values()
                     if st["meta"]["status"] == "closed" and st["meta"]["label"] is None and (not camera or st["meta"]["camera"] == camera)
-                    and (not outcome or st["meta"]["outcome"] == outcome)]
+                    and (not outcome or self._outcome_ok(st["meta"], outcome)) and (not group or group in st["meta"]["groups"])
+                    and (t_from is None or st["meta"]["start_ms"] >= t_from) and (t_to is None or st["meta"]["start_ms"] <= t_to)]
             ref = self.eps.get(after) if after and ID_RE.match(after) else None
             ref_key = None if ref is None else (ref["meta"]["start_ms"], ref["meta"]["id"])
         rows.sort(key=lambda m: (m["start_ms"], m["id"]))
@@ -514,15 +528,16 @@ class Journal:
                 return 500, {"error": "journal write failed"}
             return 200, {"id": eid, "label": label, "label_note": note}
 
-    def summary(self, t_from=None, t_to=None, camera=None, tz_offset_min=0):
+    def summary(self, t_from=None, t_to=None, camera=None, tz_offset_min=0, group=None):
         """Dashboard numbers. Period (episode start, epoch ms) and camera filters. Returns the per camera x group `rows` (counts by outcome and label), the
         overall `totals`, one row per `cameras`, per `groups` and per local `days` (tz_offset_min east of UTC) with categories confirmed/vetoed/unflagged/other."""
         with self.lock:
             metas = [dict(st["meta"]) for st in self.eps.values()]
-        metas = [m for m in metas if (t_from is None or m["start_ms"] >= t_from) and (t_to is None or m["start_ms"] <= t_to) and (not camera or m["camera"] == camera)]
+        metas = [m for m in metas if (t_from is None or m["start_ms"] >= t_from) and (t_to is None or m["start_ms"] <= t_to) and (not camera or m["camera"] == camera)
+                 and (not group or group in m["groups"])]
         # one category per episode: unflagged by KIND (independent of the outcome); confirmed = confirmed at any point; vetoed; everything else is explicit "other"
         # (aborted, released without groups, parked, stale, ongoing)
-        cat = lambda m: "unflagged" if m.get("kind") == "unflagged" else ("confirmed" if self.confirmed(m) else ("vetoed" if m["outcome"] == "vetoed" else "other"))
+        cat = self.category
 
         def acc():
             return {"events": 0, "closed": 0, "ongoing": 0, "reviewable": 0, "reviewed": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0}

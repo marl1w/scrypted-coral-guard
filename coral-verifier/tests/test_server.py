@@ -48,7 +48,7 @@ def test_frame_reply_shape_and_session(box):
     st, r = box.req("POST", "/v1/cameras/front_door/reset")
     assert st == 200 and r["reset"] is True
     assert box.req("GET", "/v1/cameras/front_door")[0] == 404
-    assert box.req("GET", "/v1/cameras")[1] == {"cameras": []}
+    assert box.req("GET", "/v1/cameras")[1] == {"total": 0, "cameras": []}
 
 
 def test_get_state_expires_with_wall_clock_not_only_frames(box):
