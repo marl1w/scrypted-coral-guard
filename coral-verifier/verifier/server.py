@@ -14,10 +14,11 @@ from journal import Journal
 from coral import CoralManager, Job
 
 def _read_version():
-    """Add-on version: VERIFIER_VERSION, else the `version:` of config.yaml next to the package (or one level up), else the constant."""
-    v = os.environ.get("VERIFIER_VERSION")
-    if v:
-        return v
+    """Add-on version: VERIFIER_VERSION, else BUILD_VERSION, else the `version:` of config.yaml next to the package (or one level up), else the constant."""
+    for key in ("VERIFIER_VERSION", "BUILD_VERSION"):                  # BUILD_VERSION: passed by the Supervisor as a build argument (see the Dockerfile)
+        v = os.environ.get(key)
+        if v and v.strip():
+            return v.strip()
     here = os.path.dirname(os.path.abspath(__file__))
     for p in (os.path.join(here, "config.yaml"), os.path.join(here, "..", "config.yaml"), "/config.yaml"):
         try:
@@ -30,7 +31,7 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.2.1"
+FALLBACK_VERSION = "0.3.3"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
@@ -43,7 +44,7 @@ FIRST_BYTE_S = 2.0             # a NEW connection must start its request within 
 RESERVED_HEALTH_SLOTS = 4      # connections beyond max_connections that only GET /v1/health may use
 CAM_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 MODEL_FILES = {320: "yolov9-s-relu6-best_320_int8_edgetpu.tflite", 512: "yolov9-s-relu6-tpumax_512_int8_edgetpu.tflite"}
-TRACKER_KEYS = ("start_thr", "cont_thr", "confirm_n", "confirm_m", "hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s", "vehicle_thr", "animal_start_thr", "animal_cont_thr", "zoom_out", "second_look")
+TRACKER_KEYS = ("start_thr", "cont_thr", "confirm_n", "confirm_m", "hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s", "vehicle_thr", "animal_start_thr", "animal_cont_thr", "zoom_out", "second_look", "name")
 log = logging.getLogger("verifier")
 
 
@@ -359,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
                             raise ValueError("body must be a JSON object")
                     except (json.JSONDecodeError, RecursionError, ValueError):
                         return self._send(400, {"error": "invalid JSON object"})
-                    st, out = app.journal.episode(cam, obj)
+                    st, out = app.journal.episode(cam, obj, app.registry.config(cam).name)
                     return self._send(st, out)
                 if sub == "reset":
                     if method != "POST":

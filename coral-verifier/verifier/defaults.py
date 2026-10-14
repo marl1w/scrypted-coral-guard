@@ -63,6 +63,7 @@ TRACKER = {
     "vehicle_thr": 0.40,            # strong floor of car/truck/bus/motorcycle (bicycle fixed 0.5); the weak band is [WEAK_VEHICLE_THR, vehicle_thr)
     "animal_start_thr": 0.6,        # animal confirmation threshold
     "animal_cont_thr": 0.3,         # animal continuation threshold, also the animal decode floor
+    "name": "",                     # display name of the camera (journal and review page); "" = derived from the id
     "second_look": True,            # re-check borderline / brand-new detections on a full-resolution crop (one extra Coral pass each, max SECOND_LOOK["max"] per frame)
     "zoom_out": 0.0,                # 0 = off; > 0 adds ONE Coral pass with the whole frame shrunk to (1 - zoom_out) on a grey canvas (large, edge-cut objects)
 }

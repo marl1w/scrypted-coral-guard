@@ -417,3 +417,87 @@ def test_http_next_summary_filters_and_ui_markup():
         assert b"innerHTML" not in html and b"document.write" not in html and b"eval(" not in html                  # untrusted text only through textContent
     finally:
         b.close()
+
+
+# ---------------- 0.3.3 ----------------
+
+def test_unflagged_episode_that_never_confirmed_is_discarded_at_end(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    for eid, out, groups, tl in (("uf-000001", "vetoed", ["person"], None), ("uf-000002", "aborted", ["person"], None), ("uf-000003", "released", [], None),
+                                 ("uf-000004", "released", ["person"], None), ("uf-000005", "aborted", [], "confirmed by the plugin"), ("uf-000006", "confirmed", [], None)):
+        ep(j, "c", eid, "start", 1000, kind="unflagged", groups=groups)
+        j.record_frame("c", 1, b"x", [det("person", 0.8)])
+        st, out_ = ep(j, "c", eid, "end", 2000, outcome=out, **({"timeline_event": {"t_ms": 1500, "text": tl}} if tl else {}))
+        assert st == 200
+    assert {m["id"] for m in j.list()["items"]} == {"uf-000004", "uf-000005", "uf-000006"}                    # confirmed at some point: kept
+    assert sorted(os.listdir(tmp_path)) == ["uf-000004", "uf-000005", "uf-000006"]                           # the others are not even on disk
+    ep(j, "c", "cam-000001", "start", 1000, kind="camera"); ep(j, "c", "cam-000001", "end", 2000, outcome="vetoed")
+    assert j.get("cam-000001")["status"] == "closed"                                                          # camera episodes are never discarded
+    j.stop()
+
+
+def test_legacy_unflagged_noise_is_purged_at_startup_and_in_maintenance(tmp_path, caplog):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    for eid in ("old-noise1", "old-noise2", "old-keep01"):
+        ep(j, "c", eid, "start", 1000, kind="camera", groups=["person"]); ep(j, "c", eid, "end", 2000, outcome="vetoed" if eid != "old-keep01" else "confirmed")
+    j.set_label("old-noise1", "correct", None)
+    j.stop()
+    for eid in ("old-noise1", "old-noise2", "old-keep01"):                                                   # rewrite them as legacy unflagged episodes
+        p = tmp_path / eid / "meta.json"; m = json.loads(p.read_text()); m["kind"] = "unflagged"; p.write_text(json.dumps(m))
+    import logging
+    with caplog.at_level(logging.INFO, logger="journal"):
+        j2 = Journal(str(tmp_path), clock=clk)
+    assert {m["id"] for m in j2.list()["items"]} == {"old-keep01"} and not (tmp_path / "old-noise1").exists()  # regardless of the label
+    assert any("removed 2" in r.getMessage() for r in caplog.records)
+    ep(j2, "c", "stale-uf01", "start", 1000, kind="unflagged")                                                # a stale unflagged episode closes as stale, then goes
+    clk.t += 3 * H
+    j2.maintain()
+    assert j2.get("stale-uf01") is None
+    j2.stop()
+
+
+def test_summary_categories_confirmed_vetoed_unflagged_other(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    mk(j, clk, "ct-000001", "a", 1000, "confirmed", ["person"])
+    mk(j, clk, "ct-000002", "a", 2000, "released", ["person"])                                                # groups + released = confirmed at some point
+    mk(j, clk, "ct-000003", "a", 3000, "released", [])                                                         # nothing confirmed: other
+    mk(j, clk, "ct-000004", "a", 4000, "vetoed", ["person"])
+    mk(j, clk, "ct-000005", "a", 5000, "aborted", [])
+    mk(j, clk, "ct-000006", "a", 6000, "released", ["animal"], kind="unflagged")                              # by kind, whatever the outcome
+    ep(j, "a", "ct-000007", "start", 7000, groups=["person"], timeline_event={"t_ms": 7100, "text": "Person confirmed"}); ep(j, "a", "ct-000007", "end", 7200, outcome="aborted")
+    T = j.summary()["totals"]
+    assert (T["confirmed"], T["vetoed"], T["unflagged"], T["other"], T["events"]) == (3, 1, 1, 2, 7)
+    j.stop()
+
+
+def test_camera_display_name_config_sanitising_episode_meta_and_fallback():
+    import session as S
+    c = S.Config()
+    assert c.name == "" and c.updated({"name": "  Front   <b>door</b>\n"}).name == "Front bdoor/b"
+    assert c.updated({"name": 'x"y\'z&`'}).name == "xyz"
+    for bad in (5, None, "x" * 65):
+        with pytest.raises(ValueError):
+            c.updated({"name": bad})
+    assert c.updated({"name": "x" * 64}).name == "x" * 64
+    assert Journal.default_name("front_door_12") == "front_door" and Journal.default_name("garage") == "garage" and Journal.default_name("_5") == "_5"
+    b = Box()
+    try:
+        JS = {"Content-Type": "application/json"}
+        assert b.req("POST", "/v1/cameras/front_door_1/config", json.dumps({"name": "Front door"}).encode(), JS)[1]["name"] == "Front door"
+        assert b.req("GET", "/v1/cameras/front_door_1/config")[1]["name"] == "Front door"
+        assert b.req("POST", "/v1/cameras/front_door_1/config", json.dumps({"name": 3}).encode(), JS)[0] == 400
+        for cam, eid in (("front_door_1", "dn-000001"), ("garage_2", "dn-000002")):
+            b.req("POST", f"/v1/cameras/{cam}/episodes", json.dumps({"id": eid, "action": "start", "t_ms": T0, "groups": ["person"]}).encode(), JS)
+            b.req("POST", f"/v1/cameras/{cam}/episodes", json.dumps({"id": eid, "action": "end", "t_ms": T0 + 5, "outcome": "confirmed"}).encode(), JS)
+        assert b.req("GET", "/v1/journal/dn-000001")[1]["display_name"] == "Front door" and b.req("GET", "/v1/journal/dn-000002")[1]["display_name"] == "garage"
+        names = {c["camera"]: c["display_name"] for c in b.req("GET", "/v1/journal/summary")[1]["cameras"]}
+        assert names == {"front_door_1": "Front door", "garage_2": "garage"}
+    finally:
+        b.close()
+
+
+def test_ui_uses_display_names_hides_load_more_and_routes_summary_clicks():
+    html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "verifier", "ui.html")).read()
+    assert "display_name" in html and r"replace(/_\d+$/" in html                                              # fallback: id without a trailing _<digits>
+    assert "r.items.length<PAGE" in html and "r.items.length<12" in html                                      # no "Load more" after a short last page
+    assert 'tab(c.events-c.reviewed>0?"va":"re")' in html                                                     # Validate when unreviewed events exist, else Reviewed

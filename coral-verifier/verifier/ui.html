@@ -150,6 +150,7 @@ const fmtT=ms=>ms?new Date(ms).toLocaleString([],{dateStyle:"short",timeStyle:"m
 const fmtD=(a,b)=>{if(!b)return"ongoing";let s=Math.max(0,Math.round((b-a)/1000));return s>=3600?(s/3600).toFixed(1)+" h":s>=60?Math.round(s/60)+" min":s+" s"};
 const pct=v=>v==null?"-":Math.round(v*100)+"%";
 const eid=encodeURIComponent;
+const dn=m=>m.display_name||String(m.camera||"").replace(/_\d+$/,"")||m.camera;                // display name, fallback: the id without a trailing _<digits>
 const IC={check:"M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",close:"M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
  next:"M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z",prev:"M20,11V13H8L13.5,18.5L12.08,19.92L4.16,12L12.08,4.08L13.5,5.5L8,11H20Z"};
 function icon(name){const NS="http://www.w3.org/2000/svg",s=document.createElementNS(NS,"svg");s.setAttribute("viewBox","0 0 24 24");s.setAttribute("aria-hidden","true");const p=document.createElementNS(NS,"path");p.setAttribute("d",IC[name]);s.appendChild(p);return s}
@@ -171,7 +172,7 @@ function frameBox(id,f,cls,label,focus){
 function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.outcome||""),m.outcome||m.status));
   (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));return c}
 function card(m){
-  const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",m.camera));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
+  const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",dn(m)));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
   c.appendChild(E("div","mut",fmtT(m.start_ms)));c.appendChild(chips(m));
   const t=E("div","thumbs");for(const role of["first","best","last"]){const f=m.frames.find(x=>x.role===role);if(f)t.appendChild(frameBox(m.id,f,"th",role))}
   c.appendChild(t);c.onclick=()=>openDetail(m.id);return c}
@@ -185,15 +186,15 @@ async function load(reset){
   if(reset){offset=0;$("#grid").replaceChildren()}
   const p=query();p.set("limit",PAGE);p.set("offset",offset);
   try{const r=await j(`${API}?${p}`);total=r.total;r.items.forEach(m=>$("#grid").appendChild(card(m)));offset+=r.items.length;
-    $("#more").hidden=offset>=total;$("#empty").hidden=total>0;$("#stat").textContent=total+" events"}catch(e){$("#stat").textContent="error: "+e.message}}
-async function cams(){try{const s=await j(`${API}/summary`);[...new Set(s.cameras.map(r=>r.camera))].sort().forEach(c=>{
-  for(const id of["fCam","vCam","rCam","suCam"]){const o=E("option","",c);o.value=c;$("#"+id).appendChild(o)}})}catch(e){}}
+    $("#more").hidden=r.items.length<PAGE||offset>=total;$("#empty").hidden=total>0;$("#stat").textContent=total+" events"}catch(e){$("#stat").textContent="error: "+e.message}}
+async function cams(){try{const s=await j(`${API}/summary`);s.cameras.slice().sort((a,b)=>dn(a).localeCompare(dn(b))).forEach(c=>{
+  for(const id of["fCam","vCam","rCam","suCam"]){const o=E("option","",dn({display_name:c.display_name,camera:c.camera}));o.value=c.camera;$("#"+id).appendChild(o)}})}catch(e){}}
 
 /* ---------- detail (also used to change a label) ---------- */
 async function openDetail(id){
   const m=await j(`${API}/${eid(id)}`);const d=$("#detail");d.replaceChildren();d.classList.add("on");
   const back=E("button","","Back");back.onclick=()=>{d.classList.remove("on");refresh()};d.appendChild(back);
-  d.appendChild(E("h2","",m.camera+" - "+fmtT(m.start_ms)));d.appendChild(E("div","mut",`${fmtD(m.start_ms,m.end_ms)}  id ${m.id}`+(m.note?"  note: "+m.note:"")));d.appendChild(chips(m));
+  d.appendChild(E("h2","",dn(m)+" - "+fmtT(m.start_ms)));d.appendChild(E("div","mut",`${fmtD(m.start_ms,m.end_ms)}  id ${m.id}`+(m.note?"  note: "+m.note:"")));d.appendChild(chips(m));
   const fr=E("div","frames");const fs=framesOf(m);
   for(const f of fs){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null));col.appendChild(E("div","mut",f.role+"  "+fmtT(f.t_ms)));fr.appendChild(col)}
   d.appendChild(fr);
@@ -223,7 +224,7 @@ function vRender(){
   const b=$("#vBody");b.replaceChildren();$("#vProg").textContent=V.remaining+" left";const m=V.cur;
   if(!m){b.appendChild(E("div","empty","Nothing left to review"));return}
   const q=m.question||{text:"Is this a real event?",group:null,yes:"correct",no:"false_alarm"};
-  b.appendChild(E("div","vq",q.text));if((q.others||[]).length)b.appendChild(E("div","mut","Also: "+q.others.join(", ")));b.appendChild(E("div","mut",m.camera+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));
+  b.appendChild(E("div","vq",q.text));if((q.others||[]).length)b.appendChild(E("div","mut","Also: "+q.others.join(", ")));b.appendChild(E("div","mut",dn(m)+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));
   const row=E("div","vbtns");row.appendChild(btn("good","Yes (Y)","check",()=>vAnswer(true)));row.appendChild(btn("wrong","No (N)","close",()=>vAnswer(false)));b.appendChild(row);
   const sub=E("div","vsub");sub.appendChild(btn("","Skip (S)","next",vSkip));sub.appendChild(btn("","Previous","prev",vBack));b.appendChild(sub);
   const fr=E("div","frames");for(const f of framesOf(m).slice(0,3)){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,q.group||"none"));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
@@ -252,7 +253,7 @@ async function reLoad(kind,reset){
   const p=new URLSearchParams({limit:12,offset:s.off,labelled:kind==="do"?"true":"false"});if(kind==="to")p.set("status","closed");
   if($("#rCam").value)p.set("camera",$("#rCam").value);if(kind==="do"&&$("#rLab").value)p.set("label",$("#rLab").value);
   const r=await j(`${API}?${p}`);r.items.forEach(m=>grid.appendChild(card(m)));s.off+=r.items.length;
-  $(kind==="to"?"#rToMore":"#rDoMore").hidden=s.off>=r.total;$(kind==="to"?"#rToH":"#rDoH").textContent=(kind==="to"?"To review":"Reviewed")+" ("+r.total+")";
+  $(kind==="to"?"#rToMore":"#rDoMore").hidden=r.items.length<12||s.off>=r.total;$(kind==="to"?"#rToH":"#rDoH").textContent=(kind==="to"?"To review":"Reviewed")+" ("+r.total+")";
   if(!r.total)grid.appendChild(E("div","empty",kind==="to"?"Nothing to review":"Nothing reviewed yet"))}
 async function reAll(){reLoad("to",true);reLoad("do",true);
   const t=$("#rTot");t.replaceChildren();try{const s=await j(`${API}/summary`+($("#rCam").value?"?camera="+encodeURIComponent($("#rCam").value):""));const x=s.totals;
@@ -284,8 +285,8 @@ async function suLoad(){
   const cols=[["camera","Camera"],["events","Events"],["reviewed","Reviewed"],["precision","Precision"],["false_alarm","False alarms"],["missed","Missed"],["confirmed","Confirmed"],["vetoed","Vetoed"],["unflagged","Unflagged"]];
   const rows=[...s.cameras].sort((a,c)=>{const x=a[SU.sort],y=c[SU.sort];if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return (x<y?-1:x>y?1:0)*SU.dir});
   const tb=E("table"),hr=tb.insertRow();cols.forEach(([key,t])=>{const th=E("th","s",t+(SU.sort===key?(SU.dir>0?" ▲":" ▼"):""));th.onclick=()=>{SU.dir=SU.sort===key?-SU.dir:1;SU.sort=key;suLoad()};hr.appendChild(th)});
-  for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{$("#vCam").value=c.camera;$("#rCam").value=c.camera;V.hist=[];tab("va")};
-    for(const[key]of cols){const td=r.insertCell();if(key==="precision"){td.appendChild(bar(c.precision));td.appendChild(document.createTextNode(c.reviewed?pct(c.precision):"-"))}else td.textContent=c[key]}}
+  for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{$("#vCam").value=c.camera;$("#rCam").value=c.camera;V.hist=[];tab(c.events-c.reviewed>0?"va":"re")};   // unreviewed events: Validate, else Reviewed
+    for(const[key]of cols){const td=r.insertCell();if(key==="camera")td.textContent=dn(c);else if(key==="precision"){td.appendChild(bar(c.precision));td.appendChild(document.createTextNode(c.reviewed?pct(c.precision):"-"))}else td.textContent=c[key]}}
   const sc=E("div","scroll");sc.appendChild(tb);b.appendChild(sc);
   b.appendChild(E("h2","","Categories"));const gt=E("table"),gh=gt.insertRow();["Category","Events","Precision"].forEach(x=>gh.appendChild(E("th","",x)));
   for(const g of s.groups){const r=gt.insertRow(),c0=r.insertCell(),dot=E("span","dot");dot.style.background=COL[g.group]||"#9ca3af";c0.appendChild(dot);c0.appendChild(document.createTextNode(g.group));

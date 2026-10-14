@@ -13,7 +13,7 @@ and 4 fps senders cannot confirm on near-duplicate frames.
   - max_hold_s: SERVICE-SIDE safety with no counterpart in the reference simulation: a track with no detection >= start_thr for that long ends (default 600 s)
 Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`snapshot(wall_now)`) advances with the server clock.
 """
-import math, threading
+import math, re, threading
 
 from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU
 from dataclasses import dataclass, fields, asdict
@@ -54,11 +54,14 @@ class Config:
     animal_cont_thr: float = _T["animal_cont_thr"]
     zoom_out: float = _T["zoom_out"]
     second_look: bool = _T["second_look"]
+    name: str = _T["name"]
 
     def validate(self):
         for k, v in asdict(self).items():
-            if not math.isfinite(v):
+            if not isinstance(v, str) and not math.isfinite(v):
                 raise ValueError(f"{k} must be finite")
+        if len(self.name) > 64:
+            raise ValueError("name must be at most 64 characters")
         for k in ("start_thr", "cont_thr"):
             if not 0 < getattr(self, k) <= 1:
                 raise ValueError(f"{k} must be in (0, 1]")
@@ -89,6 +92,14 @@ class Config:
         for k, v in changes.items():
             if k not in known:
                 raise ValueError(f"unknown config key {k!r}"[:80])
+            if known[k] is str:
+                if not isinstance(v, str):
+                    raise ValueError(f"{k} must be a string")
+                v = " ".join(re.sub(r"[<>\"'`&]", "", re.sub(r"[\x00-\x1f\x7f]", " ", v)).split())     # control characters -> space, markup characters removed, whitespace collapsed
+                if len(v) > 64:
+                    raise ValueError(f"{k} must be at most 64 characters")
+                cur[k] = v
+                continue
             if known[k] is bool:
                 if not isinstance(v, bool):
                     raise ValueError(f"{k} must be true or false")

@@ -1,5 +1,5 @@
 """HTTP layer end-to-end: real server, real Coral child process, fake TPU. Endpoints, codes, token, 429, 503, stale/shed, timings, health."""
-import http.client, json, threading, time
+import http.client, json, os, re, threading, time
 import pytest
 from boxlib import Box, BASE as T0, NOW, TOKEN, jpeg, person_item, burst
 
@@ -31,7 +31,7 @@ def test_frame_reply_shape_and_session(box):
     assert r["camera"] == "front_door" and r["t"] == T0
     for k in ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "coral_ms"):
         assert isinstance(r[k], float) and r[k] >= 0, k
-    assert r["total_ms"] >= r["infer_ms"] >= 1.5 and r["coral_ms"] == round(r["infer_ms"], 1)
+    assert r["total_ms"] >= r["infer_ms"] >= 1.5 and abs(r["coral_ms"] - r["infer_ms"]) <= 0.051                  # same value, rounded to 1 and 2 decimals (no exact-equality flake on .x5)
     d = r["detections"][0]
     assert d["cls"] == "person" and 0.9 < d["score"] <= 1 and len(d["box"]) == 4 and all(0 <= v <= 1 for v in d["box"])
     assert r["person"]["state"] == "candidate" and r["person"]["present"] is False
@@ -342,3 +342,20 @@ def test_stale_age_starts_at_arrival_not_after_decode(monkeypatch):
         assert b.frame("c", T0)[0] == 200
     finally:
         b.close()
+
+
+def test_version_is_read_from_build_arg_or_config_yaml(monkeypatch):
+    import server as SV
+    here = os.path.dirname(os.path.abspath(__file__))
+    want = re.search(r'^version:\s*"?([^"\n]+)', open(os.path.join(here, "..", "config.yaml")).read(), re.M).group(1)
+    monkeypatch.delenv("VERIFIER_VERSION", raising=False); monkeypatch.delenv("BUILD_VERSION", raising=False)
+    assert SV._read_version() == want                                                                         # config.yaml next to the package / one level up
+    monkeypatch.setenv("BUILD_VERSION", "9.8.7")
+    assert SV._read_version() == "9.8.7"
+    monkeypatch.setenv("VERIFIER_VERSION", "1.2.3")
+    assert SV._read_version() == "1.2.3"
+    monkeypatch.setenv("BUILD_VERSION", "  ")
+    monkeypatch.delenv("VERIFIER_VERSION")
+    assert SV._read_version() == want                                                                         # an empty build arg does not mask the file
+    docker = open(os.path.join(here, "..", "Dockerfile")).read()
+    assert "ARG BUILD_VERSION" in docker and docker.count("COPY config.yaml /app/config.yaml") == 2          # runtime and test stage read the real version

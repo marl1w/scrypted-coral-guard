@@ -77,8 +77,19 @@ class Journal:
             log.error("journal disabled, cannot use %s: %s", root, e)
             self.enabled = False
         if self.enabled:
+            self._purge_legacy()
             self._worker = threading.Thread(target=self._run, name="journal", daemon=True)
             self._worker.start()
+
+    def _purge_legacy(self):
+        """Unflagged episodes that never confirmed are noise (any label): removed at startup and in maintenance; the count is logged."""
+        n = 0
+        for st in list(self.eps.values()):
+            if self._discard_if_unconfirmed_unflagged(st):
+                n += 1
+        if n:
+            log.info("journal: removed %d unflagged episode(s) that never confirmed", n)
+        return n
 
     # ---------------- single worker: ALL journal mutations and disk writes run here, never on the frame path ----------------
     def _run(self):
@@ -143,6 +154,7 @@ class Journal:
                     if not isinstance(meta.get(k), t):
                         meta[k] = []
                 meta.setdefault("status", "closed"); meta.setdefault("camera", "unknown"); meta.setdefault("start_ms", 0)
+                meta.setdefault("display_name", self.default_name(str(meta["camera"])))
                 meta.setdefault("end_ms", None); meta.setdefault("outcome", None); meta.setdefault("label", None); meta.setdefault("last_activity_ms", 0)
                 size = sum(e.stat().st_size for e in os.scandir(d) if e.is_file())
                 self.eps[name] = self._state(meta, d, size)
@@ -179,14 +191,34 @@ class Journal:
         self._save_meta(st)
 
     # ---------------- episodes ----------------
-    def episode(self, camera, body):
-        return self._call(self._episode, camera, body) if self.enabled else (503, {"error": "journal unavailable"})
+    def episode(self, camera, body, display_name=None):
+        return self._call(self._episode, camera, body, display_name) if self.enabled else (503, {"error": "journal unavailable"})
+
+    @staticmethod
+    def default_name(camera):
+        return re.sub(r"_\d+$", "", camera) or camera
+
+    @staticmethod
+    def confirmed(m):
+        """Confirmed at any point: outcome confirmed, a timeline entry that says so, or groups present with outcome released."""
+        if m.get("outcome") == "confirmed":
+            return True
+        if any("confirm" in str(e.get("text", "")).lower() for e in m.get("timeline") or []):
+            return True
+        return bool(m.get("groups")) and m.get("outcome") == "released"
+
+    def _discard_if_unconfirmed_unflagged(self, st):
+        m = st["meta"]
+        if m.get("kind") == "unflagged" and m.get("status") == "closed" and not self.confirmed(m):
+            self._delete(m["id"])
+            return True
+        return False
 
     def _clamp(self, v, now):
         c = self.lim["clamp_s"] * 1000.0
         return int(min(max(v, now - c), now + c))
 
-    def _episode(self, camera, body):
+    def _episode(self, camera, body, display_name=None):
         """POST /v1/cameras/{camera}/episodes (runs on the worker). Returns (status, json)."""
         if not self.enabled:
             return 503, {"error": "journal unavailable"}
@@ -235,6 +267,8 @@ class Journal:
                     if len(ongoing) >= self.lim["max_ongoing"] or ongoing.count(camera) >= self.lim["max_ongoing_per_camera"]:
                         return 429, {"error": "too many ongoing episodes"}
                     st = self._create(camera, eid, self._clamp(t_ms, now), mode or "shadow", kind or "camera", groups or [], note, now)
+                    if st is not None:
+                        st["meta"]["display_name"] = display_name or self.default_name(camera)
                     if st is None:
                         return 500, {"error": "journal write failed"}
             elif st is None or st["meta"]["camera"] != camera:
@@ -259,6 +293,8 @@ class Journal:
             try:
                 if action == "end":
                     self._close(st, outcome or "released", self._clamp(t_ms, now))
+                    if self._discard_if_unconfirmed_unflagged(st):                  # noise: an unflagged episode that never confirmed is not kept
+                        return 200, {"id": eid, "status": "discarded", "outcome": outcome or "released"}
                 else:
                     if outcome:
                         m["outcome"] = outcome
@@ -356,6 +392,7 @@ class Journal:
                     self._close(st, "stale", int(m["last_activity_ms"]))
                 except OSError as e:
                     log.error("journal write failed: %s", e)
+        self._purge_legacy()
         cut = now - self.lim["retention_days"] * 86400_000.0
         for eid, st in list(self.eps.items()):
             m = st["meta"]
@@ -483,7 +520,9 @@ class Journal:
         with self.lock:
             metas = [dict(st["meta"]) for st in self.eps.values()]
         metas = [m for m in metas if (t_from is None or m["start_ms"] >= t_from) and (t_to is None or m["start_ms"] <= t_to) and (not camera or m["camera"] == camera)]
-        cat = lambda m: "unflagged" if m.get("kind") == "unflagged" else (m["outcome"] if m["outcome"] in ("confirmed", "vetoed") else "other")
+        # one category per episode: unflagged by KIND (independent of the outcome); confirmed = confirmed at any point; vetoed; everything else is explicit "other"
+        # (aborted, released without groups, parked, stale, ongoing)
+        cat = lambda m: "unflagged" if m.get("kind") == "unflagged" else ("confirmed" if self.confirmed(m) else ("vetoed" if m["outcome"] == "vetoed" else "other"))
 
         def acc():
             return {"events": 0, "reviewed": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0}
@@ -501,7 +540,8 @@ class Journal:
         out, cams, groups, days, totals = {}, {}, {}, {}, acc()
         for m in metas:
             add(totals, m)
-            add(cams.setdefault(m["camera"], {"camera": m["camera"], **acc()}), m)
+            crow = cams.setdefault(m["camera"], {"camera": m["camera"], "display_name": m.get("display_name") or self.default_name(m["camera"]), **acc()})
+            add(crow, m)
             for g in (m["groups"] or ["none"]):
                 row = out.setdefault((m["camera"], g), {"camera": m["camera"], "group": g, "total": 0, "by_outcome": {}, "by_label": {}})
                 row["total"] += 1

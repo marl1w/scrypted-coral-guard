@@ -39,6 +39,7 @@ RUN mkdir -p /models \
 FROM base AS test
 RUN pip install pytest==8.3.5
 COPY verifier /app
+COPY config.yaml /app/config.yaml
 COPY tests /tests
 ENV VERIFIER_FAKE_TPU=1
 WORKDIR /tests
@@ -46,7 +47,10 @@ CMD ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "/tests"]
 
 # Runtime stage: service code WITHOUT fake_tpu.py (no test hooks in the image that talks to the network).
 FROM base AS runtime
+ARG BUILD_VERSION
+ENV BUILD_VERSION=${BUILD_VERSION}
 COPY verifier /app
+COPY config.yaml /app/config.yaml
 RUN rm -f /app/fake_tpu.py
 COPY run.sh /run.sh
 RUN chmod +x /run.sh
