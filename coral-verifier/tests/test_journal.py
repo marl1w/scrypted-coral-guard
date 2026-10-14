@@ -499,5 +499,32 @@ def test_camera_display_name_config_sanitising_episode_meta_and_fallback():
 def test_ui_uses_display_names_hides_load_more_and_routes_summary_clicks():
     html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "verifier", "ui.html")).read()
     assert "display_name" in html and r"replace(/_\d+$/" in html                                              # fallback: id without a trailing _<digits>
-    assert "r.items.length<PAGE" in html and "r.items.length<12" in html                                      # no "Load more" after a short last page
-    assert 'tab(c.events-c.reviewed>0?"va":"re")' in html                                                     # Validate when unreviewed events exist, else Reviewed
+    assert 'more("#more",r.items.length,PAGE,offset,total)' in html and "r.items.length,12,s.off,r.total" in html                                      # no "Load more" after a short last page
+    assert 'tab(c.reviewable>0?"va":"re")' in html                                                     # Validate when unreviewed events exist, else Reviewed
+
+
+def test_reviewable_has_one_definition_closed_and_unlabelled(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    mk(j, clk, "rv-000001", "a", 1000, "confirmed", ["person"], label="correct")
+    mk(j, clk, "rv-000002", "a", 2000, "confirmed", ["person"])
+    mk(j, clk, "rv-000003", "a", 3000, "vetoed", ["person"])
+    ep(j, "a", "rv-000004", "start", 4000, groups=["person"])                                                 # in progress: not reviewable
+    ep(j, "a", "rv-000005", "start", 5000, groups=["person"])
+    T = j.summary()["totals"]
+    assert (T["events"], T["closed"], T["ongoing"], T["reviewable"], T["reviewed"]) == (5, 3, 2, 2, 1)
+    listed = j.list(labelled=False, status="closed")["total"]
+    assert listed == T["reviewable"] == j.next_unlabelled()["remaining"] == 2                                  # the To review list, the chip and Validate's "N left" agree
+    assert j.summary(camera="a")["cameras"][0]["reviewable"] == 2 and j.summary(camera="a")["groups"][0]["ongoing"] == 2
+    ep(j, "a", "rv-000004", "end", 4100, outcome="confirmed")
+    assert j.summary()["totals"]["reviewable"] == 3 == j.next_unlabelled()["remaining"]                        # it becomes reviewable only once closed
+    j.set_label("rv-000002", "correct", None)
+    assert j.summary()["totals"]["reviewable"] == 2 and j.summary()["totals"]["reviewed"] == 2
+    j.stop()
+
+
+def test_ui_lists_render_one_empty_message_and_hide_load_more_when_empty():
+    html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "verifier", "ui.html")).read()
+    assert html.index('id="rToSec"') < html.index('id="rDoSec"') and html.index('id="rToGrid"') < html.index('id="rDoGrid"')      # Reviewed below To review
+    assert 'id="rToEmpty"' in html and 'id="rDoEmpty"' in html and 'E("div","empty",kind==="to"' not in html                # one message outside the grid, never a card in it
+    assert "total===0" in html and html.count("more(") >= 3                                                                    # Load more: hidden for empty / short / fully loaded lists
+    assert 'x.reviewable' in html and '"in progress"' in html and "T.reviewed/T.closed" in html and "x.events-x.reviewed" not in html

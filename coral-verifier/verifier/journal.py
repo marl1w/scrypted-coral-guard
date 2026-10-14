@@ -525,11 +525,18 @@ class Journal:
         cat = lambda m: "unflagged" if m.get("kind") == "unflagged" else ("confirmed" if self.confirmed(m) else ("vetoed" if m["outcome"] == "vetoed" else "other"))
 
         def acc():
-            return {"events": 0, "reviewed": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0}
+            return {"events": 0, "closed": 0, "ongoing": 0, "reviewable": 0, "reviewed": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0}
 
         def add(row, m):
             row["events"] += 1
             row[cat(m)] += 1
+            # ONE definition everywhere (lists, chips, Validate, dashboard): reviewable = closed and unlabelled; ongoing episodes are counted apart
+            if m["status"] == "ongoing":
+                row["ongoing"] += 1
+            else:
+                row["closed"] += 1
+                if not m["label"]:
+                    row["reviewable"] += 1
             if m["label"]:
                 row["reviewed"] += 1
                 row[m["label"]] += 1

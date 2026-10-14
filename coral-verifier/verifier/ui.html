@@ -124,8 +124,8 @@ svg.chart text{fill:var(--mut);font-size:9px}
     <select id="rLab"><option value="">Any label</option><option>correct</option><option>false_alarm</option><option>missed</option><option>wrong_class</option></select>
     <span id="rTot" class="chips"></span></div>
   <main>
-    <h2 id="rToH">To review</h2><div class="grid" id="rToGrid"></div><button class="more" id="rToMore" hidden>Load more</button>
-    <h2 id="rDoH">Reviewed</h2><div class="grid" id="rDoGrid"></div><button class="more" id="rDoMore" hidden>Load more</button>
+    <section id="rToSec"><h2 id="rToH">To review</h2><div class="empty" id="rToEmpty" hidden>Nothing to review</div><div class="grid" id="rToGrid"></div><button class="more" id="rToMore" hidden>Load more</button></section>
+    <section id="rDoSec"><h2 id="rDoH">Reviewed</h2><div class="empty" id="rDoEmpty" hidden>Nothing reviewed yet</div><div class="grid" id="rDoGrid"></div><button class="more" id="rDoMore" hidden>Load more</button></section>
   </main>
 </div>
 
@@ -186,7 +186,7 @@ async function load(reset){
   if(reset){offset=0;$("#grid").replaceChildren()}
   const p=query();p.set("limit",PAGE);p.set("offset",offset);
   try{const r=await j(`${API}?${p}`);total=r.total;r.items.forEach(m=>$("#grid").appendChild(card(m)));offset+=r.items.length;
-    $("#more").hidden=r.items.length<PAGE||offset>=total;$("#empty").hidden=total>0;$("#stat").textContent=total+" events"}catch(e){$("#stat").textContent="error: "+e.message}}
+    more("#more",r.items.length,PAGE,offset,total);$("#empty").hidden=total>0;$("#stat").textContent=total+" events"}catch(e){$("#stat").textContent="error: "+e.message}}
 async function cams(){try{const s=await j(`${API}/summary`);s.cameras.slice().sort((a,b)=>dn(a).localeCompare(dn(b))).forEach(c=>{
   for(const id of["fCam","vCam","rCam","suCam"]){const o=E("option","",dn({display_name:c.display_name,camera:c.camera}));o.value=c.camera;$("#"+id).appendChild(o)}})}catch(e){}}
 
@@ -248,16 +248,18 @@ document.addEventListener("keydown",e=>{
 
 /* ---------- reviewed tab ---------- */
 const R={to:{off:0},do:{off:0}};
+function more(sel,got,limit,off,total){$(sel).hidden=got<limit||off>=total||total===0}      // no button when the list is empty, short, or fully loaded
 async function reLoad(kind,reset){
-  const s=R[kind],grid=$(kind==="to"?"#rToGrid":"#rDoGrid");if(reset){s.off=0;grid.replaceChildren()}
+  const s=R[kind],grid=$(kind==="to"?"#rToGrid":"#rDoGrid"),my=s.seq=(s.seq||0)+1;if(reset){s.off=0;grid.replaceChildren()}
   const p=new URLSearchParams({limit:12,offset:s.off,labelled:kind==="do"?"true":"false"});if(kind==="to")p.set("status","closed");
   if($("#rCam").value)p.set("camera",$("#rCam").value);if(kind==="do"&&$("#rLab").value)p.set("label",$("#rLab").value);
-  const r=await j(`${API}?${p}`);r.items.forEach(m=>grid.appendChild(card(m)));s.off+=r.items.length;
-  $(kind==="to"?"#rToMore":"#rDoMore").hidden=r.items.length<12||s.off>=r.total;$(kind==="to"?"#rToH":"#rDoH").textContent=(kind==="to"?"To review":"Reviewed")+" ("+r.total+")";
-  if(!r.total)grid.appendChild(E("div","empty",kind==="to"?"Nothing to review":"Nothing reviewed yet"))}
+  const r=await j(`${API}?${p}`);if(my!==s.seq)return;                       // a newer request replaced this one: never append stale items
+  r.items.forEach(m=>grid.appendChild(card(m)));s.off+=r.items.length;
+  more(kind==="to"?"#rToMore":"#rDoMore",r.items.length,12,s.off,r.total);$(kind==="to"?"#rToH":"#rDoH").textContent=(kind==="to"?"To review":"Reviewed")+" ("+r.total+")";
+  $(kind==="to"?"#rToEmpty":"#rDoEmpty").hidden=r.total>0}                      // the empty state is ONE message outside the grid
 async function reAll(){reLoad("to",true);reLoad("do",true);
   const t=$("#rTot");t.replaceChildren();try{const s=await j(`${API}/summary`+($("#rCam").value?"?camera="+encodeURIComponent($("#rCam").value):""));const x=s.totals;
-    for(const[k,v]of[["reviewed",x.reviewed],["to review",x.events-x.reviewed],["correct",x.correct],["false alarm",x.false_alarm],["missed",x.missed],["wrong class",x.wrong_class]])t.appendChild(E("span","chip",k+" "+v))}catch(e){}}
+    for(const[k,v]of[["reviewed",x.reviewed],["to review",x.reviewable],["in progress",x.ongoing],["correct",x.correct],["false alarm",x.false_alarm],["missed",x.missed],["wrong class",x.wrong_class]])t.appendChild(E("span","chip",k+" "+v))}catch(e){}}
 
 /* ---------- summary dashboard ---------- */
 const SU={hours:168,sort:"precision",dir:1};
@@ -278,14 +280,14 @@ async function suLoad(){
   const p=new URLSearchParams({from:Date.now()-SU.hours*3600e3,tz:-new Date().getTimezoneOffset()});if($("#suCam").value)p.set("camera",$("#suCam").value);
   const s=await j(`${API}/summary?${p}`),b=$("#suBody"),T=s.totals;b.replaceChildren();
   if(!T.events){b.appendChild(E("div","empty","No events in this period"));return}
-  const k=E("div","kpis");k.appendChild(kpi("Events",T.events));k.appendChild(kpi("Reviewed",pct(T.events?T.reviewed/T.events:null)));
+  const k=E("div","kpis");k.appendChild(kpi("Events",T.events));k.appendChild(kpi("Reviewed",pct(T.closed?T.reviewed/T.closed:null)));
   k.appendChild(kpi("Precision",T.reviewed?pct(T.precision):"-"));k.appendChild(kpi("False alarms",T.false_alarm));k.appendChild(kpi("Missed",T.missed));b.appendChild(k);
   if(!T.reviewed)b.appendChild(E("div","empty","Review events to see accuracy"));
   b.appendChild(E("h2","","Cameras"));
   const cols=[["camera","Camera"],["events","Events"],["reviewed","Reviewed"],["precision","Precision"],["false_alarm","False alarms"],["missed","Missed"],["confirmed","Confirmed"],["vetoed","Vetoed"],["unflagged","Unflagged"]];
   const rows=[...s.cameras].sort((a,c)=>{const x=a[SU.sort],y=c[SU.sort];if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return (x<y?-1:x>y?1:0)*SU.dir});
   const tb=E("table"),hr=tb.insertRow();cols.forEach(([key,t])=>{const th=E("th","s",t+(SU.sort===key?(SU.dir>0?" ▲":" ▼"):""));th.onclick=()=>{SU.dir=SU.sort===key?-SU.dir:1;SU.sort=key;suLoad()};hr.appendChild(th)});
-  for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{$("#vCam").value=c.camera;$("#rCam").value=c.camera;V.hist=[];tab(c.events-c.reviewed>0?"va":"re")};   // unreviewed events: Validate, else Reviewed
+  for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{$("#vCam").value=c.camera;$("#rCam").value=c.camera;V.hist=[];tab(c.reviewable>0?"va":"re")};   // unreviewed events: Validate, else Reviewed
     for(const[key]of cols){const td=r.insertCell();if(key==="camera")td.textContent=dn(c);else if(key==="precision"){td.appendChild(bar(c.precision));td.appendChild(document.createTextNode(c.reviewed?pct(c.precision):"-"))}else td.textContent=c[key]}}
   const sc=E("div","scroll");sc.appendChild(tb);b.appendChild(sc);
   b.appendChild(E("h2","","Categories"));const gt=E("table"),gh=gt.insertRow();["Category","Events","Precision"].forEach(x=>gh.appendChild(E("th","",x)));
