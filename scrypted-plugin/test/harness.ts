@@ -134,13 +134,14 @@ export function make(opts: { settings?: Record<string, any>; initial?: boolean; 
     (ctl as any).notified = 0;
     ctl.starts = []; ctl.listeners = 0; ctl.removed = 0; ctl.logs = []; ctl.writes = [];
     ctl.state.motionDetected = !!opts.initial; ctl.hangStart = !!opts.hangStart; ctl.persistWrites = opts.persistWrites !== false;
-    const calls = { frame: [] as { a: any[]; d: ReturnType<typeof deferred> }[], reset: [] as { a: any[]; d: ReturnType<typeof deferred> }[], check: 0 };
+    const calls = { frame: [] as { a: any[]; d: ReturnType<typeof deferred> }[], reset: [] as { a: any[]; d: ReturnType<typeof deferred> }[], check: 0, episodes: [] as any[] };
     const client = opts.client || {
         frame: (...a: any[]) => { const d = deferred(); calls.frame.push({ a, d }); return d.p; },
         reset: (...a: any[]) => { const d = deferred(); calls.reset.push({ a, d }); if (!opts.holdReset) d.res({}); return d.p; },
         health: async () => ({ ok: true }),
         check: async () => { calls.check++; return { ok: true }; },
         config: async () => ({}),
+        episodeEvent: async (_cam: string, ev: any) => { calls.episodes.push(ev); if ((ctl as any).journal404) { const e: any = new Error('not found'); e.status = 404; throw e; } return {}; },
     };
     const dups: string[] = opts.dup ? [opts.dup] : [];
     const plugin: any = { config: { killSwitch: false, baseUrl: '', token: '', timeoutMs: 2000, frameTimeoutMs: 800 }, client, register() { }, unregister() { }, hw: new Map<string, any>(), acquireHw(m: any, max: number) { if (this.hw.has(m.id)) { this.hw.set(m.id, m); return true; } if (this.hw.size >= max) return false; this.hw.set(m.id, m); return true; }, releaseHw(m: any) { if (this.hw.get(m.id) === m) this.hw.delete(m.id); }, get hwSlotsUsed() { return this.hw.size; }, findDuplicate: () => dups[0] };

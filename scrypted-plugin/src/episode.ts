@@ -3,7 +3,7 @@
 //
 // Modes
 //   off     pass-through, the service is never called.
-//   shadow  motion mirrors raw motion exactly; the gate decision is computed and logged only.
+//   shadow  exactly the Gate state machine (wouldPublish); the published motion mirrors raw motion instead.
 //   gate    motion false until the service confirms a person, a moving (non-parked) vehicle or an animal, held while any is present.
 // Fail open: kill switch, mode off, a failed request or an unhealthy service force pass-through.
 
@@ -142,10 +142,16 @@ export class Episode {
     }
 
     get motion() { return this.lastMotion; }
+    /** the Gate value of motion (published in Gate; in Shadow only reported) */
+    get wouldPublish() { return this.lastWould; }
+    private lastWould = false;
     get scanning() { return this.lastScanning; }
     get degraded() { return this.degradedReason; }
     /** the CAMERA's raw motion (never the synthetic one). */
     get isRaw() { return this.camRaw; }
+    /** the groups that confirmed the current episode while it is confirmed (active), else undefined */
+    get confirmedGroups(): string[] | undefined { return this.state === 'active' ? this.confirmedBy.slice() : undefined; }
+    get pending() { return this.state === 'pending'; }
     /** a pixel-gate episode is running (pending or confirmed). */
     get synthetic() { return this.origin === 'synth' && (this.state === 'pending' || this.state === 'active'); }
     get bypassed() { return this.cfg.mode === 'off' || this.cfg.killSwitch; }
@@ -153,9 +159,12 @@ export class Episode {
     private get passthrough() { return this.bypassed || !!this.degradedReason; }
 
     private out(logs: LogEvent[], reset = false): Effects {
-        const motion = this.passthrough || this.cfg.mode !== 'gate'
+        // one state machine for Shadow and Gate: wouldPublish is the Gate value; only Gate publishes it
+        const would = this.passthrough
             ? this.camRaw
             : this.state === 'active' || (this.state === 'pending' && this.holdOver);
+        this.lastWould = would;
+        const motion = this.cfg.mode === 'gate' ? would : this.camRaw;
         const scanning = !this.passthrough && (this.state === 'pending' || this.state === 'active');
         this.lastMotion = motion;
         this.lastScanning = scanning;
@@ -247,8 +256,8 @@ export class Episode {
             reset = this.resume(now);
         else if (!this.passthrough && wasMode !== cfg.mode && (this.state === 'idle' || this.state === 'closed') && this.rawTrue)
             reset = this.resume(now);
-        if (this.synthRaw && cfg.mode !== 'gate') {
-            // Shadow or Off never run pixel-gate episodes: end it now
+        if (this.synthRaw && cfg.mode === 'off') {
+            // Off never runs unflagged (synthetic) episodes: end it now
             if (this.state === 'pending' || this.state === 'active')
                 this.close('aborted', now, logs, 'mode changed');
             this.synthRaw = false;
@@ -295,7 +304,7 @@ export class Episode {
      * (reset + scan) whose raw input is synthetic: it NEVER raises motion by itself and is never passed through.
      */
     synthStart(now: number): Effects {
-        if (this.passthrough || this.cfg.mode !== 'gate' || this.synthRaw || this.state === 'pending' || this.state === 'active')
+        if (this.passthrough || this.synthRaw || this.state === 'pending' || this.state === 'active')
             return this.out([]);
         this.startPending(now, true); // from idle or from a closed (released) camera episode
         this.origin = 'synth';

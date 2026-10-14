@@ -53,6 +53,17 @@ export interface FrameReply {
     session?: { frames: number; started_ms: number };
 }
 
+export interface EpisodeEvent {
+    id: string;
+    action: 'start' | 'update' | 'end';
+    t_ms: number;
+    mode: string;
+    kind: 'camera' | 'unflagged';
+    outcome?: 'confirmed' | 'vetoed' | 'aborted' | 'released' | 'parked';
+    groups?: string[];
+    timeline_event?: { t_ms: number; text: string };
+}
+
 export interface TrackerConfig {
     /** newer service: vehicle detect, animal confirm / keep thresholds */
     vehicle_thr?: number;
@@ -209,6 +220,12 @@ export class VerifierClient {
     async reset(camera: string): Promise<unknown> {
         assertCameraId(camera);
         return this.request('POST', `/v1/cameras/${encodeURIComponent(camera)}/reset`, '{}', 'application/json');
+    }
+
+    /** POST /v1/cameras/{camera}/episodes (event journal, service 0.3.0+): fire-and-forget for the caller. */
+    async episodeEvent(camera: string, ev: EpisodeEvent): Promise<unknown> {
+        assertCameraId(camera);
+        return this.request('POST', `/v1/cameras/${encodeURIComponent(camera)}/episodes`, JSON.stringify(ev), 'application/json');
     }
 
     async config(camera: string, cfg: TrackerConfig): Promise<TrackerConfig | null> {

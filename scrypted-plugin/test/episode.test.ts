@@ -120,7 +120,10 @@ test('synthetic (pixel gate): synthStart opens a scan while a released camera ep
     assert.equal(fx.reset, true);
     assert.equal(fx.motion, false, 'a pixel change alone never raises motion');
     assert.equal(e.reply(R(confirmed), 21500).motion, true);
-    assert.equal(mk({ mode: 'shadow' }).synthStart(0).reset, false, 'Shadow never runs one');
+    const sh = mk({ mode: 'shadow' });
+    assert.equal(sh.synthStart(0).reset, true, 'Shadow runs the same unflagged episode');
+    const c = sh.reply(R(confirmed), 1500);
+    assert.equal(c.motion, false, 'Shadow publishes raw motion'); assert.equal(sh.wouldPublish, true, 'Shadow would publish');
 });
 
 test('synthetic episode: never passed through, ends on degrade and on mode change, closed one does not block the camera\'s own trigger', () => {
@@ -132,7 +135,9 @@ test('synthetic episode: never passed through, ends on degrade and on mode chang
     const m = mk();
     m.synthStart(0);
     assert.equal(m.setConfig({ ...base, mode: 'shadow' }, 100).motion, false);
-    assert.equal(m.synthetic, false);
+    assert.equal(m.synthetic, true, 'Shadow keeps the unflagged episode (same decisions as Gate)');
+    m.setConfig({ ...base, mode: 'off' }, 200);
+    assert.equal(m.synthetic, false, 'Off ends it');
     const v = mk();
     v.synthStart(0);
     v.reply(R(idle), 500);
@@ -592,4 +597,24 @@ test('vehicle guard: the confirm score is the Vehicle confirm (moving) threshold
     const r = { person: { state: 'idle', confirmed: false, present: false }, detections: [{ cls: 'car', score: 0.55, box: [0.1, 0.1, 0.5, 0.5] }] } as any;
     assert.equal(vehicleView(r).tick, false, 'default 0.6');
     assert.equal(vehicleView(r, 0.5).tick, true);
+});
+
+test('Shadow = Gate decisions: the same inputs give the same summaries and wouldPublish; only the published motion differs (raw)', () => {
+    const run = (mode: 'shadow' | 'gate') => {
+        const e = mk({ mode });
+        const out: any[] = [];
+        const rec = (fx: any) => { out.push([fx.motion, e.wouldPublish]); for (const l of fx.logs) if (l.kind === 'summary') out.push({ ...l.summary, mode: 'x' }); };
+        rec(e.raw(true, 0)); rec(e.reply(R(confirmed), 500)); rec(e.raw(false, 2000));
+        rec(e.reply(R(confirmed), 3000)); rec(e.reply(R(idle), 9000)); rec(e.tick(20000));
+        rec(e.raw(true, 30000)); rec(e.reply(R(idle), 30500)); rec(e.tick(40000)); rec(e.raw(false, 41000));
+        return out;
+    };
+    const s = run('shadow'), g = run('gate');
+    const strip = (a: any[]) => a.map(x => Array.isArray(x) ? x[1] : x);
+    assert.deepEqual(strip(s), strip(g), 'same wouldPublish and summaries');
+    const pub = (a: any[]) => a.filter(Array.isArray).map(x => x[0]);
+    assert.deepEqual(pub(s), [true, true, false, false, false, false, true, true, true, false], 'Shadow publishes raw');
+    assert.equal(g.filter(Array.isArray)[3][0], true, 'Gate: the person stays after raw ended, still held');
+    assert.equal(s.filter(Array.isArray)[3][1], true, 'Shadow: wouldPublish held by the tracker after raw ended');
+    assert.equal(s.filter(Array.isArray)[8][1], false, 'Shadow: a raw-only trigger is vetoed, wouldPublish false while published stays raw');
 });

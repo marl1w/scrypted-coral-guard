@@ -425,7 +425,7 @@ test('status panel: a person reply shows analysing/person confirmed and is throt
 const flat = () => new Uint8Array(128 * 72);
 const blobFrame = () => { const g = new Uint8Array(128 * 72); for (let y = 20; y < 40; y++) for (let x = 40; x < 60; x++) g[y * 128 + x] = 200; return g; };
 
-test('Shadow: a gated frame is posted at low priority; a confirmed person is logged and counted, motion is never written', async () => {
+test('Shadow: a pixel-gate hit runs the same verified unflagged episode as Gate; wouldPublish ON, motion never written', async () => {
     const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm', gate: { warmupFrames: 0 } as any } });
     await eventually(() => ctl.starts.length === 1);
     const s = ctl.starts[0];
@@ -438,9 +438,10 @@ test('Shadow: a gated frame is posted at low priority; a confirmed person is log
     await eventually(() => h.calls.frame.length === 1);
     assert.equal(h.calls.frame[0].a[3], true, 'prio=low');
     h.calls.frame[0].d.res(confirmedReply);
-    await eventually(() => ctl.logs.some(l => /person seen but camera did not trigger/.test(String(l[1]))));
-    assert.equal(ctl.writes.length, 0);
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /1 unflagged/);
+    await eventually(() => ctl.logs.some(l => /person seen but camera did not trigger: would raise motion \(Shadow\)/.test(String(l[1]))));
+    assert.equal(ctl.writes.length, 0, 'Shadow never publishes the unflagged raise');
+    assert.equal(h.mixin['episode'].wouldPublish, true, 'but it would (same decision as Gate)');
+    assert.match(String((await h.mixin.getMixinSettings())[0].value), /Coral Guard would publish: ON/);
     await h.mixin.release();
 });
 
@@ -611,13 +612,14 @@ test('claim a package: not verifiable, logged and passed through (Gate raises mo
     await h.mixin.release();
 });
 
-test('Shadow ignores claims: motion mirrors raw, no pass-through log', async () => {
+test('Shadow judges claims like Gate (would pass an unverifiable claim through) while publishing raw', async () => {
     const h = make({ settings: { mode: 'Shadow' } });
     h.raw(true);
     h.claim('package');
     await sleep(40);
-    assert.ok(!ctl.logs.some(l => /not verifiable/.test(String(l[1]))));
+    assert.ok(ctl.logs.some(l => /not verifiable/.test(String(l[1]))));
     assert.equal(motion(), true);
+    assert.equal(h.mixin['episode'].wouldPublish, true);
     await h.mixin.release();
 });
 
@@ -847,13 +849,21 @@ test('heartbeat: an idle camera posts the fresh frame at low priority with no re
     await h.mixin.release();
 });
 
-test('heartbeat Shadow: a confirmed person is logged and counted, motion is never touched', async () => {
+test('heartbeat Shadow: same verified unflagged episode as Gate (would raise, released by the tracker, counted), motion never touched', async () => {
     const h = hb('Shadow');
     await eventually(() => ctl.starts.length === 1);
-    frame(ctl.starts[0]);
+    const st = ctl.starts[0];
+    frame(st);
     await eventually(() => h.calls.frame.length === 1);
     h.calls.frame[0].d.res(personHold);
-    await eventually(() => ctl.logs.some(l => /person seen but camera did not trigger \(heartbeat\)/.test(String(l[1]))));
+    await eventually(() => h.calls.frame.length === 2, 3000, 'the verified scan posts');
+    h.calls.frame[1].d.res(personHold);
+    await eventually(() => ctl.logs.some(l => /person seen but camera did not trigger: would raise motion \(Shadow\)/.test(String(l[1]))));
+    assert.equal(h.mixin['episode'].wouldPublish, true);
+    frame(st, Date.now() + 5);
+    await eventually(() => h.calls.frame.length === 3);
+    h.calls.frame[2].d.res(idleReply);
+    await eventually(() => h.mixin['episode'].wouldPublish === false, 3000, 'released by the tracker');
     assert.equal(ctl.writes.length, 0);
     assert.match(String((await h.mixin.getMixinSettings())[0].value), /1 unflagged/);
     await h.mixin.release();
@@ -1005,7 +1015,7 @@ test('heartbeat: once the subject is gone, the next camera episode resets the se
     const s = ctl.starts[0];
     frame(s);
     await eventually(() => h.calls.frame.length === 1);
-    h.calls.frame[0].d.res(personHold);
+    h.calls.frame[0].d.res(hbP({ animal: { present: true, confirmed: false } })); // present (tracked), not confirmed: no scan
     await sleep(30);
     frame(s, Date.now() + 5);
     await eventually(() => h.calls.frame.length === 2);
@@ -1088,13 +1098,15 @@ test('sensorless: no motion listener, false written once at start, panel and ove
     await h.mixin.release();
 });
 
-test('sensorless Shadow: a confirmed heartbeat person is logged as unflagged, motion is never written true', async () => {
+test('sensorless Shadow: a confirmed heartbeat person makes wouldPublish true, motion is never written true', async () => {
     const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm', heartbeatMs: 1 }, sensorless: true });
     await eventually(() => ctl.starts.length === 1);
     frame(ctl.starts[0]);
     await eventually(() => h.calls.frame.length === 1);
     h.calls.frame[0].d.res(personHold);
-    await eventually(() => ctl.logs.some(l => /person seen but camera did not trigger \(heartbeat\)/.test(String(l[1]))));
+    await eventually(() => h.calls.frame.length === 2, 3000);
+    h.calls.frame[1].d.res(personHold);
+    await eventually(() => h.mixin['episode'].wouldPublish === true, 3000, 'would publish');
     assert.ok(!ctl.writes.some(w => w[1] === true));
     await h.mixin.release();
 });
@@ -1243,4 +1255,138 @@ test('a GPU start that exits 0 before any frame falls back to software on the ne
         await h.mixin.release();
     }
     finally { (ctl as any).vaapi = false; }
+});
+
+// ---- continuous analysis and the redesigned panel ------------------------------------------------
+
+async function closedEpisode(h: any) {
+    const s = ctl.starts[0];
+    h.raw(true);
+    await eventually(() => h.calls.reset.length >= 1 || h.calls.frame.length >= 1);
+    frame(s, Date.now() + 1);
+    await eventually(() => h.calls.frame.some((f: any) => f.a[3] === false));
+    let i = h.calls.frame.findIndex((f: any) => f.a[3] === false);
+    h.calls.frame[i].d.res(confirmedReply);
+    await eventually(() => motion() === true);
+    frame(s, Date.now() + 2);
+    await eventually(() => h.calls.frame.length > i + 1);
+    h.calls.frame[h.calls.frame.length - 1].d.res(idleReply);
+    await eventually(() => motion() === false, 3000, 'released while raw stays on (closed)');
+    assert.equal(h.mixin['episode'].scanning, false);
+}
+
+test('heartbeat keeps analysing while camera raw motion stays on after a release (closed), at low priority, and re-opens on a person', async () => {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', heartbeatMs: 1 } });
+    await eventually(() => ctl.starts.length === 1);
+    await closedEpisode(h);
+    const n = h.calls.frame.length;
+    frame(ctl.starts[0], Date.now() + 10);
+    await eventually(() => h.calls.frame.length === n + 1, 3000, 'heartbeat posts while raw is on');
+    assert.equal(h.calls.frame[n].a[3], true, 'low priority');
+    h.calls.frame[n].d.res(personHold);
+    await eventually(() => h.calls.frame.length === n + 2, 3000, 'a new verified scan starts');
+    h.calls.frame[n + 1].d.res(personHold);
+    await eventually(() => motion() === true, 3000, 're-opened');
+    await h.mixin.release();
+});
+
+test('one request in flight per camera: an episode frame waits for an in-flight heartbeat', async () => {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', heartbeatMs: 1 } });
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    frame(s);
+    await eventually(() => h.calls.frame.length === 1);
+    h.raw(true);
+    await sleep(60);
+    assert.equal(h.calls.frame.length, 1, 'no second request while the heartbeat is in flight');
+    h.calls.frame[0].d.res(hbP());
+    await eventually(() => h.calls.frame.length === 2, 3000, 'the episode frame goes once the heartbeat answered');
+    assert.equal(h.calls.frame[1].a[3], false);
+    await h.mixin.release();
+});
+
+test('panel: Now card (Gate: motion and reason; Shadow: published and would-publish), Detected now vs Tracked, dashed tracked box', async () => {
+    const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm', heartbeatMs: 1 } });
+    await eventually(() => ctl.starts.length === 1);
+    frame(ctl.starts[0]);
+    await eventually(() => h.calls.frame.length === 1);
+    h.calls.frame[0].d.res(personHold);
+    await sleep(40);
+    frame(ctl.starts[0], Date.now() + 5);
+    await eventually(() => h.calls.frame.length === 2);
+    const now = Date.now();
+    h.calls.frame[1].d.res({ person: { state: 'holding', confirmed: true, present: true, since_ms: now - 60000, last_seen_ms: now - 3000 }, detections: [{ cls: 'car', score: 0.7, box: [0.6, 0.6, 0.9, 0.9] }], vehicle: { moving: false, tracks: [{ id: 1, cls: 'car', parked: true, state: 'parked', since_ms: now - 3600000, box: [0.6, 0.6, 0.9, 0.9] }] } });
+    await sleep(40);
+    const html = String((await h.mixin.getMixinSettings())[0].value);
+    assert.match(html, /Now · what Home and recorders see/);
+    assert.match(html, /Published: camera motion OFF \(Shadow: passed through\)/);
+    assert.match(html, /Coral Guard would publish: ON \(person tracked since \d\d:\d\d:\d\d \u00b7 last seen 3 s ago\)/);
+    assert.match(html, /Detected now[\s\S]*car 0\.70 \(parked\)/);
+    assert.match(html, /Tracked[\s\S]*held by the service: this drives motion[\s\S]*person · held · last seen 3 s ago/);
+    assert.match(html, /car · parked since/);
+    assert.match(html, /border:2px dashed currentColor[^>]*><span[^>]*>person tracked \(3 s\)/, 'tracked-but-not-detected person at its last box');
+    await h.mixin.release();
+    const g = make({ settings: { mode: 'Gate' } });
+    const gh = String((await g.mixin.getMixinSettings())[0].value);
+    assert.match(gh, /Motion OFF<\/div><div[^>]*>no subject/);
+    await g.mixin.release();
+});
+
+// ---- episode journal ------------------------------------------------------------------------------
+
+test('journal: a camera episode posts start, confirmed update and end with one id, in Shadow as in Gate; never affects motion', async () => {
+    for (const mode of ['Gate', 'Shadow']) {
+        const h = make({ settings: { mode } });
+        h.raw(true);
+        await eventually(() => ctl.starts.length === 1);
+        const s = ctl.starts[0];
+        frame(s);
+        await eventually(() => h.calls.frame.length === 1);
+        h.calls.frame[0].d.res(confirmedReply);
+        await eventually(() => h.calls.episodes.some((e: any) => e.action === 'update'));
+        h.raw(false);
+        frame(s, Date.now() + 5);
+        await eventually(() => h.calls.frame.length === 2);
+        h.calls.frame[1].d.res(idleReply);
+        await eventually(() => h.calls.episodes.some((e: any) => e.action === 'end'));
+        const ev = h.calls.episodes;
+        assert.deepEqual(ev.map((e: any) => e.action), ['start', 'update', 'end'], mode);
+        assert.equal(new Set(ev.map((e: any) => e.id)).size, 1);
+        assert.match(ev[0].id, /^[0-9a-f-]{36}$/);
+        assert.equal(ev[0].kind, 'camera'); assert.equal(ev[0].mode, mode.toLowerCase());
+        assert.equal(ev[1].outcome, 'confirmed'); assert.match(ev[1].timeline_event.text, /^confirmed person/);
+        assert.equal(ev[2].outcome, 'released'); assert.deepEqual(ev[2].groups, ['person']);
+        await h.mixin.release();
+        await releaseAll();
+        ctl.starts = [];
+    }
+});
+
+test('journal: an old service (404) is tolerated silently and no longer called; a vetoed episode ends vetoed', async () => {
+    (ctl as any).journal404 = true;
+    try {
+        const h = make({ settings: { mode: 'Gate', confirmTimeoutS: 1 } });
+        h.raw(true);
+        await eventually(() => h.calls.episodes.length === 1);
+        await sleep(30);
+        h.raw(false);
+        await sleep(1500);
+        assert.equal(h.calls.episodes.length, 1, 'no further journal calls after the 404');
+        assert.ok(!ctl.logs.some(l => l[0] === 'warn' && /episodes|journal/.test(String(l[1]))));
+        await h.mixin.release();
+    } finally { (ctl as any).journal404 = false; }
+    const v = make({ settings: { mode: 'Gate', confirmTimeoutS: 1 } });
+    v.raw(true);
+    await eventually(() => ctl.starts.length >= 1);
+    frame(ctl.starts[ctl.starts.length - 1]);
+    await eventually(() => v.calls.frame.length === 1);
+    v.calls.frame[0].d.res(idleReply);
+    for (let i = 0; i < 20 && !v.calls.episodes.some((e: any) => e.action === 'end'); i++) {
+        frame(ctl.starts[ctl.starts.length - 1], Date.now() + i); // keep frames flowing: a veto, not a dead stream
+        await sleep(100);
+        for (const f of v.calls.frame) f.d.res(idleReply);
+    }
+    await eventually(() => v.calls.episodes.some((e: any) => e.action === 'end'), 4000);
+    assert.equal(v.calls.episodes.find((e: any) => e.action === 'end').outcome, 'vetoed');
+    await v.mixin.release();
 });

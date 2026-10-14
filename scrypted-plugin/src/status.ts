@@ -146,6 +146,56 @@ export class CameraStatus {
     setMode(mode: string) { this.mode = mode; }
     /** enabled detection groups, shown as the 'Detecting' row. */
     private enabledGroups: string[] = ['person', 'vehicle', 'animal'];
+    private nowInfo?: NowInfo;
+    /** what the motion sensor outputs and why (top card) */
+    setNow(n: NowInfo) { this.nowInfo = n; }
+    private tracked: TrackedItem[] = [];
+    private trackedAt = 0;
+    /** objects the service is holding, from the last analysed reply (they drive motion) */
+    setTracked(items: TrackedItem[], atMs: number) { this.tracked = items; this.trackedAt = atMs; }
+
+    private nowCard(nowMs: number): string {
+        const n = this.nowInfo;
+        if (!n) return '';
+        const reason = (r: NowReason) => 'text' in r ? r.text
+            : `${r.groups.join('+')} tracked${r.sinceMs ? ` since ${clock(r.sinceMs)}` : ''}${r.lastSeenMs ? ` \u00b7 last seen ${ago(nowMs - r.lastSeenMs)}` : ''}`;
+        const big = (on: boolean, label: string) => `<div style="font-size:150%;font-weight:700;color:${on ? C.green : C.gray}">${esc(label)} ${on ? 'ON' : 'OFF'}</div>`;
+        const line = (t: string, dim = false) => `<div style="${dim ? 'opacity:.7;' : ''}margin-top:2px">${esc(t)}</div>`;
+        const body = n.mode === 'Shadow'
+            ? big(n.published, 'Motion') + line(`Published: camera motion ${n.published ? 'ON' : 'OFF'} (Shadow: passed through)`)
+                + line(`Coral Guard would publish: ${n.coral ? 'ON' : 'OFF'} (${reason(n.reason)})`, true)
+            : big(n.published, 'Motion') + line(reason(n.reason), true);
+        return `<div style="border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:8px 12px;margin-top:8px">`
+            + `<div style="opacity:.7;font-size:85%">Now \u00b7 what Home and recorders see</div>${body}</div>`;
+    }
+
+    private nowLists(nowMs: number): string {
+        const det = (this.last?.boxes || []).filter(b => !b.masked && !b.weak)
+            .map(b => `${b.group === 'person' || !b.group ? 'person' : b.cls || b.group} ${Number.isFinite(b.score) ? b.score.toFixed(2) : ''}${b.parked ? ' (parked)' : b.still ? ' (still)' : ''}`.trim());
+        const trk = this.tracked.map(t => {
+            const seen = t.lastSeenMs ?? (t.detected ? this.trackedAt : undefined);
+            const tail = t.state === 'parked' ? `parked${t.sinceMs ? ` since ${clock(t.sinceMs)}` : ''}`
+                : `${t.state}${seen ? ` \u00b7 last seen ${ago(nowMs - seen)}` : ''}${t.sinceMs ? ` \u00b7 since ${clock(t.sinceMs)}` : ''}`;
+            return `${t.cls} \u00b7 ${tail}`;
+        });
+        const col = (title: string, hint: string, items: string[], empty: string) => `<div style="flex:1 1 180px;min-width:0"><div style="font-weight:600">${esc(title)}</div><div style="opacity:.6;font-size:85%">${esc(hint)}</div>`
+            + (items.length ? items.map(i => `<div>${esc(i)}</div>`).join('') : `<div style="opacity:.7">${esc(empty)}</div>`) + `</div>`;
+        return `<div style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:10px">`
+            + col('Detected now', 'in the last analysed frame', det, 'nothing in this frame')
+            + col('Tracked', 'held by the service: this drives motion', trk, 'nothing tracked') + `</div>`;
+    }
+
+    /** dashed boxes for tracked objects that are not detected in the shown frame */
+    private trackedBoxes(nowMs: number): string {
+        return this.tracked.filter(t => !t.detected && Array.isArray(t.box) && t.box.length === 4).slice(0, 10).map(t => {
+            const [a, b, c, d] = t.box!;
+            const x0 = clamp01(Math.min(a, c)), x1 = clamp01(Math.max(a, c)), y0 = clamp01(Math.min(b, d)), y1 = clamp01(Math.max(b, d));
+            const pc = (v: number) => (Math.round(v * 1000) / 10).toString();
+            const seen = t.lastSeenMs ?? this.trackedAt;
+            const label = `${t.cls} tracked (${Math.max(0, Math.round((nowMs - seen) / 1000))} s)`;
+            return `<div style="position:absolute;left:${pc(x0)}%;top:${pc(y0)}%;width:${pc(x1 - x0)}%;height:${pc(y1 - y0)}%;border:2px dashed currentColor;opacity:.8;box-sizing:border-box"><span style="position:absolute;left:-2px;top:-1.5em;font-size:11px;white-space:nowrap;background:rgba(127,127,127,.6);color:#fff;padding:0 4px;border-radius:2px">${esc(label)}</span></div>`;
+        }).join('');
+    }
     private sensorless = false;
     setSensorless(v: boolean) { this.sensorless = v; }
     private zones: { name: string; points: [number, number][] }[] = [];
@@ -284,7 +334,7 @@ export class CameraStatus {
         if (!l || !b64 || !/^[A-Za-z0-9+/=]+$/.test(b64)) return placeholder;
         const uri = `data:image/jpeg;base64,${b64}`;
         if (uri.length > MAX_DATA_URI_BYTES) return placeholder;
-        const boxes = live ? '' : this.boxesHtml(l.boxes);
+        const boxes = live ? '' : this.boxesHtml(l.boxes) + this.trackedBoxes(nowMs);
         const f = this.frame;
         const caption = live ? `Live frame (not analysed), ${relTime(this.liveFrame!.atMs, nowMs)}` : !f ? '' : `Last analysed ${relTime(f.atMs, nowMs)}: ${this.detectionSummary(f)}${f.totalMs !== undefined ? `, ${fmtMs(f.totalMs)}` : ''}`;
         return `<div style="opacity:.7;margin-top:10px">Last analysis</div>` + this.snap(uri, boxes, caption, live ? 'Live frame' : 'Last analysed frame');
@@ -393,13 +443,20 @@ export class CameraStatus {
         // a failure line is shown until a later success (analysis or healthy service) or 120 s, whichever comes first
         const showFailure = !!this.failure && this.okAt <= this.failure.atMs && nowMs - this.failure.atMs <= FAILURE_SHOW_MS;
         const failure = this.failure && showFailure ? `<div style="margin-top:10px;color:${C.red}">Last failure: ${esc(this.failure.msg)} (${esc(relTime(this.failure.atMs, nowMs))})</div>` : '';
-        return `<div style="font-size:90%;line-height:1.45;max-width:680px">`
+        return `<div style="font-size:90%;line-height:1.45;max-width:680px;color:currentColor">`
             + `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">${this.stateChip()}<span style="opacity:.7">Mode: ${esc(this.mode)}</span></div>`
+            + this.nowCard(nowMs)
+            + this.nowLists(nowMs)
             + this.thumb(nowMs)
-            + this.detectionThumb(nowMs)
-            + `<div style="display:grid;grid-template-columns:max-content 1fr;gap:3px 14px;margin-top:12px">${this.sensorless ? grid('Motion', esc('Sensorless: motion comes only from Coral Guard')) : ''}${this.detecting ? grid('Detecting', esc(this.detecting)) : ''}${this.zoomOut ? grid('Analysis', esc(`Zoom-out ${Math.round(this.zoomOut * 100)} %`)) : ''}${grid('Today', today)}${grid('Latency p50 / p95', lat || dash)}${grid('Video', video)}${grid('Service', service)}</div>`
-            + `<div style="margin-top:12px;font-weight:600">Recent episodes</div>${episodes}${failure}</div>`;
+            + `<div style="max-width:420px">${this.detectionThumb(nowMs)}</div>`
+            + `<div style="display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin-top:12px;font-size:85%;opacity:.85">${this.sensorless ? grid('Motion', esc('Sensorless: motion comes only from Coral Guard')) : ''}${this.detecting ? grid('Detecting', esc(this.detecting)) : ''}${this.zoomOut ? grid('Analysis', esc(`Zoom-out ${Math.round(this.zoomOut * 100)} %`)) : ''}${grid('Today', today)}${grid('Latency p50 / p95', lat || dash)}${grid('Video', video)}${grid('Service', service)}</div>`
+            + `<div style="margin-top:10px;font-weight:600;font-size:90%">Recent episodes</div><div style="font-size:85%;overflow-x:auto">${episodes}</div>${failure}</div>`;
     }
 }
+
+export type NowReason = { text: string } | { groups: string[]; sinceMs?: number; lastSeenMs?: number };
+export interface NowInfo { published: boolean; coral: boolean; mode: string; reason: NowReason }
+export interface TrackedItem { group: string; cls: string; state: string; sinceMs?: number; lastSeenMs?: number; box?: number[]; detected: boolean }
+const ago = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`; };
 
 const C = { green: '#2f9e5b', amber: '#d9930d', red: '#e5484d', blue: '#3b82f6', gray: '#8b8b8b' };

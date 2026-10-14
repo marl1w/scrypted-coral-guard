@@ -30,7 +30,7 @@ The plugin attaches to the default (already prebuffered) stream of each enabled 
 ## Modes
 
 - Off: motion passes through untouched, the service is not called.
-- Shadow (default): motion is exactly the camera's own; the decision is only recorded in the status panel and the camera console. Things the camera did not trigger on are logged and counted, never raised.
+- Shadow (default): motion is exactly the camera's own. Coral Guard runs the very same decisions as Gate (confirm, hold and release by the tracker, unflagged detections, zones, claims) and reports what it would publish in the status panel and the camera console.
 - Gate: motion stays off until a person, a moving vehicle or an animal is confirmed (choose which in Detect), stays on while it is there, and ends when it is gone. If the camera reports its own class, the same group must confirm it; a claim of a group that is switched off in Detect vetoes the trigger. A confirmed detection can also raise motion when the camera did not trigger at all.
 
 ## Settings

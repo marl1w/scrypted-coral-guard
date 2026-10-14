@@ -5,11 +5,13 @@
 import sdk, { EventListenerRegister, MotionSensor, ScryptedInterface, Setting, SettingValue, VideoCamera } from '@scrypted/sdk';
 import { SettingsMixinDeviceBase, SettingsMixinDeviceOptions } from '@scrypted/sdk/settings-mixin';
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
-import { FrameReply, groupOf, slugify, TrackerConfig } from './client';
+import { randomUUID } from 'crypto';
+import { EpisodeEvent, FrameReply, groupOf, slugify, TrackerConfig } from './client';
 import { DEFAULTS } from './defaults';
 import { CameraStatus, StatusState } from './status';
 import { backoffMs, Effects, Episode, Group, vehicleView, VEHICLE_HOLD_WINDOW_MS, EpisodeConfig, EpisodeSummary, formatSummary, Mode } from './episode';
-import { maskReply, parseZones, Zone } from './zones';
+import { isMasked, maskReply, parseZones, Zone } from './zones';
+import type { NowInfo, NowReason, TrackedItem } from './status';
 import { DEFAULT_THRESHOLDS, serviceThresholds, Thresholds } from './thresholds';
 import { FrameStream, HW_FAILED_PREFIX, PROBE_FAILED_PREFIX, startFrames, streamLabels, vaapiAvailable } from './frames';
 import { FrameClock } from './preroll';
@@ -222,6 +224,53 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         return { person: t.personConfirm, personKeep: t.personKeep, vehicle: t.vehicleDetect, animal: t.animalDetect, enabled: this.detectGroups() as string[], zones: this.zones, minVisible: DEFAULTS.zoneMinVisible };
     }
 
+    // ---- 'Tracked' (what the service holds, from the last analysed reply) and the 'Now' card ----
+    private lastPersonBox: number[] | undefined;
+    private lastTrack: { groups: string[]; sinceMs?: number; lastSeenMs?: number } | undefined;
+    private trackFrom(r: FrameReply) {
+        const enabled = this.detectGroups() as string[];
+        const t = this.thresholds;
+        const zones = this.zones;
+        const dets = (r.detections || []).filter(d => Array.isArray(d.box) && d.box.length === 4 && !(zones.length && isMasked(d.box, zones, DEFAULTS.zoneMinVisible)));
+        const iou = (a: number[], b: number[]) => { const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]), h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]); if (w <= 0 || h <= 0) return 0; const i = w * h; return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i); };
+        const personDet = dets.filter(d => groupOf(d) === 'person' && d.score >= t.personKeep).sort((a, b) => b.score - a.score)[0];
+        if (personDet) this.lastPersonBox = personDet.box;
+        const items: TrackedItem[] = [];
+        const p = r.person;
+        if (enabled.includes('person') && p?.present)
+            items.push({ group: 'person', cls: 'person', state: p.state === 'holding' ? 'held' : p.state === 'confirmed' ? 'confirmed' : p.state, sinceMs: p.since_ms ?? undefined, lastSeenMs: p.last_seen_ms ?? undefined, box: personDet?.box ?? this.lastPersonBox, detected: !!personDet });
+        if (!p?.present) this.lastPersonBox = personDet?.box;
+        if (enabled.includes('vehicle'))
+            for (const v of r.vehicle?.tracks || [])
+                items.push({ group: 'vehicle', cls: v.cls, state: v.state ?? (v.parked ? 'parked' : 'moving'), sinceMs: v.since_ms, box: v.box, detected: !!v.box && dets.some(d => groupOf(d) === 'vehicle' && iou(d.box, v.box!) > 0.3) });
+        if (enabled.includes('animal') && r.animal?.present)
+            for (const a of r.animal.tracks || [])
+                items.push({ group: 'animal', cls: a.cls, state: 'held', sinceMs: a.since_ms, box: a.box, detected: !!a.box && dets.some(d => groupOf(d) === 'animal' && iou(d.box, a.box!) > 0.3) });
+        this.status.setTracked(items, Date.now());
+        const active = items.filter(i => i.state !== 'parked' && i.state !== 'still');
+        this.lastTrack = active.length ? {
+            groups: [...new Set(active.map(i => i.group))],
+            sinceMs: Math.min(...active.map(i => i.sinceMs ?? Infinity)) === Infinity ? undefined : Math.min(...active.map(i => i.sinceMs ?? Infinity)),
+            lastSeenMs: p?.present ? (p.last_seen_ms ?? undefined) : Date.now(),
+        } : undefined;
+        this.refreshStatus();
+    }
+
+    private nowInfo(): NowInfo {
+        const g = this.plugin.config;
+        const modeLabel = [...MODES].find(([, m]) => m === this.mode)?.[0] ?? 'Shadow';
+        const published = this.mode === 'shadow' ? this.cameraRaw : !!this.motionDetected;
+        const groups = this.episode.confirmedGroups;
+        const coral = this.episode.wouldPublish;
+        const reason: NowReason = this.mode === 'off' || g.killSwitch ? { text: 'Coral Guard off: camera motion passed through' }
+            : this.episode.degraded ? { text: 'service unavailable: camera motion passed through' }
+                : groups ? { groups: groups.length ? groups : (this.lastTrack?.groups ?? ['subject']), sinceMs: this.lastTrack?.sinceMs, lastSeenMs: this.lastTrack?.lastSeenMs }
+                    : this.episode.pending ? { text: 'camera trigger: verifying' }
+                        : this.lastTrack ? { text: `${this.lastTrack.groups.join('+')} tracked, not confirmed` }
+                            : { text: 'no subject' };
+        return { published, coral, mode: modeLabel, reason };
+    }
+
     // ---- exclusion zones (plugin-side; storage key 'zones', see DEVELOPMENT.md) ----
     private zoneTicks: boolean[] = [];
     private zoneWarned = '';
@@ -270,9 +319,54 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
 
     // ---- effects -------------------------------------------------------------------------
 
+    // ---- episode journal on the service (POST .../episodes): fire-and-forget, never affects decisions ----
+    private jId: string | undefined;
+    private jKind: 'camera' | 'unflagged' = 'camera';
+    private jConfirmed = false;
+    private journalOff = false;
+    private journal(action: 'start' | 'update' | 'end', extra: Partial<EpisodeEvent> = {}) {
+        if (this.journalOff || !this.jId || typeof (this.plugin.client as any).episodeEvent !== 'function')
+            return;
+        const ev: EpisodeEvent = { id: this.jId, action, t_ms: Date.now(), mode: this.mode, kind: this.jKind, ...extra };
+        this.plugin.client.episodeEvent(this.verifierId, ev).catch((e: any) => {
+            if (e?.status === 404 && !this.journalOff) {
+                this.journalOff = true; // older service: no journal, silently
+            }
+        });
+    }
+    private journalStep(fx: Effects) {
+        for (const log of fx.logs)
+            if (log.kind === 'summary' && this.jId) {
+                const s = log.summary;
+                const outcome = s.outcome === 'maxhold' ? 'released' : s.outcome;
+                this.journal('end', { outcome: outcome as EpisodeEvent['outcome'], groups: s.confirmedBy, timeline_event: { t_ms: Date.now(), text: `${outcome}${s.note ? ` (${s.note})` : ''}` } });
+                this.jId = undefined;
+                this.jConfirmed = false;
+            }
+        if (this.episode.scanning && !this.jId) {
+            this.jId = randomUUID();
+            this.jKind = this.episode.synthetic ? 'unflagged' : 'camera';
+            this.jConfirmed = false;
+            this.journal('start', { timeline_event: { t_ms: Date.now(), text: this.jKind === 'camera' ? 'camera trigger' : `unflagged (${this.synthReason || 'monitoring'})` } });
+        }
+        const cg = this.episode.confirmedGroups;
+        if (this.jId && cg && !this.jConfirmed) {
+            this.jConfirmed = true;
+            this.journal('update', { outcome: 'confirmed', groups: cg, timeline_event: { t_ms: Date.now(), text: `${this.jReconfirm ? 're-confirmed after max hold' : 'confirmed'} ${cg.join('+') || 'subject'}` } });
+            this.jReconfirm = false;
+        }
+        else if (this.jId && !cg && this.jConfirmed && this.episode.pending) {
+            this.jConfirmed = false;
+            this.jReconfirm = true;
+            this.journal('update', { timeline_event: { t_ms: Date.now(), text: 'max hold reached: verifying again' } });
+        }
+    }
+    private jReconfirm = false;
+
     private apply(fx: Effects) {
         if (this.released)
             return;
+        try { this.journalStep(fx); } catch { /* journal never affects decisions */ }
         // never write before a genuine camera event, except a confirmation (true) or the release of our own true
         if ((this.touched || fx.motion || this.lastPublished) && this.motionDetected !== fx.motion)
             this.publish(fx.motion);
@@ -339,6 +433,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     : this.lastPresent ? 'person confirmed' : 'analysing';
         this.status.setDetect(this.detectGroups());
         this.status.setZoomOut(this.zoomOut);
+        this.status.setNow(this.nowInfo());
         this.status.setZones(this.zones);
         this.status.setMode([...MODES].find(([, m]) => m === this.mode)?.[0] ?? 'Shadow');
         this.status.setEnabled(state !== 'disabled');
@@ -624,14 +719,14 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (now < this.nextHeartbeatAt)
             return;
         if (this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || this.episode.scanning || this.scanActive
-            || this.gateBusy || this.heartbeatBusy || this.cameraRaw)
-            return;
+            || this.gateBusy || this.heartbeatBusy || this.busyGen !== undefined)
+            return; // camera raw motion does NOT stop it: a closed (released) episode keeps being analysed and can re-open
         this.nextHeartbeatAt = now + D.heartbeatMs - 100; // frames come every ~500 ms: the first one due
         this.heartbeatBusy = true;
         const gen = this.srcGen;
         const sg = this.scanGen; // a scan that started (and maybe ended) while in flight voids this reply
         this.plugin.client.frame(this.verifierId, jpeg, t, true).then(raw => {
-            if (!raw || gen !== this.srcGen || sg !== this.scanGen || this.released || this.episode.scanning || this.scanActive || this.cameraRaw
+            if (!raw || gen !== this.srcGen || sg !== this.scanGen || this.released || this.episode.scanning || this.scanActive
                 || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded) {
                 this.hbTicks = []; // a skipped, stale or void reply breaks the consecutive run
                 return;
@@ -643,6 +738,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     this.status.setThumbTooLarge();
                 const view = viewOfReply(raw, this.viewThresholds());
                 this.status.onFrameAnalysed({ atMs: Date.now(), ...view.frame, boxes: view.boxes });
+                this.trackFrom(raw);
             }
             catch (e) { this.warnBadReply(e); return; }
             const reply = this.masked(raw); // exclusion zones: decisions see only valid detections
@@ -661,7 +757,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (enabled.includes('vehicle') && this.hbTicks.filter(Boolean).length >= 2) seen.push('vehicle');
             if (!seen.length)
                 return;
-            if (this.mode === 'gate') {
+            { // Shadow and Gate alike: a verified unflagged episode (Shadow only reports its would-publish value)
                 if (at >= this.synthCooldownUntil) {
                     this.synthRaised = false;
                     this.synthStartedAt = at;
@@ -671,12 +767,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 }
                 return;
             }
-            if (at - this.lastUnflagged < D.unflaggedEveryMs)
-                return;
-            this.lastUnflagged = at;
-            this.console.log(`${seen.join('+')} seen but camera did not trigger (heartbeat)`);
-            this.status.onEpisode({ kind: 'unflagged', rawStartMs: Date.now(), heldBeyondRawS: 0, groups: seen, vetoed: false, aborted: false, note: 'heartbeat' });
-        }, () => { this.hbTicks = []; /* silent: a heartbeat never degrades the camera */ }).finally(() => { this.heartbeatBusy = false; });
+        }, () => { this.hbTicks = []; /* silent: a heartbeat never degrades the camera */ }).finally(() => { this.heartbeatBusy = false; this.kick(); /* an episode frame waiting for the heartbeat goes now */ });
     }
 
     private onGray(frame: Uint8Array) {
@@ -688,37 +779,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const now = monoNow();
         if (hit)
             this.lastGateOpenAt = now;
-        if (this.mode === 'gate') {
-            if (hit && !this.episode.scanning && now >= this.synthCooldownUntil) {
-                this.synthRaised = false;
-                this.synthStartedAt = now;
-                this.synthReason = `gate ${r.reason}, blob ${r.blob}px, ${(r.fraction * 100).toFixed(1)}% changed`;
-                this.apply(this.episode.synthStart(now));
-            }
-            return;
+        // Shadow and Gate alike: a pixel-gate hit opens a verified unflagged episode (Shadow only reports would-publish)
+        if (hit && !this.episode.scanning && now >= this.synthCooldownUntil) {
+            this.synthRaised = false;
+            this.synthStartedAt = now;
+            this.synthReason = `gate ${r.reason}, blob ${r.blob}px, ${(r.fraction * 100).toFixed(1)}% changed`;
+            this.apply(this.episode.synthStart(now));
         }
-        if (!hit || this.episode.scanning || this.scanActive || this.gateBusy)
-            return;
-        const last = this.ring[this.ring.length - 1];
-        if (!last || now - last.t > 3000 || now - this.lastGatePost < DEFAULTS.gatePostMinMs)
-            return;
-        this.lastGatePost = now;
-        this.gateBusy = true;
-        const gen = this.srcGen;
-        this.plugin.client.frame(this.verifierId, last.jpeg, last.t, true).then(reply => {
-            if (!reply || gen !== this.srcGen || this.released || this.episode.scanning || this.scanActive)
-                return;
-            const enabled = this.detectGroups();
-            const seen = groupsSeen(reply).filter(g => enabled.includes(g as Group));
-            if (!seen.length)
-                return;
-            const at = monoNow();
-            if (at - this.lastUnflagged < DEFAULTS.unflaggedEveryMs)
-                return;
-            this.lastUnflagged = at;
-            this.console.log(`${seen.join('+')} seen but camera did not trigger (gate ${r.reason}, blob ${r.blob}px, ${(r.fraction * 100).toFixed(1)}% changed)`);
-            this.status.onEpisode({ kind: 'unflagged', rawStartMs: Date.now(), heldBeyondRawS: 0, groups: seen, vetoed: false, aborted: false, note: `gate ${r.reason}` });
-        }, () => { /* best effort: the monitoring path never affects motion */ }).finally(() => { this.gateBusy = false; });
     }
 
     /** The camera's own raw motion changed (the only input that marks the mixin as 'touched'). */
@@ -765,7 +832,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const ev = this.claimEvents.filter(e => e.at >= this.claimFrom);
         const verifiable = ev.some(e => e.groups.length);
         const other = [...new Set(ev.flatMap(e => e.other))];
-        if (!verifiable && other.length && this.mode === 'gate' && !this.unverifiedLogged) {
+        if (!verifiable && other.length && this.mode !== 'off' && !this.unverifiedLogged) {
             this.unverifiedLogged = true;
             this.console.log(`camera claims ${other.join('+')}: not verifiable, passing through`);
             this.apply(this.episode.acceptUnverified(monoNow()));
@@ -809,8 +876,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** Send the next queued frame if none is in flight for this scan. */
     private kick() {
         const gen = this.scanGen;
-        if (this.busyGen === gen || this.released || !this.queue.length)
-            return;
+        if (this.busyGen === gen || this.released || !this.queue.length || this.heartbeatBusy)
+            return; // one request in flight per camera: an episode frame waits for an in-flight heartbeat
         this.busyGen = gen;
         void this.send(gen);
     }
@@ -845,6 +912,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     const view = viewOfReply(reply, this.viewThresholds());
                     this.lastPresent = view.present;
                     this.status.onFrameAnalysed({ atMs: Date.now(), ...view.frame, boxes: view.boxes });
+                    this.trackFrom(reply);
                 }
                 catch (e) { this.warnBadReply(e); }
                 this.probeAttempt = 0; // a real frame succeeded: only now is the service really back
@@ -852,9 +920,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 try { fx = this.episode.reply(this.masked(reply), monoNow(), item.t); }
                 catch (e) { this.warnBadReply(e); fx = this.episode.skip(monoNow()); } // a malformed field is a skipped frame, never an outage
                 this.apply(fx);
-                if (this.episode.synthetic && !this.synthRaised && this.mode === 'gate' && this.episode.motion) {
+                if (this.episode.synthetic && !this.synthRaised && this.mode !== 'off' && this.episode.wouldPublish) {
                     this.synthRaised = true;
-                    this.console.log(`${groupsSeen(reply).join('+') || 'person'} seen but camera did not trigger: raised motion (${this.synthReason})`);
+                    this.console.log(`${groupsSeen(reply).join('+') || 'person'} seen but camera did not trigger: ${this.mode === 'gate' ? 'raised motion' : 'would raise motion (Shadow)'} (${this.synthReason})`);
                 }
             }
         }
