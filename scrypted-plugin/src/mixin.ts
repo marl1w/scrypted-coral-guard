@@ -342,12 +342,17 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (this.journalOff || !this.jId || typeof (this.plugin.client as any).episodeEvent !== 'function')
             return;
         const ev: EpisodeEvent = { id: this.jId, action, t_ms: Date.now(), mode: this.mode, kind: this.jKind, ...extra };
-        this.plugin.client.episodeEvent(this.verifierId, ev).catch((e: any) => {
-            if (e?.status === 404 && !this.journalOff) {
+        if (action === 'start') this.jOpen.add(ev.id);
+        if (action === 'end') { if (!this.jOpen.has(ev.id)) return; this.jOpen.delete(ev.id); } // exactly one end per id
+        // strictly in order per camera: an update or end must never overtake its start (the service would drop it)
+        this.jChain = this.jChain.then(() => this.journalOff ? undefined : this.plugin.client.episodeEvent(this.verifierId, ev)).then(() => undefined, (e: any) => {
+            if (e?.status === 404 && !this.journalOff)
                 this.journalOff = true; // older service: no journal, silently
-            }
         });
     }
+    private jChain: Promise<void> = Promise.resolve();
+    /** journal ids started and not yet ended (reconciled on every transition) */
+    private jOpen = new Set<string>();
     private journalStep(fx: Effects) {
         for (const log of fx.logs)
             if (log.kind === 'summary' && this.jId) {
@@ -357,6 +362,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.jId = undefined;
                 this.jConfirmed = false;
             }
+        // reconcile: an open journal episode that is no longer running (no summary seen) is ended now
+        if (this.jId && !this.episode.scanning) {
+            this.journal('end', { outcome: this.jConfirmed ? 'released' : 'aborted', timeline_event: { t_ms: Date.now(), text: this.jConfirmed ? 'released' : 'aborted (closed)' } });
+            this.jId = undefined;
+            this.jConfirmed = false;
+        }
         const cg = this.episode.confirmedGroups;
         if (!this.episode.scanning)
             this.jUnflaggedAt = undefined;

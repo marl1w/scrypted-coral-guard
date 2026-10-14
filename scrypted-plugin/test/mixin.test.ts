@@ -1603,3 +1603,52 @@ test('outermost check reads the device\'s current mixin list when available (las
     } finally { sdkStub.systemManager.getDeviceById = orig; }
     await h.mixin.release();
 });
+
+/** every journalled id: exactly one start first, exactly one end last, updates in between */
+function assertPaired(evs: any[], what: string) {
+    const ids = [...new Set(evs.map(e => e.id))];
+    for (const id of ids) {
+        const seq = evs.filter(e => e.id === id).map(e => e.action);
+        assert.equal(seq[0], 'start', `${what}: ${id} starts first (${seq})`);
+        assert.equal(seq.filter(a => a === 'start').length, 1, `${what}: one start`);
+        assert.equal(seq.filter(a => a === 'end').length, 1, `${what}: one end (${seq})`);
+        assert.equal(seq[seq.length - 1], 'end', `${what}: end last`);
+    }
+    return ids.length;
+}
+
+test('journal pairing: a slow start never lets its update or end overtake it; unflagged confirm -> start, update, end in order', async () => {
+    (ctl as any).journalDelay = 80;
+    try {
+        const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', heartbeatMs: 1 } });
+        await eventually(() => ctl.starts.length === 1);
+        const s = ctl.starts[0];
+        frame(s);
+        await eventually(() => h.calls.frame.length === 1);
+        h.calls.frame[0].d.res(personHold);
+        await eventually(() => h.calls.frame.length === 2, 3000);
+        h.calls.frame[1].d.res(personHold);
+        await eventually(() => motion() === true);
+        frame(s, Date.now() + 5);
+        await eventually(() => h.calls.frame.length === 3);
+        h.calls.frame[2].d.res(idleReply);
+        await eventually(() => h.calls.episodes.some((e: any) => e.action === 'end'), 3000);
+        assert.deepEqual(h.calls.episodes.map((e: any) => e.action), ['start', 'update', 'end']);
+        assertPaired(h.calls.episodes, 'unflagged');
+        await h.mixin.release();
+    } finally { (ctl as any).journalDelay = 0; }
+});
+
+test('journal pairing: mode change mid-episode, instance release mid-episode and a camera episode after a closed one each end exactly once', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    h.raw(true);
+    await eventually(() => h.calls.episodes.length === 1);
+    await h.mixin.putMixinSetting('mode', 'Off');          // aborts the running episode
+    await sleep(30);
+    await h.mixin.putMixinSetting('mode', 'Gate');         // resumes: raw still on -> a new episode
+    await sleep(30);
+    h.raw(false);
+    await h.mixin.release();                                // ends whatever is still open
+    await sleep(50);
+    assert.ok(assertPaired(h.calls.episodes, 'mode change + release') >= 1);
+});

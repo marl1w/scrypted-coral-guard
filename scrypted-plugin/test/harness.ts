@@ -141,7 +141,7 @@ export function make(opts: { settings?: Record<string, any>; initial?: boolean; 
         health: async () => ({ ok: true }),
         check: async () => { calls.check++; return { ok: true }; },
         config: async () => ({}),
-        episodeEvent: async (_cam: string, ev: any) => { calls.episodes.push(ev); if ((ctl as any).journal404) { const e: any = new Error('not found'); e.status = 404; throw e; } return {}; },
+        episodeEvent: async (_cam: string, ev: any) => { if ((ctl as any).journalDelay && ev.action === 'start') await new Promise(r => setTimeout(r, (ctl as any).journalDelay)); calls.episodes.push(ev); if ((ctl as any).journal404) { const e: any = new Error('not found'); e.status = 404; throw e; } return {}; },
     };
     const dups: string[] = opts.dup ? [opts.dup] : [];
     const plugin: any = { config: { killSwitch: false, baseUrl: '', token: '', timeoutMs: 2000, frameTimeoutMs: 800 }, client, register() { }, unregister() { }, hw: new Map<string, any>(), acquireHw(m: any, max: number) { if (this.hw.has(m.id)) { this.hw.set(m.id, m); return true; } if (this.hw.size >= max) return false; this.hw.set(m.id, m); return true; }, releaseHw(m: any) { if (this.hw.get(m.id) === m) this.hw.delete(m.id); }, get hwSlotsUsed() { return this.hw.size; }, findDuplicate: () => dups[0] };
