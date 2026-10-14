@@ -1420,3 +1420,37 @@ test('service 0.3.0 fields: tracked person boxes from tracks_detail, hold remain
     assert.match(html, /left:20%;top:20%;width:20%;height:70%;border:2px dashed currentColor/, 'box from tracks_detail');
     await h.mixin.release();
 });
+
+test('journal: an unflagged scan is journalled only when it confirms (start back-dated to its trigger); one that finds nothing is never journalled', async () => {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', heartbeatMs: 1, confirmTimeoutS: 1 } });
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    frame(s);
+    await eventually(() => h.calls.frame.length === 1);
+    const t0 = Date.now();
+    h.calls.frame[0].d.res(personHold);
+    await eventually(() => h.calls.frame.length === 2, 3000, 'unflagged scan posts');
+    await sleep(50);
+    assert.equal(h.calls.episodes.length, 0, 'not journalled before it confirms');
+    h.calls.frame[1].d.res(personHold);
+    await eventually(() => h.calls.episodes.length === 2);
+    const [st, up] = h.calls.episodes;
+    assert.deepEqual([st.action, st.kind, up.action, up.outcome], ['start', 'unflagged', 'update', 'confirmed']);
+    assert.ok(st.t_ms >= t0 && st.t_ms <= up.t_ms, 'start back-dated to the trigger');
+    await h.mixin.release();
+    const v = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', heartbeatMs: 1, confirmTimeoutS: 1 } });
+    await eventually(() => ctl.starts.length >= 1);
+    const sv = ctl.starts[ctl.starts.length - 1];
+    frame(sv);
+    await eventually(() => v.calls.frame.length === 1);
+    v.calls.frame[0].d.res(personHold);
+    for (let i = 0; i < 25 && !v.mixin['episode'].scanning; i++) await sleep(20);
+    for (let i = 0; i < 20 && v.mixin['episode'].scanning; i++) {
+        frame(sv, Date.now() + i);
+        await sleep(100);
+        for (const f of v.calls.frame) f.d.res(idleReply);
+    }
+    await sleep(100);
+    assert.equal(v.calls.episodes.length, 0, 'a vetoed unflagged scan is never journalled');
+    await v.mixin.release();
+});

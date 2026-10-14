@@ -352,13 +352,25 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.jId = undefined;
                 this.jConfirmed = false;
             }
-        if (this.episode.scanning && !this.jId) {
-            this.jId = randomUUID();
-            this.jKind = this.episode.synthetic ? 'unflagged' : 'camera';
-            this.jConfirmed = false;
-            this.journal('start', { timeline_event: { t_ms: Date.now(), text: this.jKind === 'camera' ? 'camera trigger' : `unflagged (${this.synthReason || 'monitoring'})` } });
-        }
         const cg = this.episode.confirmedGroups;
+        if (!this.episode.scanning)
+            this.jUnflaggedAt = undefined;
+        else if (!this.jId && this.episode.synthetic) {
+            // unflagged scans are journalled only once they confirm (start back-dated to the trigger)
+            this.jUnflaggedAt ??= Date.now();
+            if (cg) {
+                this.jId = randomUUID();
+                this.jKind = 'unflagged';
+                this.jConfirmed = false;
+                this.journal('start', { t_ms: this.jUnflaggedAt, timeline_event: { t_ms: this.jUnflaggedAt, text: `unflagged (${this.synthReason || 'monitoring'})` } });
+            }
+        }
+        else if (!this.jId) {
+            this.jId = randomUUID();
+            this.jKind = 'camera';
+            this.jConfirmed = false;
+            this.journal('start', { timeline_event: { t_ms: Date.now(), text: 'camera trigger' } });
+        }
         if (this.jId && cg && !this.jConfirmed) {
             this.jConfirmed = true;
             this.journal('update', { outcome: 'confirmed', groups: cg, timeline_event: { t_ms: Date.now(), text: `${this.jReconfirm ? 're-confirmed after max hold' : 'confirmed'} ${cg.join('+') || 'subject'}` } });
@@ -371,6 +383,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
     }
     private jReconfirm = false;
+    private jUnflaggedAt: number | undefined;
 
     private apply(fx: Effects) {
         if (this.released)
