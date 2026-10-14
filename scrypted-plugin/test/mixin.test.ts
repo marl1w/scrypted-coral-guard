@@ -346,8 +346,8 @@ test('L8: a prototype-key mode value is rejected and falls back to shadow', asyn
     h.raw(true);
     assert.equal(motion(), true); // shadow: pass-through
     const st = (await h.mixin.getMixinSettings()).find(s => s.key === 'mode');
-    assert.match(String(st?.description), /today|idle/);
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /Mode: Shadow/);
+    assert.equal(st?.description, 'Off, Shadow (measure only) or Gate.');
+    assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /<span>Shadow<\/span>/);
     await h.mixin.release();
 });
 
@@ -396,15 +396,15 @@ test('Hardware decode: a hwaccel failure restarts once in software and stays in 
     finally { (ctl as any).vaapi = false; }
 });
 
-test('settings: Status panel on top, then Mode with the summary', async () => {
+test('settings: Refresh and Status on top, then Mode with a short description (no repeated summary)', async () => {
     const h = make({ settings: { mode: 'Gate' } });
     const st = await h.mixin.getMixinSettings();
-    assert.deepEqual(st.map(x => x.key), ['status', 'mode', 'detect', 'stream', 'zoomOut', 'zoneNames']);
-    assert.equal(st[0].type, 'html');
-    assert.equal(st[0].readonly, true);
+    assert.deepEqual(st.map(x => x.key), ['refresh', 'status', 'mode', 'detect', 'stream', 'zoomOut', 'zoneNames']);
+    assert.equal(st[1].type, 'html');
+    assert.equal(st[1].readonly, true);
     assert.ok(!st.some(x => x.group), 'one group only (the mixin default)');
-    assert.match(String(st[0].value), /Recent episodes/);
-    assert.match(String(st[1].description), /today 0 episodes/);
+    assert.match(String(st[1].value), /Episodes/);
+    assert.equal(st[2].description, 'Off, Shadow (measure only) or Gate.');
     await h.mixin.release();
 });
 
@@ -416,9 +416,9 @@ test('status panel: a person reply shows analysing/person confirmed and is throt
     await eventually(() => h.calls.frame.length === 1);
     h.calls.frame[0].d.res({ ...confirmedReply, detections: [{ cls: 'person', score: 0.9, box: [0.1, 0.1, 0.4, 0.8] }], total_ms: 12 });
     await sleep(30);
-    const html = String((await h.mixin.getMixinSettings())[0].value);
-    assert.match(html, /1 person \(best 0\.90\)/);
-    assert.match(html, /Person confirmed/);
+    const html = String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
+    assert.match(html, /Detected<\/div><div>person 0\.90/);
+    assert.match(html, /Motion ON/);
     await h.mixin.release();
 });
 
@@ -441,7 +441,7 @@ test('Shadow: a pixel-gate hit runs the same verified unflagged episode as Gate;
     await eventually(() => ctl.logs.some(l => /person seen but camera did not trigger: would raise motion \(Shadow\)/.test(String(l[1]))));
     assert.equal(ctl.writes.length, 0, 'Shadow never publishes the unflagged raise');
     assert.equal(h.mixin['episode'].wouldPublish, true, 'but it would (same decision as Gate)');
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /Coral Guard would publish: ON/);
+    assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /Would publish ON/);
     await h.mixin.release();
 });
 
@@ -460,7 +460,7 @@ test('Gate: a pixel change alone never raises motion; it only asks the service (
     assert.equal(motion(), false);
     assert.ok(!ctl.logs.some(l => /raised motion/.test(String(l[1]))));
     // a person-less synthetic scan leaves no trace in the history, and a cooldown blocks an immediate re-scan
-    assert.ok(!/Unflagged/.test(String((await h.mixin.getMixinSettings())[0].value).replace(/Unflagged persons/g, '')));
+    assert.ok(!/Unflagged/.test(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value).replace(/Unflagged persons/g, '')));
     s.o.gray.onGray(blobFrame());
     await sleep(50);
     assert.equal(h.calls.reset.length, 1, 'cooldown after a person-less scan');
@@ -529,8 +529,8 @@ test('panel: a 0.26 detection is a weak candidate, not a person; 0.9 is a person
     await eventually(() => h.calls.frame.length === 1);
     h.calls.frame[0].d.res({ ...idleReply, detections: [{ cls: 'person', score: 0.26, box: [0.1, 0.1, 0.3, 0.5] }], total_ms: 33 });
     await sleep(30);
-    const html = String((await h.mixin.getMixinSettings())[0].value);
-    assert.match(html, /no person \(weak candidate 0\.26\)/);
+    const html = String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
+    assert.match(html, /Detected<\/div><div style="opacity:\.7">nothing/);
     assert.match(html, /possible 0\.26/);
     await h.mixin.release();
 });
@@ -546,7 +546,7 @@ test('an oversized snapshot is logged once with its size and the panel says so i
     await sleep(60);
     assert.equal(ctl.logs.filter(l => /too large for the panel thumbnail/.test(String(l[1]))).length, 1);
     assert.ok(ctl.logs.some(l => /130 KB/.test(String(l[1]))));
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /Snapshot too large to display/);
+    assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /Snapshot too large/);
     await h.mixin.release();
 });
 
@@ -554,9 +554,9 @@ test('panel: the latest delivered frame is shown as a live frame before anything
     const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm' } });
     await eventually(() => ctl.starts.length === 1);
     frame(ctl.starts[0]);
-    const html = String((await h.mixin.getMixinSettings())[0].value);
+    const html = String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
     assert.ok(html.includes('<img'));
-    assert.match(html, /Live frame \(not analysed\)/);
+    assert.match(html, /live, not analysed/);
     await h.mixin.release();
 });
 
@@ -655,7 +655,7 @@ test('Detect setting: Person only ignores a sustained vehicle; the description n
     await sleep(60);
     assert.equal(motion(), false);
     const st = await h.mixin.getMixinSettings();
-    assert.match(String(st.find(x => x.key === 'mode')?.description), /Detect: person only/);
+    assert.deepEqual(h.mixin['detectGroups'](), ['person']);
     await h.mixin.release();
     const all = make({ settings: { mode: 'Gate', detect: [] } });
     assert.ok(!/Detect:/.test(String((await all.mixin.getMixinSettings()).find(x => x.key === 'mode')?.description)));
@@ -690,9 +690,9 @@ test('Detect change applies to the running episode without a restart, is logged 
     h.calls.frame[0].d.res(confirmedReply);
     await sleep(40);
     assert.equal(motion(), false, 'person is off now: it no longer confirms');
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /Detecting<\/div><div>animal only/);
+    assert.deepEqual(h.mixin['detectGroups'](), ['animal']);
     await h.mixin.putMixinSetting('detect', ['Person', 'Vehicle', 'Animal']);
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /person, vehicle, animal/);
+    assert.deepEqual(h.mixin['detectGroups'](), ['person', 'vehicle', 'animal']);
     frame(ctl.starts[0], Date.now() + 5);
     await eventually(() => h.calls.frame.length === 2);
     h.calls.frame[1].d.res(confirmedReply);
@@ -705,7 +705,7 @@ test('Detect change applies to the running episode without a restart, is logged 
 test('Detect value is parsed whatever the UI sends: array, comma string, JSON string, single string, junk, empty', async () => {
     for (const [v, want] of [[['Vehicle', 'Animal'], 'vehicle, animal'], ['Person,Vehicle', 'person, vehicle'], ['["Animal"]', 'animal'], ['animal', 'animal'], ['nonsense', 'person, vehicle, animal'], ['', 'person, vehicle, animal'], [[], 'person, vehicle, animal']] as [any, string][]) {
         const h = make({ settings: { mode: 'Gate', detect: v } });
-        assert.ok(String((await h.mixin.getMixinSettings())[0].value).includes(`>${want.replace(/^(\w+)$/, '$1 only')}<`), `${JSON.stringify(v)} -> ${want}`);
+        assert.equal(h.mixin['detectGroups']().join(', '), want, `${JSON.stringify(v)} -> ${want}`);
         await h.mixin.release();
     }
 });
@@ -845,7 +845,7 @@ test('heartbeat: an idle camera posts the fresh frame at low priority with no re
     assert.equal(h.calls.reset.length, 0);
     h.calls.frame[0].d.res(hbP({ detections: [{ cls: 'person', score: 0.91, box: [0.1, 0.1, 0.4, 0.8] }], total_ms: 30 }));
     await sleep(40);
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /Last analysed just now: 1 person \(best 0\.91\)/);
+    assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /0 s ago \u00b7 person 0\.91/);
     await h.mixin.release();
 });
 
@@ -865,7 +865,7 @@ test('heartbeat Shadow: same verified unflagged episode as Gate (would raise, re
     h.calls.frame[2].d.res(idleReply);
     await eventually(() => h.mixin['episode'].wouldPublish === false, 3000, 'released by the tracker');
     assert.equal(ctl.writes.length, 0);
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /1 unflagged/);
+    assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /1 unflagged/);
     await h.mixin.release();
 });
 
@@ -1093,7 +1093,7 @@ test('sensorless: no motion listener, false written once at start, panel and ove
     await sleep(20);
     assert.equal(ctl.listeners, 1, 'only the ObjectDetector listener');
     assert.deepEqual(ctl.writes.map(w => w[1]), [false]);
-    assert.match(String((await h.mixin.getMixinSettings())[0].value), /Sensorless: motion comes only from Coral Guard/);
+    assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /sensorless/);
     assert.match(h.mixin.overviewRow().name, /\(sensorless\)/);
     await h.mixin.release();
 });
@@ -1150,14 +1150,14 @@ test('Zoom-out: Off by default, a choice is stored as a share, re-posts the conf
     let st = await h.mixin.getMixinSettings();
     const z = st.find(x => x.key === 'zoomOut')!;
     assert.deepEqual(z.choices, ['Off', '20 %', '35 %', '50 %']); assert.equal(z.value, 'Off');
-    assert.ok(!/Zoom-out/.test(String(st[0].value)));
+    assert.ok(!/zoom-out/i.test(String(st.find(x => x.key === 'status')!.value)));
     await h.mixin.putMixinSetting('zoomOut', '35 %');
     await eventually(() => posted.length === 2);
     assert.equal(posted[1].zoom_out, 0.35);
     assert.equal((h.mixin as any).storageSettings.values.zoomOut, '0.35');
     st = await h.mixin.getMixinSettings();
     assert.equal(st.find(x => x.key === 'zoomOut')!.value, '35 %');
-    assert.match(String(st[0].value), /Zoom-out 35 %/);
+    assert.match(String(st.find(x => x.key === 'status')!.value), /zoom-out 35 %/);
     await h.mixin.release();
 });
 
@@ -1194,7 +1194,7 @@ test('zones: a confirmed person inside an exclusion zone never raises motion in 
         await sleep(30);
     }
     assert.equal(motion(), false, 'masked person never confirms');
-    const html = String((await h.mixin.getMixinSettings())[0].value);
+    const html = String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
     assert.match(html, /person 0\.90 \(masked\)/);
     assert.match(html, /<polygon points="0,0 50,0 50,100 0,100" fill="currentColor" fill-opacity="\.25"[^>]*stroke-dasharray="2 2"/);
     await h.mixin.release();
@@ -1208,7 +1208,7 @@ test('camera settings tabs: Overview (Status only) first, then Setup (Mode, Dete
     assert.deepEqual([...new Set(st.map(x => x.subgroup))], ['Overview', 'Setup', 'Zones'], 'exactly three tabs');
     assert.equal(st.find(x => x.key === 'zone:Street')!.title, 'Edit zone: Street');
     assert.deepEqual(st.map(x => [x.key, x.subgroup]), [
-        ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'],
+        ['refresh', 'Overview'], ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'],
         ['zoneNames', 'Zones'], ['zone:Street', 'Zones'],
     ]);
     await h.mixin.release();
@@ -1317,18 +1317,19 @@ test('panel: Now card (Gate: motion and reason; Shadow: published and would-publ
     const now = Date.now();
     h.calls.frame[1].d.res({ person: { state: 'holding', confirmed: true, present: true, since_ms: now - 60000, last_seen_ms: now - 3000 }, detections: [{ cls: 'car', score: 0.7, box: [0.6, 0.6, 0.9, 0.9] }], vehicle: { moving: false, tracks: [{ id: 1, cls: 'car', parked: true, state: 'parked', since_ms: now - 3600000, box: [0.6, 0.6, 0.9, 0.9] }] } });
     await sleep(40);
-    const html = String((await h.mixin.getMixinSettings())[0].value);
-    assert.match(html, /Now · what Home and recorders see/);
-    assert.match(html, /Published: camera motion OFF \(Shadow: passed through\)/);
-    assert.match(html, /Coral Guard would publish: ON \(person tracked since \d\d:\d\d:\d\d \u00b7 last seen 3 s ago\)/);
-    assert.match(html, /Detected now[\s\S]*car 0\.70 \(parked\)/);
-    assert.match(html, /Tracked[\s\S]*held by the service: this drives motion[\s\S]*person · held · last seen 3 s ago/);
-    assert.match(html, /car · parked since/);
+    const html = String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
+    assert.match(html, />Now</);
+    assert.match(html, /Motion OFF/);
+    assert.match(html, /Would publish ON \u00b7 Person tracked \u00b7 since \d\d:\d\d:\d\d \u00b7 3 s/);
+    assert.match(html, /Detected<\/div><div>car 0\.70 parked/);
+    assert.match(html, /Tracked<\/div><div>person \u00b7 held \u00b7 3 s/);
+    assert.match(html, /car \u00b7 parked \u00b7 since/);
+    assert.ok(!/what Home|drives motion|press Refresh/.test(html), 'no explanatory sentences');
     assert.match(html, /border:2px dashed currentColor[^>]*><span[^>]*>person tracked \(3 s\)/, 'tracked-but-not-detected person at its last box');
     await h.mixin.release();
     const g = make({ settings: { mode: 'Gate' } });
-    const gh = String((await g.mixin.getMixinSettings())[0].value);
-    assert.match(gh, /Motion OFF<\/div><div[^>]*>no subject/);
+    const gh = String((await g.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
+    assert.match(gh, /Motion OFF<\/div><div[^>]*>Nothing tracked/);
     await g.mixin.release();
 });
 
@@ -1389,4 +1390,33 @@ test('journal: an old service (404) is tolerated silently and no longer called; 
     await eventually(() => v.calls.episodes.some((e: any) => e.action === 'end'), 4000);
     assert.equal(v.calls.episodes.find((e: any) => e.action === 'end').outcome, 'vetoed');
     await v.mixin.release();
+});
+
+test('camera Refresh button: top of the Overview tab; a press sends exactly one Settings refresh and stores nothing', async () => {
+    const h = make({ settings: { mode: 'Shadow' } });
+    const st = await h.mixin.getMixinSettings();
+    assert.deepEqual([st[0].key, st[0].type, st[0].subgroup], ['refresh', 'button', 'Overview']);
+    const before = JSON.stringify((h.mixin as any).store);
+    const n0 = (ctl as any).notified || 0;
+    await h.mixin.putMixinSetting('refresh', undefined as any);
+    assert.equal(((ctl as any).notified || 0) - n0, 1);
+    assert.equal(JSON.stringify((h.mixin as any).store), before, 'no storage writes');
+    assert.match(String((await h.mixin.getMixinSettings())[1].value), /Updated \d\d:\d\d:\d\d/);
+    await h.mixin.release();
+});
+
+test('service 0.3.0 fields: tracked person boxes from tracks_detail, hold remaining shown; older replies keep the fallback', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    h.raw(true);
+    await eventually(() => ctl.starts.length === 1);
+    frame(ctl.starts[0]);
+    await eventually(() => h.calls.frame.length === 1);
+    const t = Date.now();
+    h.calls.frame[0].d.res({ t, person: { state: 'holding', confirmed: true, present: true, since_ms: t - 20000, last_seen_ms: t - 2000, tracks: 1, hold_until_ms: t + 6000,
+        tracks_detail: [{ id: 4, box: [0.2, 0.2, 0.4, 0.9], score: 0.8, last_seen_ms: t - 2000, since_ms: t - 20000, stationary: false }] }, detections: [] });
+    await sleep(40);
+    const html = String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
+    assert.match(html, /Tracked<\/div><div>person · held · 6 s left/);
+    assert.match(html, /left:20%;top:20%;width:20%;height:70%;border:2px dashed currentColor/, 'box from tracks_detail');
+    await h.mixin.release();
 });

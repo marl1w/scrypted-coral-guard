@@ -45,26 +45,26 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     storageSettings = new StorageSettings(this, {
         mode: {
             title: 'Mode',
-            description: 'Off: pass-through. Shadow: motion is unchanged, the Coral decision is only logged. Gate: motion needs a confirmed person.',
+            description: 'Off, Shadow (measure only) or Gate.',
             choices: [...MODES.keys()],
             defaultValue: 'Shadow',
         },
         detect: {
             title: 'Detect',
-            description: 'Categories that may confirm motion. A category that is off never confirms, never holds motion and never raises it. Empty means all.',
+            description: 'Categories that may raise motion.',
             choices: DETECT_CHOICES,
             multiple: true,
             defaultValue: DETECT_CHOICES,
         },
         stream: {
             title: 'Stream',
-            description: 'Default uses the camera\'s default stream, which Scrypted usually keeps open (prebuffered) for other plugins and recordings. Choosing another stream makes Scrypted open an extra session to the camera.',
+            description: 'Default reuses the open stream.',
             choices: [STREAM_DEFAULT_LABEL],
             defaultValue: 'default',
         },
         zoomOut: {
             title: 'Zoom-out',
-            description: 'Adds a second analysis of the frame shrunk with a border around it. Helps when subjects are large, close or cut by the frame edge. Costs one extra Coral pass per frame for this camera.',
+            description: 'Extra pass for large or close subjects.',
             choices: ZOOM_LABELS.map(z => z[0]),
             defaultValue: '0',
         },
@@ -237,15 +237,24 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (personDet) this.lastPersonBox = personDet.box;
         const items: TrackedItem[] = [];
         const p = r.person;
-        if (enabled.includes('person') && p?.present)
-            items.push({ group: 'person', cls: 'person', state: p.state === 'holding' ? 'held' : p.state === 'confirmed' ? 'confirmed' : p.state, sinceMs: p.since_ms ?? undefined, lastSeenMs: p.last_seen_ms ?? undefined, box: personDet?.box ?? this.lastPersonBox, detected: !!personDet });
+        const frameT = typeof r.t === 'number' ? r.t : Date.now();
+        const left = (h?: number | null) => typeof h === 'number' ? Math.max(0, h - frameT) : undefined;
+        const pState = p ? (p.state === 'holding' ? 'held' : p.state === 'confirmed' ? 'confirmed' : p.state) : '';
+        if (enabled.includes('person') && p?.present && Array.isArray(p.tracks_detail) && p.tracks_detail.length) {
+            // service 0.3.0+: one item per live person track, with its own box and last seen
+            for (const tr of p.tracks_detail)
+                items.push({ group: 'person', cls: 'person', state: tr.stationary ? `${pState}, still` : pState, sinceMs: tr.since_ms, lastSeenMs: tr.last_seen_ms, box: tr.box,
+                    detected: !!tr.box && dets.some(d => groupOf(d) === 'person' && d.score >= t.personKeep && iou(d.box, tr.box!) > 0.3), holdLeftMs: left(p.hold_until_ms) });
+        }
+        else if (enabled.includes('person') && p?.present)
+            items.push({ group: 'person', cls: 'person', state: pState, sinceMs: p.since_ms ?? undefined, lastSeenMs: p.last_seen_ms ?? undefined, box: personDet?.box ?? this.lastPersonBox, detected: !!personDet, holdLeftMs: left(p.hold_until_ms) });
         if (!p?.present) this.lastPersonBox = personDet?.box;
         if (enabled.includes('vehicle'))
             for (const v of r.vehicle?.tracks || [])
-                items.push({ group: 'vehicle', cls: v.cls, state: v.state ?? (v.parked ? 'parked' : 'moving'), sinceMs: v.since_ms, box: v.box, detected: !!v.box && dets.some(d => groupOf(d) === 'vehicle' && iou(d.box, v.box!) > 0.3) });
+                items.push({ group: 'vehicle', cls: v.cls, state: v.state ?? (v.parked ? 'parked' : 'moving'), sinceMs: v.since_ms, box: v.box, detected: !!v.box && dets.some(d => groupOf(d) === 'vehicle' && iou(d.box, v.box!) > 0.3), holdLeftMs: (v.state ?? (v.parked ? 'parked' : 'moving')) === 'moving' ? left(r.vehicle?.hold_until_ms) : undefined });
         if (enabled.includes('animal') && r.animal?.present)
             for (const a of r.animal.tracks || [])
-                items.push({ group: 'animal', cls: a.cls, state: 'held', sinceMs: a.since_ms, box: a.box, detected: !!a.box && dets.some(d => groupOf(d) === 'animal' && iou(d.box, a.box!) > 0.3) });
+                items.push({ group: 'animal', cls: a.cls, state: 'held', sinceMs: a.since_ms, lastSeenMs: a.last_seen_ms, box: a.box, detected: !!a.box && dets.some(d => groupOf(d) === 'animal' && iou(d.box, a.box!) > 0.3), holdLeftMs: left(r.animal.hold_until_ms) });
         this.status.setTracked(items, Date.now());
         const active = items.filter(i => i.state !== 'parked' && i.state !== 'still');
         this.lastTrack = active.length ? {
@@ -262,12 +271,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const published = this.mode === 'shadow' ? this.cameraRaw : !!this.motionDetected;
         const groups = this.episode.confirmedGroups;
         const coral = this.episode.wouldPublish;
-        const reason: NowReason = this.mode === 'off' || g.killSwitch ? { text: 'Coral Guard off: camera motion passed through' }
-            : this.episode.degraded ? { text: 'service unavailable: camera motion passed through' }
+        const reason: NowReason = this.mode === 'off' || g.killSwitch ? { text: 'Off · raw passed through' }
+            : this.episode.degraded ? { text: 'Service down · raw passed through' }
                 : groups ? { groups: groups.length ? groups : (this.lastTrack?.groups ?? ['subject']), sinceMs: this.lastTrack?.sinceMs, lastSeenMs: this.lastTrack?.lastSeenMs }
-                    : this.episode.pending ? { text: 'camera trigger: verifying' }
-                        : this.lastTrack ? { text: `${this.lastTrack.groups.join('+')} tracked, not confirmed` }
-                            : { text: 'no subject' };
+                    : this.episode.pending ? { text: 'Verifying' }
+                        : this.lastTrack ? { text: `${this.lastTrack.groups.join('+')} tracked · unconfirmed` }
+                            : { text: 'Nothing tracked' };
         return { published, coral, mode: modeLabel, reason };
     }
 
@@ -977,7 +986,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         {
             const zones = this.zones;
             settings.push({ key: 'zoneNames', subgroup: 'Zones', title: 'Exclusion zones', type: 'string', multiple: true, combobox: true, choices: zones.map(z => z.name), value: zones.map(z => z.name) as any,
-                description: 'Type a name and press Enter to add an exclusion zone, then draw it with its zone editor. Remove a name to delete the zone. A detection counts only if most of its box (60 %) lies outside the zones.' } as Setting);
+                description: 'Type a name to add, remove to delete.' } as Setting);
             for (const z of zones)
                 settings.push({ key: `zone:${z.name}`, subgroup: 'Zones', title: `Edit zone: ${z.name}`, type: 'clippath', value: JSON.stringify(z.points) } as Setting);
         }
@@ -998,12 +1007,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
         const mode = settings.find(x => x.key === 'mode');
         if (mode)
-            mode.description = `${this.notOutermost ? 'WARNING: not the outermost MotionSensor mixin, gating has no effect. ' : ''}${(() => { const d = this.detectGroups(); return d.length === 3 ? '' : `Detect: ${d.join(', ')} only. `; })()}${this.status.summaryLine(Date.now())}`;
+            mode.description = this.notOutermost ? 'WARNING: not the outermost MotionSensor mixin, gating has no effect.' : 'Off, Shadow (measure only) or Gate.';
         // one group: the Status panel on top, then Mode
         // tabs (subgroups): Overview (the Status panel), Setup (Mode, Detect, Stream, Zoom-out), Zones
         for (const x of settings)
             if (!x.subgroup) x.subgroup = 'Setup'; // never ungrouped: no implicit 'General' tab
         return [
+            { key: 'refresh', subgroup: 'Overview', title: 'Refresh', type: 'button' },
             { key: 'status', subgroup: 'Overview', title: 'Status', type: 'html', readonly: true, value: this.status.render(Date.now()) },
             ...settings.filter(x => x.subgroup === 'Setup'),
             ...settings.filter(x => x.subgroup !== 'Setup'),
@@ -1011,6 +1021,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     }
 
     async putMixinSetting(key: string, value: SettingValue): Promise<boolean | void> {
+        if (key === 'refresh') {
+            this.notifySettings(); // user-initiated: one re-render from the in-memory state, nothing stored
+            return true;
+        }
         if (key === 'zoneNames' || key === 'zones' || key.startsWith('zone:')) {
             let zones = this.zones;
             if (key === 'zoneNames') {

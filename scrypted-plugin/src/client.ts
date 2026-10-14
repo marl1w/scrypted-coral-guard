@@ -23,18 +23,24 @@ export interface PersonState {
     since_ms?: number;
     last_seen_ms?: number;
     tracks?: number;
+    /** service 0.3.0+: live person tracks */
+    tracks_detail?: { id: number; box?: number[]; score?: number; last_seen_ms?: number; since_ms?: number; stationary?: boolean }[];
+    /** service 0.3.0+: frame time until which the group is held */
+    hold_until_ms?: number | null;
 }
 
 export interface VehicleState {
     /** a non-parked vehicle is present (parked ones never count). */
     moving: boolean;
+    hold_until_ms?: number | null;
     tracks?: { id: number; cls: string; parked: boolean; /** newer service: 'moving' | 'still' | 'parked' (new tracks start 'still') */ state?: string; since_ms: number; box?: number[] }[];
 }
 
 export interface AnimalState {
     confirmed?: boolean;
     present?: boolean;
-    tracks?: { id: number; cls: string; since_ms?: number; box?: number[] }[];
+    hold_until_ms?: number | null;
+    tracks?: { id: number; cls: string; since_ms?: number; last_seen_ms?: number; box?: number[] }[];
 }
 
 export interface FrameReply {

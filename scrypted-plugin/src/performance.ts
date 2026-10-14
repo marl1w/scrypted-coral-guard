@@ -81,13 +81,12 @@ const uptime = (s: unknown) => typeof s !== 'number' ? 'n/a' : s >= 86400 ? `${M
 const C = { green: '#2f9e5b', amber: '#d9930d', red: '#e5484d' };
 
 export function headerText(nowMs: number, at: number | undefined): string {
-    return at === undefined ? 'No snapshot yet: the service has not answered since the plugin started. Press Refresh or reload the page.'
-        : `Snapshot taken at ${clock(at)} (${ago(nowMs - at)}), not live: press Refresh or reload the page.`;
+    return at === undefined ? 'No data yet' : `Updated ${clock(at)}`;
 }
 
 export function renderPerformance(nowMs: number, latest: { at: number; metrics: any } | undefined, ring: MetricsRing, unavailableSince?: number): string {
     const head = `<div style="opacity:.7">${esc(headerText(nowMs, latest?.at))}</div>`;
-    const down = unavailableSince !== undefined ? `<div style="color:${C.red};margin-top:6px">${esc(`Service unavailable since ${clock(unavailableSince).slice(0, 5)}`)}</div>` : '';
+    const down = unavailableSince !== undefined ? `<div style="color:${C.red};margin-top:6px">${esc(`Service down since ${clock(unavailableSince).slice(0, 5)}`)}</div>` : '';
     if (!latest)
         return `<div style="color:currentColor;line-height:1.5">${head}${down}</div>`;
     const m = latest.metrics || {}, c = m.coral || {}, st = m.stages || {}, l = m.load || {}, g = m.gpu || {};
@@ -100,7 +99,7 @@ export function renderPerformance(nowMs: number, latest: { at: number; metrics: 
         + tile('Inference p50 / p95', pair(st.infer_ms))
         + tile('End-to-end p50 / p95', pair(st.total_ms))
         + tile('Queue p95', st.queue_ms ? fmt(st.queue_ms.p95, 0, ' ms') : 'n/a')
-        + tile('Frames skipped (last minute)', `${fmt(l.dropped_stale_60s)} too late \u00b7 ${fmt(l.rejected_429_60s)} rate-limited`, drops > 0 ? C.amber : undefined, 'too late: waited too long in the queue \u00b7 rate-limited: a camera sent frames too fast')
+        + tile('Skipped (1 min)', `${fmt(l.dropped_stale_60s)} late \u00b7 ${fmt(l.rejected_429_60s)} rate-limited`, drops > 0 ? C.amber : undefined)
         + tile('Host CPU', fmt(m.host?.cpu_pct, 0, ' %'))
         + tile('Service CPU', fmt(m.process?.cpu_pct, 0, ' %'))
         + tile('GPU busy', g.available === false ? 'n/a' : fmt(g.busy_pct, 0, ' %'))
@@ -113,10 +112,10 @@ export function renderPerformance(nowMs: number, latest: { at: number; metrics: 
         const label = vals.length ? `min ${Math.min(...vals).toFixed(d)}${u}, max ${Math.max(...vals).toFixed(d)}${u}, now ${vals[vals.length - 1].toFixed(d)}${u}` : '';
         const body = svg
             ? `${svg}<div style="opacity:.7;font-size:85%">${esc(label)}</div>`
-            : `<div style="opacity:.7;font-size:85%">${esc(`collecting\u2026 (${s.length} ${s.length === 1 ? 'sample' : 'samples'})`)}</div>`;
+            : `<div style="opacity:.7;font-size:85%">${esc(`collecting \u00b7 ${s.length}`)}</div>`;
         return `<div style="min-width:250px"><div style="font-size:85%">${esc(k)}</div>${body}</div>`;
     };
-    const sparks = `<div style="opacity:.7;margin-top:10px;font-size:90%">Last 60 minutes (one sample every 30 s, since the plugin started)</div><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:4px">`
+    const sparks = `<div style="opacity:.7;margin-top:10px;font-size:90%">Last 60 min</div><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:4px">`
         + spark('Coral busy', x => x.busy, 0, ' %', true) + spark('Frames/s', x => x.fps, 1, '/s', false) + spark('Inference p95', x => x.inferP95, 0, ' ms', false) + spark('Host CPU', x => x.hostCpu, 0, ' %', true)
         + `</div>`;
     return `<div style="color:currentColor;line-height:1.5">${head}${down}${tiles}${sparks}</div>`;

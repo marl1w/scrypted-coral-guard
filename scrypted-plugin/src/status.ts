@@ -154,35 +154,92 @@ export class CameraStatus {
     /** objects the service is holding, from the last analysed reply (they drive motion) */
     setTracked(items: TrackedItem[], atMs: number) { this.tracked = items; this.trackedAt = atMs; }
 
+    // ---- Activity (last 10 min): one entry per analysed frame, in memory, capped ----
+    private activity: ActivityEntry[] = [];
+    recordActivity(e: ActivityEntry) {
+        this.activity.push(e);
+        const cut = e.t - ACTIVITY_MS;
+        while (this.activity.length > ACTIVITY_MAX || (this.activity.length && this.activity[0].t < cut))
+            this.activity.shift();
+    }
+
+    /** 60 buckets of 10 s: frames per group (a frame counts once per group it contains), any analysis, published / would lanes. */
+    activityBuckets(nowMs: number): { analysed: number; person: number; vehicle: number; animal: number; published: boolean; would: boolean }[] {
+        const b = Array.from({ length: ACTIVITY_BUCKETS }, () => ({ analysed: 0, person: 0, vehicle: 0, animal: 0, published: false, would: false }));
+        for (const e of this.activity) {
+            const i = ACTIVITY_BUCKETS - 1 - Math.floor((nowMs - e.t) / (ACTIVITY_MS / ACTIVITY_BUCKETS));
+            if (i < 0 || i >= ACTIVITY_BUCKETS) continue;
+            const x = b[i];
+            x.analysed++;
+            for (const g of e.groups) if (g === 'person' || g === 'vehicle' || g === 'animal') x[g]++;
+            x.published ||= e.published;
+            x.would ||= e.would;
+        }
+        return b;
+    }
+
+    private activityChart(nowMs: number): string {
+        const b = this.activityBuckets(nowMs);
+        const shadow = this.nowInfo?.mode === 'Shadow';
+        const W = 600, x0 = 56, x1 = 594, bw = (x1 - x0) / ACTIVITY_BUCKETS, top = 8, base = 70;
+        const max = Math.max(1, ...b.map(x => x.person + x.vehicle + x.animal));
+        const colors: Record<string, string> = { person: C.red, vehicle: C.blue, animal: C.green };
+        const groups = ['person', 'vehicle', 'animal'].filter(g => this.enabledGroups.includes(g));
+        let bars = '';
+        b.forEach((x, i) => {
+            const bx = (x0 + i * bw + 0.5).toFixed(1), w = (bw - 1).toFixed(1);
+            if (!x.analysed) { bars += `<rect x="${bx}" y="${base - 3}" width="${w}" height="3" fill="currentColor" fill-opacity=".18"><title>no analysis</title></rect>`; return; }
+            let y = base;
+            for (const g of groups) {
+                const n = (x as any)[g] as number;
+                if (!n) continue;
+                const h = ((base - top) * n) / max;
+                y -= h;
+                bars += `<rect x="${bx}" y="${y.toFixed(1)}" width="${w}" height="${h.toFixed(1)}" fill="${colors[g]}"><title>${esc(`${g}: ${n} frame${n === 1 ? '' : 's'}`)}</title></rect>`;
+            }
+        });
+        const lane = (y: number, key: 'published' | 'would', label: string) => `<text x="${x0 - 4}" y="${y + 6}" font-size="10" fill="currentColor" text-anchor="end" opacity=".7">${esc(label)}</text>`
+            + `<rect x="${x0}" y="${y}" width="${x1 - x0}" height="7" fill="currentColor" fill-opacity=".08"/>`
+            + b.map((x, i) => x[key] ? `<rect x="${(x0 + i * bw).toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="7" fill="${C.green}"/>` : '').join('');
+        const H = shadow ? 118 : 106;
+        const t = (x: number, y: number, s: string, a = 'start') => `<text x="${x}" y="${y}" font-size="10" fill="currentColor" text-anchor="${a}" opacity=".7">${esc(s)}</text>`;
+        const legend = groups.map(g => `<span style="color:${colors[g]}">&#9679;</span> ${esc(g)}`).join(' &nbsp;');
+        return `<div style="margin-top:10px"><div style="font-weight:600">Activity</div><div style="opacity:.7;font-size:85%">${legend} &nbsp;<span style="opacity:.5">&#9679;</span> gap</div>`
+            + `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-width:${W}px;color:currentColor" role="img" aria-label="Activity, last 10 minutes">`
+            + t(x0 - 4, top + 8, `${max} frame${max === 1 ? '' : 's'}`, 'end') + t(x0 - 4, base, '0', 'end')
+            + `<line x1="${x0}" y1="${base}" x2="${x1}" y2="${base}" stroke="currentColor" stroke-opacity=".3"/>`
+            + bars
+            + lane(base + 6, 'published', 'Published') + (shadow ? lane(base + 18, 'would', 'Would') : '')
+            + t(x0, H - 2, '10 min ago') + t(x1, H - 2, 'now', 'end')
+            + `</svg></div>`;
+    }
+
     private nowCard(nowMs: number): string {
         const n = this.nowInfo;
         if (!n) return '';
         const reason = (r: NowReason) => 'text' in r ? r.text
-            : `${r.groups.join('+')} tracked${r.sinceMs ? ` since ${clock(r.sinceMs)}` : ''}${r.lastSeenMs ? ` \u00b7 last seen ${ago(nowMs - r.lastSeenMs)}` : ''}`;
-        const big = (on: boolean, label: string) => `<div style="font-size:150%;font-weight:700;color:${on ? C.green : C.gray}">${esc(label)} ${on ? 'ON' : 'OFF'}</div>`;
-        const line = (t: string, dim = false) => `<div style="${dim ? 'opacity:.7;' : ''}margin-top:2px">${esc(t)}</div>`;
+            : `${cap(r.groups.join('+'))} tracked${r.sinceMs ? ` \u00b7 since ${clock(r.sinceMs)}` : ''}${r.lastSeenMs ? ` \u00b7 ${Math.max(0, Math.round((nowMs - r.lastSeenMs) / 1000))} s` : ''}`;
+        const big = (on: boolean) => `<div style="font-size:150%;font-weight:700;color:${on ? C.green : C.gray}">Motion ${on ? 'ON' : 'OFF'}</div>`;
+        const line = (t: string, color?: string) => `<div style="margin-top:2px${color ? `;color:${color}` : ''}">${esc(t)}</div>`;
         const body = n.mode === 'Shadow'
-            ? big(n.published, 'Motion') + line(`Published: camera motion ${n.published ? 'ON' : 'OFF'} (Shadow: passed through)`)
-                + line(`Coral Guard would publish: ${n.coral ? 'ON' : 'OFF'} (${reason(n.reason)})`, true)
-            : big(n.published, 'Motion') + line(reason(n.reason), true);
-        return `<div style="border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:8px 12px;margin-top:8px">`
-            + `<div style="opacity:.7;font-size:85%">Now \u00b7 what Home and recorders see</div>${body}</div>`;
+            ? big(n.published) + line(`Would publish ${n.coral ? 'ON' : 'OFF'} \u00b7 ${reason(n.reason)}`, n.coral ? C.green : undefined)
+            : big(n.published) + line(reason(n.reason));
+        return `<div style="border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:8px 12px;margin-top:8px"><div style="opacity:.7;font-size:85%">Now</div>${body}</div>`;
     }
 
     private nowLists(nowMs: number): string {
         const det = (this.last?.boxes || []).filter(b => !b.masked && !b.weak)
-            .map(b => `${b.group === 'person' || !b.group ? 'person' : b.cls || b.group} ${Number.isFinite(b.score) ? b.score.toFixed(2) : ''}${b.parked ? ' (parked)' : b.still ? ' (still)' : ''}`.trim());
+            .map(b => boxLabel(b));
         const trk = this.tracked.map(t => {
             const seen = t.lastSeenMs ?? (t.detected ? this.trackedAt : undefined);
-            const tail = t.state === 'parked' ? `parked${t.sinceMs ? ` since ${clock(t.sinceMs)}` : ''}`
-                : `${t.state}${seen ? ` \u00b7 last seen ${ago(nowMs - seen)}` : ''}${t.sinceMs ? ` \u00b7 since ${clock(t.sinceMs)}` : ''}`;
-            return `${t.cls} \u00b7 ${tail}`;
+            const left = t.holdLeftMs === undefined ? undefined : Math.max(0, Math.round((t.holdLeftMs - (nowMs - this.trackedAt)) / 1000));
+            return t.state === 'parked' ? `${t.cls} \u00b7 parked${t.sinceMs ? ` \u00b7 since ${clock(t.sinceMs)}` : ''}`
+                : `${t.cls} \u00b7 ${t.state}${left !== undefined ? ` \u00b7 ${left} s left` : seen ? ` \u00b7 ${Math.max(0, Math.round((nowMs - seen) / 1000))} s` : ''}`;
         });
-        const col = (title: string, hint: string, items: string[], empty: string) => `<div style="flex:1 1 180px;min-width:0"><div style="font-weight:600">${esc(title)}</div><div style="opacity:.6;font-size:85%">${esc(hint)}</div>`
+        const col = (title: string, items: string[], empty: string) => `<div style="flex:1 1 160px;min-width:0"><div style="font-weight:600">${esc(title)}</div>`
             + (items.length ? items.map(i => `<div>${esc(i)}</div>`).join('') : `<div style="opacity:.7">${esc(empty)}</div>`) + `</div>`;
         return `<div style="display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:10px">`
-            + col('Detected now', 'in the last analysed frame', det, 'nothing in this frame')
-            + col('Tracked', 'held by the service: this drives motion', trk, 'nothing tracked') + `</div>`;
+            + col('Detected', det, 'nothing') + col('Tracked', trk, 'nothing') + `</div>`;
     }
 
     /** dashed boxes for tracked objects that are not detected in the shown frame */
@@ -228,9 +285,14 @@ export class CameraStatus {
 
     onFrameAnalysed(f: FrameEvent) {
         this.frame = f;
+        const on = (g: string) => this.enabledGroups.includes(g);
+        this.recordActivity({
+            t: f.atMs,
+            groups: [on('person') && f.personCount > 0 ? 'person' : '', on('vehicle') && !!f.vehicles ? 'vehicle' : '', on('animal') && !!f.animals ? 'animal' : ''].filter(Boolean),
+            published: !!this.nowInfo?.published, would: !!this.nowInfo?.coral,
+        });
         this.okAt = this.now();
         if (f.boxes && this.last) this.last = { ...this.last, boxes: f.boxes };
-        const on = (g: string) => this.enabledGroups.includes(g);
         const hit = (on('person') && f.personCount > 0) || (on('vehicle') && !!f.vehicles) || (on('animal') && !!f.animals);
         if (hit && this.last && this.lastFresh)
             this.detection = { last: this.last, frame: f }; // same JPEG reference: one extra JPEG per camera at most
@@ -330,14 +392,14 @@ export class CameraStatus {
             l.jpegBase64 = l.jpeg.toString('base64'); // lazy: once per panel render, not once per frame
         const b64 = l?.jpegBase64;
         const placeholder = (!live && this.tooLarge) || (l && l.jpeg && !l.jpegBase64) || (l?.jpegBase64 && l.jpegBase64.length + 23 > MAX_DATA_URI_BYTES)
-            ? `<div style="opacity:.7;margin-top:10px">Snapshot too large to display</div>` : '';
+            ? `<div style="opacity:.7;margin-top:10px">Snapshot too large</div>` : '';
         if (!l || !b64 || !/^[A-Za-z0-9+/=]+$/.test(b64)) return placeholder;
         const uri = `data:image/jpeg;base64,${b64}`;
         if (uri.length > MAX_DATA_URI_BYTES) return placeholder;
         const boxes = live ? '' : this.boxesHtml(l.boxes) + this.trackedBoxes(nowMs);
         const f = this.frame;
-        const caption = live ? `Live frame (not analysed), ${relTime(this.liveFrame!.atMs, nowMs)}` : !f ? '' : `Last analysed ${relTime(f.atMs, nowMs)}: ${this.detectionSummary(f)}${f.totalMs !== undefined ? `, ${fmtMs(f.totalMs)}` : ''}`;
-        return `<div style="opacity:.7;margin-top:10px">Last analysis</div>` + this.snap(uri, boxes, caption, live ? 'Live frame' : 'Last analysed frame');
+        const caption = live ? `${ago(nowMs - this.liveFrame!.atMs)} \u00b7 live, not analysed` : !f ? '' : `${ago(nowMs - f.atMs)} \u00b7 ${topItem(l.boxes)}`;
+        return `<div style="font-weight:600;margin-top:10px">Last analysis</div>` + this.snap(uri, boxes, caption, live ? 'Live frame' : 'Last analysed frame');
     }
 
     private snap(uri: string, boxes: string, caption: string, alt: string): string {
@@ -346,14 +408,14 @@ export class CameraStatus {
 
     /** 'Last detection' block: the newest frame with an enabled detection, or an empty state. */
     private detectionThumb(nowMs: number): string {
-        const head = `<div style="opacity:.7;margin-top:12px">Last detection</div>`;
+        const head = `<div style="font-weight:600;margin-top:12px">Last detection</div>`;
         const d = this.detection;
-        if (!d) return head + `<div style="opacity:.7;font-size:90%;margin-top:4px">No detection yet</div>`;
+        if (!d) return head + `<div style="opacity:.7;font-size:90%;margin-top:4px">none yet</div>`;
         const l = d.last;
         if (!l.jpegBase64 && l.jpeg && l.jpeg.length * 4 / 3 + 30 <= MAX_DATA_URI_BYTES)
             l.jpegBase64 = l.jpeg.toString('base64');
         const b64 = l.jpegBase64;
-        const caption = `Last detection ${relTime(d.frame.atMs, nowMs)}: ${this.detectionSummary(d.frame)}`;
+        const caption = `${ago(nowMs - d.frame.atMs)} \u00b7 ${topItem(d.frame.boxes ?? l.boxes)}`;
         if (!b64 || !/^[A-Za-z0-9+/=]+$/.test(b64) || b64.length + 23 > MAX_DATA_URI_BYTES)
             return head + `<div style="opacity:.7;font-size:90%;margin-top:4px">${esc(caption)}</div>`;
         return head + this.snap(`data:image/jpeg;base64,${b64}`, this.boxesHtml(d.frame.boxes ?? l.boxes), caption, 'Last detection');
@@ -425,38 +487,52 @@ export class CameraStatus {
         const grid = (k: string, v: string) => `<div style="opacity:.7">${esc(k)}</div><div>${v}</div>`;
         const grp = Object.entries(this.byGroup).filter(([, n]) => n > 0).map(([g, n]) => `${g} ${n}`).join(', ');
         const today = [`${t.episodes} episodes`, `${t.confirmed} confirmed${grp ? ` (${esc(grp)})` : ''}`, `${t.vetoed} vetoed`, `${t.unflagged} unflagged`]
-            .concat(t.skippedFrames ? [`${t.skippedFrames} skipped frames`] : [], t.failures ? [`${t.failures} failures`] : []).join(' &middot; ');
-        const lat = [two(p.confirmed) && `confirmed ${two(p.confirmed)}`, two(p.posted) && `first frame ${two(p.posted)}`].filter(Boolean).join(' &middot; ');
+            .concat(t.skippedFrames ? [`${t.skippedFrames} skipped`] : [], t.failures ? [`${t.failures} failures`] : []).join(' &middot; ');
+        const lat = two(p.confirmed) ? esc(two(p.confirmed)!) : dash;
         const video = !this.stream ? dash
-            : this.stream.connected ? esc(`Connected, ${this.stream.decode === 'gpu' ? 'GPU decode' : this.stream.decode === 'cpu' ? 'CPU decode' : 'decode unknown'}${this.stream.warm ? ', warm' : ''}${this.stream.gpuFailed ? ` (GPU failed${this.stream.gpuFallbacks ? `, ${this.stream.gpuFallbacks} fallback${this.stream.gpuFallbacks === 1 ? '' : 's'}` : ''})` : ''}${this.stream.name ? `, stream ${this.stream.name}` : ''}`) : `<span style="color:${C.red}">Not connected</span>`;
+            : this.stream.connected ? esc(`${this.stream.decode === 'gpu' ? 'GPU' : this.stream.decode === 'cpu' ? 'CPU' : '?'}${this.stream.gpuFailed ? ` (GPU failed${this.stream.gpuFallbacks ? ` \u00d7${this.stream.gpuFallbacks}` : ''})` : ''}${this.stream.name ? ` \u00b7 ${this.stream.name}` : ''}`) : `<span style="color:${C.red}">not connected</span>`;
         const service = !this.health ? dash
-            : `${this.health.ok ? `<span style="color:${C.green}">OK</span>` : `<span style="color:${C.red}">Unavailable</span>`}${this.health.coralMs !== undefined ? esc(`, Coral ${fmtMs(this.health.coralMs)}`) : ''}${this.health.text ? ` (${esc(this.health.text)})` : ''}`;
+            : `${this.health.ok ? `<span style="color:${C.green}">OK</span>` : `<span style="color:${C.red}">down</span>`}${this.health.coralMs !== undefined ? esc(` \u00b7 Coral ${fmtMs(this.health.coralMs)}`) : ''}${this.health.text ? ` (${esc(this.health.text)})` : ''}`;
         const result = (e: EpisodeEvent) => e.aborted ? this.chip('Aborted', C.red, false)
             : e.kind === 'unflagged' ? this.chip('Unflagged', C.blue, false)
                 : e.vetoed ? this.chip('Vetoed', C.amber, false) : this.chip(e.groups?.length ? `Confirmed \u00b7 ${e.groups.join('+')}` : 'Confirmed', C.green, false);
-        const cellStyle = 'style="padding:3px 10px 3px 0;text-align:left;vertical-align:middle"';
+        const cellStyle = 'style="padding:2px 8px 2px 0;text-align:left;vertical-align:middle"';
         const rows = this.history.slice(-8).reverse().map(e =>
-            `<tr><td ${cellStyle}>${esc(clock(e.rawStartMs))}</td><td ${cellStyle}>${result(e)}</td><td ${cellStyle}>${e.heldBeyondRawS > 0 ? esc(`${Math.round(e.heldBeyondRawS)} s`) : dash}</td><td ${cellStyle}>${e.confirmedAfterMs !== undefined ? esc(fmtMs(e.confirmedAfterMs)) : e.verdictAfterMs !== undefined && e.vetoed ? `<span style="opacity:.7">verdict </span>${esc(fmtMs(e.verdictAfterMs))}` : dash}</td></tr>`).join('');
+            `<tr><td ${cellStyle}>${esc(clock(e.rawStartMs))}</td><td ${cellStyle}>${result(e)}</td><td ${cellStyle}>${e.heldBeyondRawS > 0 ? esc(`${Math.round(e.heldBeyondRawS)} s`) : dash}</td><td ${cellStyle}>${e.confirmedAfterMs !== undefined ? esc(fmtMs(e.confirmedAfterMs)) : e.verdictAfterMs !== undefined && e.vetoed ? esc(fmtMs(e.verdictAfterMs)) : dash}</td></tr>`).join('');
         const episodes = rows
             ? `<table style="border-collapse:collapse;margin-top:4px"><tr style="opacity:.7">${['Time', 'Result', 'Held', 'Latency'].map(h => `<th ${cellStyle}>${h}</th>`).join('')}</tr>${rows}</table>`
-            : `<div style="opacity:.7;margin-top:4px">No episodes yet.</div>`;
-        // a failure line is shown until a later success (analysis or healthy service) or 120 s, whichever comes first
+            : `<div style="opacity:.7;margin-top:4px">none</div>`;
         const showFailure = !!this.failure && this.okAt <= this.failure.atMs && nowMs - this.failure.atMs <= FAILURE_SHOW_MS;
-        const failure = this.failure && showFailure ? `<div style="margin-top:10px;color:${C.red}">Last failure: ${esc(this.failure.msg)} (${esc(relTime(this.failure.atMs, nowMs))})</div>` : '';
+        const failure = this.failure && showFailure ? `<div style="margin-top:8px;color:${C.red}">Failure: ${esc(this.failure.msg)} \u00b7 ${esc(ago(nowMs - this.failure.atMs))}</div>` : '';
+        const head = `<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;opacity:.7"><span>Updated ${esc(clock(nowMs))}</span><span>${esc(this.mode)}${this.sensorless ? ' \u00b7 sensorless' : ''}${this.zoomOut ? ` \u00b7 zoom-out ${Math.round(this.zoomOut * 100)} %` : ''}</span></div>`;
+        const bypass = !this.enabled || this.state === 'disabled' ? `<div style="margin-top:6px">${this.chip('Disabled', C.gray)}</div>` : '';
         return `<div style="font-size:90%;line-height:1.45;max-width:680px;color:currentColor">`
-            + `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">${this.stateChip()}<span style="opacity:.7">Mode: ${esc(this.mode)}</span></div>`
+            + head + bypass
             + this.nowCard(nowMs)
+            + this.activityChart(nowMs)
             + this.nowLists(nowMs)
             + this.thumb(nowMs)
             + `<div style="max-width:420px">${this.detectionThumb(nowMs)}</div>`
-            + `<div style="display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin-top:12px;font-size:85%;opacity:.85">${this.sensorless ? grid('Motion', esc('Sensorless: motion comes only from Coral Guard')) : ''}${this.detecting ? grid('Detecting', esc(this.detecting)) : ''}${this.zoomOut ? grid('Analysis', esc(`Zoom-out ${Math.round(this.zoomOut * 100)} %`)) : ''}${grid('Today', today)}${grid('Latency p50 / p95', lat || dash)}${grid('Video', video)}${grid('Service', service)}</div>`
-            + `<div style="margin-top:10px;font-weight:600;font-size:90%">Recent episodes</div><div style="font-size:85%;overflow-x:auto">${episodes}</div>${failure}</div>`;
+            + `<div style="font-weight:600;margin-top:12px">Stats</div><div style="display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;font-size:85%">${grid('Today', today)}${grid('Latency', lat)}${grid('Decode', video)}${grid('Service', service)}</div>`
+            + `<div style="margin-top:10px;font-weight:600">Episodes</div><div style="font-size:85%;overflow-x:auto">${episodes}</div>${failure}</div>`;
     }
 }
 
+export interface ActivityEntry { t: number; groups: string[]; published: boolean; would: boolean }
+const ACTIVITY_MS = 10 * 60 * 1000, ACTIVITY_BUCKETS = 60, ACTIVITY_MAX = 1200;
 export type NowReason = { text: string } | { groups: string[]; sinceMs?: number; lastSeenMs?: number };
 export interface NowInfo { published: boolean; coral: boolean; mode: string; reason: NowReason }
-export interface TrackedItem { group: string; cls: string; state: string; sinceMs?: number; lastSeenMs?: number; box?: number[]; detected: boolean }
+export interface TrackedItem { group: string; cls: string; state: string; sinceMs?: number; lastSeenMs?: number; box?: number[]; detected: boolean; /** hold remaining at analysis time (service 0.3.0+) */ holdLeftMs?: number }
+const cap = (t: string) => t ? t[0].toUpperCase() + t.slice(1) : t;
+function boxLabel(b: Box): string {
+    const name = b.group === 'person' || !b.group ? 'person' : b.cls || b.group;
+    return `${name} ${Number.isFinite(b.score) ? b.score.toFixed(2) : ''}${b.parked ? ' parked' : b.still ? ' still' : ''}`.trim();
+}
+/** caption item: the best valid detection of the frame, or 'nothing' */
+function topItem(boxes: Box[] | undefined): string {
+    const v = (boxes || []).filter(b => !b.masked && !b.weak).sort((a, b) => b.score - a.score);
+    return v.length ? boxLabel(v[0]) + (v.length > 1 ? ` +${v.length - 1}` : '') : 'nothing';
+}
 const ago = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`; };
 
 const C = { green: '#2f9e5b', amber: '#d9930d', red: '#e5484d', blue: '#3b82f6', gray: '#8b8b8b' };

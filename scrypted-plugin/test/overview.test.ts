@@ -39,17 +39,17 @@ test('sparkline path: empty / single -> none, constant -> flat mid line, varying
 
 test('performance: header says snapshot and reload, tiles, colour only for Coral state and drops, sparklines after 2 samples', () => {
     const at = new Date(2026, 9, 13, 21, 52, 10).getTime();
-    assert.equal(headerText(at + 12000, at), 'Snapshot taken at 21:52:10 (12 s ago), not live: press Refresh or reload the page.');
+    assert.equal(headerText(at + 12000, at), 'Updated 21:52:10');
     const r = new MetricsRing();
     r.push(at, metrics);
     let h = renderPerformance(at + 12000, { at, metrics }, r);
-    assert.match(h, /Snapshot taken at 21:52:10 \(12 s ago\)/);
-    for (const re of [/ok, 42 % busy/, />7\.3</, /11 \/ 19 ms/, /30 \/ 61 ms/, />9 ms</, /2 too late \u00b7 0 rate-limited/, />35 %</, />48 %</, /GPU busy<\/div><div>n\/a/, /2 h 1 min/])
+    assert.match(h, /Updated 21:52:10/);
+    for (const re of [/ok, 42 % busy/, />7\.3</, /11 \/ 19 ms/, /30 \/ 61 ms/, />9 ms</, /2 late \u00b7 0 rate-limited/, />35 %</, />48 %</, /GPU busy<\/div><div>n\/a/, /2 h 1 min/])
         assert.match(h, re);
-    assert.match(h, /color:#d9930d">2 too late/);
-    assert.match(h, /Frames skipped \(last minute\)/); assert.match(h, /rate-limited: a camera sent frames too fast/);
+    assert.match(h, /color:#d9930d">2 late/);
+    assert.match(h, /Skipped \(1 min\)/); assert.ok(!/too fast|waited/.test(h), 'no hint lines');
     assert.ok(!/\b429\b|\b503\b/.test(h), 'no raw HTTP codes');
-    assert.match(h, /collecting… \(1 sample\)/);
+    assert.match(h, /collecting · 1/);
     r.push(at + 30000, { ...metrics, coral: { ...metrics.coral, utilization_pct: 60 } });
     h = renderPerformance(at + 31000, { at: at + 30000, metrics }, r);
     assert.match(h, /<svg width="240" height="60"/);
@@ -63,10 +63,10 @@ test('performance: unreachable service shows the last snapshot time and since wh
     const at = new Date(2026, 9, 13, 21, 0, 0).getTime();
     const down = new Date(2026, 9, 13, 21, 5, 0).getTime();
     const h = renderPerformance(at + 600000, { at, metrics: { ...metrics, coral: { state: '<x>' } } }, new MetricsRing(), down);
-    assert.match(h, /Snapshot taken at 21:00:00 \(10 min ago\)/);
-    assert.match(h, /Service unavailable since 21:05/);
+    assert.match(h, /Updated 21:00:00/);
+    assert.match(h, /Service down since 21:05/);
     assert.ok(h.includes('&lt;x&gt;') && !h.includes('<x>'));
-    assert.match(renderPerformance(at, undefined, new MetricsRing(), down), /No snapshot yet[\s\S]*Service unavailable since 21:05/);
+    assert.match(renderPerformance(at, undefined, new MetricsRing(), down), /No data yet[\s\S]*Service down since 21:05/);
 });
 
 test('provider: Overview first, Performance group from the poll; a failed poll marks the service down', async () => {
@@ -87,7 +87,7 @@ test('provider: Overview first, Performance group from the poll; a failed poll m
     p.client = { metrics: async () => { throw new Error('ECONNREFUSED'); }, check: async () => { throw new Error('down'); } };
     await p.checkHealth();
     st = await p.getSettings();
-    assert.match(st.find((x: any) => x.key === 'performance').value, /Service unavailable since/);
+    assert.match(st.find((x: any) => x.key === 'performance').value, /Service down since/);
     clearInterval(p.healthTimer);
 });
 
@@ -109,7 +109,7 @@ test('Refresh button: fetches health and metrics now, updates the snapshot even 
     assert.equal(events, 1);
     assert.equal(p.perfLatest.metrics.coral.utilization_pct, 77);
     assert.equal(p.perfRing.samples.length, 1, 'ring spacing kept');
-    assert.match((await p.getSettings()).find((x: any) => x.key === 'performance').value, /press Refresh or reload the page/);
+    assert.match((await p.getSettings()).find((x: any) => x.key === 'performance').value, /Updated \d\d:\d\d:\d\d/);
     clearInterval(p.healthTimer);
 });
 

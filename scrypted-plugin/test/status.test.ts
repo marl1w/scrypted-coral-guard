@@ -9,20 +9,20 @@ const ep = (o: Partial<EpisodeEvent> = {}): EpisodeEvent => ({ kind: 'camera-tri
 test('empty state: dashes instead of clutter, empty episode line, no image', () => {
     const { s } = mk();
     const h = s.render(T0);
-    assert.match(h, /Idle/);
-    assert.match(h, /No episodes yet\./);
+    assert.match(h, /Updated 12:00:00/);
+    assert.match(h, /Episodes<\/div><div[^>]*><div[^>]*>none/);
     assert.match(h, /0 episodes/);
     assert.ok(!/<img/.test(h));
-    assert.ok(!/Last failure/.test(h));
+    assert.ok(!/Failure:/.test(h));
     assert.ok(!/Analysed/.test(h));
 });
 
 test('each state renders its chip; disabled via setEnabled; Watching when the stream is connected', () => {
     const { s } = mk();
     const want: [any, RegExp][] = [['idle', /Idle/], ['analysing', /Analysing/], ['person confirmed', /Person confirmed/], ['service unavailable (passing motion through)', /Service unavailable/], ['disabled', /Disabled/]];
-    for (const [st, re] of want) { s.setState(st); assert.match(s.render(T0), re, st); }
+    for (const [st, re] of want) { s.setState(st); assert.match(s.overviewCells(T0).state, re, st); }
     s.setState('idle'); s.setStream({ connected: true, decode: 'cpu', warm: true });
-    assert.match(s.render(T0), /Watching/);
+    assert.match(s.overviewCells(T0).state, /Watching/);
     s.setEnabled(false);
     assert.match(s.render(T0), /Disabled/);
     s.setEnabled(true);
@@ -37,14 +37,14 @@ test('caption, video, service, mode', () => {
     s.setStream({ connected: true, decode: 'gpu', warm: true });
     s.onServiceHealth({ ok: true, coralMs: 29, text: '' });
     const h = s.render(T0);
-    assert.match(h, /Last analysed 12 s ago: 2 persons \(best 0\.72\), 39 ms/);
-    assert.match(h, /Connected, GPU decode, warm/);
-    assert.match(h, /OK<\/span>, Coral 29 ms/);
-    assert.match(h, /Mode: Gate/);
+    assert.match(h, /12 s ago \u00b7 nothing/);
+    assert.match(h, /Decode<\/div><div>GPU</);
+    assert.match(h, /OK<\/span> \u00b7 Coral 29 ms/);
+    assert.match(h, /<span>Gate<\/span>/);
     s.onFrameAnalysed({ atMs: T0, personCount: 0, totalMs: 4.26 });
-    assert.match(s.render(T0), /Last analysed just now: no person, 4\.3 ms/);
+    assert.match(s.render(T0), /0 s ago \u00b7 nothing/);
     s.setStream({ connected: false, decode: 'unknown', warm: false });
-    assert.match(s.render(T0), /Not connected/);
+    assert.match(s.render(T0), /not connected/);
 });
 
 test('episodes table: result chips, humanised numbers, dashes, newest first, max 8', () => {
@@ -174,20 +174,20 @@ test('weak candidates: dashed dim boxes labelled possible, caption says no perso
     const h = s.render(T0);
     assert.match(h, /border:2px dashed/);
     assert.match(h, /possible 0\.26/);
-    assert.match(h, /Last analysed just now: no person \(weak candidate 0\.26\), 33 ms/);
+    assert.match(h, /0 s ago \u00b7 nothing/);
     s.setStream({ connected: true, decode: 'cpu', warm: true, gpuFailed: true });
-    assert.match(s.render(T0), /CPU decode, warm \(GPU failed\)/);
+    assert.match(s.render(T0), /CPU \(GPU failed\)/);
 });
 
 test('vetoed episodes show the verdict latency; the thumbnail base64 is computed lazily from the raw JPEG', () => {
     const { s } = mk();
     s.onEpisode(ep({ vetoed: true, verdictAfterMs: 61, postedAfterMs: 20 }));
-    assert.match(s.render(T0), /verdict <\/span>61 ms/);
+    assert.match(s.render(T0), />61 ms</);
     s.setLastFrame({ jpeg: Buffer.from([0xff, 0xd8, 0xff, 0xd9]), boxes: [] });
     assert.match(s.render(T0), /<img src="data:image\/jpeg;base64,\/9j\/2Q=="/);
     s.setLastFrame({ jpeg: Buffer.alloc(130 * 1024), boxes: [] });
     assert.ok(!s.render(T0).includes('<img'));
-    assert.match(s.render(T0), /Snapshot too large to display/);
+    assert.match(s.render(T0), /Snapshot too large/);
     s.setLastFrame({ jpeg: Buffer.from([0xff, 0xd8, 0xff, 0xd9]), boxes: [] });
     s.setThumbTooLarge();
     assert.ok(s.render(T0).includes('<img'), 'the previous small thumbnail stays');
@@ -199,21 +199,21 @@ test('live frame only while nothing was analysed; an analysed frame keeps its bo
     s.setLiveFrame(jpg, T0 - 5000);
     let h = s.render(T0);
     assert.ok(h.includes('<img'));
-    assert.match(h, /Live frame \(not analysed\), 5 s ago/);
+    assert.match(h, /5 s ago \u00b7 live, not analysed/);
     assert.ok(!/border:2px/.test(h));
     s.setLastFrame({ jpeg: jpg, boxes: [{ x0: 0.1, y0: 0.1, x1: 0.5, y1: 0.5, score: 0.9 }] });
     s.onFrameAnalysed({ atMs: T0 - 12000, personCount: 1, bestScore: 0.9, totalMs: 30 });
     s.setLiveFrame(jpg, T0);
     h = s.render(T0);
-    assert.ok(!/Live frame/.test(h));
-    assert.match(h, /Last analysed 12 s ago: 1 person/);
+    assert.ok(!/live, not analysed/.test(h));
+    assert.match(h, /12 s ago \u00b7 person 0\.90/);
     assert.match(h, /border:2px solid/);
     s.setLiveFrame(jpg, T0 + 3 * 3600000);
     h = s.render(T0 + 3 * 3600000);
-    assert.match(h, /Last analysed 3 h ago: 1 person/, 'old analysis still shown with its boxes');
+    assert.match(h, /3 h ago \u00b7 person 0\.90/, 'old analysis still shown with its boxes');
     assert.match(h, /border:2px solid/);
     s.setLastFrame({ jpeg: Buffer.alloc(130 * 1024), boxes: [] });
-    assert.match(s.render(T0), /Snapshot too large to display/);
+    assert.match(s.render(T0), /Snapshot too large/);
 });
 
 test('vehicles and animals: blue solid / dimmed dashed parked / green boxes, group caption', () => {
@@ -228,9 +228,7 @@ test('vehicles and animals: blue solid / dimmed dashed parked / green boxes, gro
     assert.match(h, /border:2px solid #3b82f6[^>]*>[^<]*<span[^>]*>car 0\.92</);
     assert.match(h, /border:2px dashed #3b82f6[^>]*>[^<]*<span[^>]*>truck parked 0\.88</);
     assert.match(h, /border:2px solid #2f9e5b[^>]*>[^<]*<span[^>]*>dog 0\.70</);
-    assert.match(h, /Last analysed just now: 1 person \(best 0\.80\) \u00b7 2 vehicles \(1 parked\) \u00b7 1 animal, 33 ms/);
-    s.onFrameAnalysed({ atMs: T0, personCount: 0, vehicles: 0, animals: 0 });
-    assert.match(s.render(T0), /Last analysed just now: nothing detected/);
+    assert.match(h, /0 s ago \u00b7 car 0\.92 \+2/, 'caption: age and top item only');
     const live = mk().s;
     live.setLiveFrame(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), T0);
     assert.ok(!/border:2px/.test(live.render(T0)), 'a live frame has no boxes');
@@ -251,25 +249,25 @@ test('weak vehicle: dashed blue "possible car 0.38", caption "1 possible vehicle
     s.onFrameAnalysed({ atMs: T0, personCount: 0, vehicles: 0, weakVehicles: 1, animals: 0, totalMs: 20 });
     const h = s.render(T0);
     assert.match(h, /border:2px dashed #3b82f6[^>]*>[^<]*<span[^>]*>possible car 0\.38</);
-    assert.match(h, /Last analysed just now: 1 possible vehicle, 20 ms/);
+    assert.match(h, /0 s ago \u00b7 nothing/, 'a weak candidate is not an item');
 });
 
 test('Last failure hides after a later success or after 120 s', () => {
     const { s, c } = mk();
     s.onFailure('health failed: ECONNREFUSED');
-    assert.match(s.render(c.t), /Last failure/);
+    assert.match(s.render(c.t), /Failure:/);
     c.t += 5000;
     s.onServiceHealth({ ok: true, text: '' });
-    assert.ok(!/Last failure/.test(s.render(c.t)), 'healthy service hides it');
+    assert.ok(!/Failure:/.test(s.render(c.t)), 'healthy service hides it');
     const x = mk();
     x.s.onFailure('boom');
     x.c.t += 5000;
     x.s.onFrameAnalysed({ atMs: x.c.t, personCount: 0 });
-    assert.ok(!/Last failure/.test(x.s.render(x.c.t)), 'a later analysis hides it');
+    assert.ok(!/Failure:/.test(x.s.render(x.c.t)), 'a later analysis hides it');
     const y = mk();
     y.s.onFailure('boom');
-    assert.match(y.s.render(y.c.t + 119000), /Last failure/);
-    assert.ok(!/Last failure/.test(y.s.render(y.c.t + 121000)), '120 s');
+    assert.match(y.s.render(y.c.t + 119000), /Failure:/);
+    assert.ok(!/Failure:/.test(y.s.render(y.c.t + 121000)), '120 s');
 });
 
 test('a vehicle on a still track is dimmed and labelled still', () => {
@@ -283,14 +281,14 @@ test('Last detection: empty state, kept across empty frames, only enabled groups
     const { s } = mk();
     const jA = Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]), jB = Buffer.from([0xff, 0xd8, 2, 0xff, 0xd9]), jC = Buffer.from([0xff, 0xd8, 3, 0xff, 0xd9]);
     const det = (h: string) => /Last detection<\/div>([\s\S]*)$/.exec(h)![1];
-    assert.match(s.render(T0), /No detection yet/);
+    assert.match(s.render(T0), /Last detection<\/div><div[^>]*>none yet/);
     s.setLastFrame({ jpeg: jA, boxes: [] });
     s.onFrameAnalysed({ atMs: T0, personCount: 2, bestScore: 0.91, vehicles: 1, parkedVehicles: 1, animals: 0, boxes: [{ x0: 0, y0: 0, x1: 0.1, y1: 0.1, score: 0.91 }] });
     s.setLastFrame({ jpeg: jB, boxes: [] });
     s.onFrameAnalysed({ atMs: T0, personCount: 0, vehicles: 0, animals: 0, boxes: [] });
     let h = det(s.render(T0));
     assert.match(h, new RegExp(jA.toString('base64').replace(/[+/=]/g, '.')));
-    assert.match(h, /Last detection just now: 2 persons \(best 0\.91\) · 1 vehicle \(1 parked\)/);
+    assert.match(h, /0 s ago \u00b7 person 0\.91/);
     assert.match(s.render(T0), /Last analysis/);
     s.setDetect(['vehicle']);
     s.setLastFrame({ jpeg: jC, boxes: [] });
@@ -300,4 +298,41 @@ test('Last detection: empty state, kept across empty frames, only enabled groups
     s.onFrameAnalysed({ atMs: T0, personCount: 0, vehicles: 1, animals: 0 });
     h = det(s.render(T0));
     assert.ok(!h.includes(jC.toString('base64')), 'an oversize frame never pairs with the previous JPEG');
+});
+
+test('activity: 10 s buckets over 10 min, frames counted per group (not objects), enabled groups only, published / would lanes, gaps visible', () => {
+    const { s } = mk();
+    s.setNow({ published: true, coral: false, mode: 'Shadow', reason: { text: 'x' } });
+    const T = T0;
+    s.onFrameAnalysed({ atMs: T - 5000, personCount: 3, vehicles: 1, animals: 0 });      // bucket 59: 1 person frame, 1 vehicle frame
+    s.onFrameAnalysed({ atMs: T - 6000, personCount: 1, vehicles: 0, animals: 1 });      // bucket 59
+    s.setNow({ published: false, coral: true, mode: 'Shadow', reason: { text: 'x' } });
+    s.onFrameAnalysed({ atMs: T - 95000, personCount: 0, vehicles: 0, animals: 0 });     // bucket 50: analysed, nothing
+    s.onFrameAnalysed({ atMs: T - 700000, personCount: 1, vehicles: 0, animals: 0 });    // older than 10 min: dropped
+    const b = s.activityBuckets(T);
+    assert.equal(b.length, 60);
+    assert.deepEqual([b[59].person, b[59].vehicle, b[59].animal, b[59].analysed], [2, 1, 1, 2]);
+    assert.equal(b[59].published, true); assert.equal(b[59].would, false);
+    assert.deepEqual([b[50].analysed, b[50].person, b[50].would], [1, 0, true]);
+    assert.equal(b[0].analysed, 0);
+    let h = s.render(T);
+    assert.match(h, />Activity</);
+    assert.match(h, />4 frames<\/text>/, "stacked max"); assert.match(h, />10 min ago<\/text>/); assert.match(h, />now<\/text>/);
+    assert.match(h, /<title>no analysis<\/title>/);
+    assert.match(h, />Would<\/text>/, 'Shadow shows the second lane');
+    assert.match(h, /<title>person: 2 frames<\/title>/);
+    s.setDetect(['vehicle']);
+    s.onFrameAnalysed({ atMs: T - 1000, personCount: 1, vehicles: 0, animals: 0 });
+    assert.equal(s.activityBuckets(T)[59].person, 2, 'a disabled group is not counted');
+    s.setNow({ published: false, coral: false, mode: 'Gate', reason: { text: '<b>' } });
+    h = s.render(T);
+    assert.ok(!/>Would</.test(h), 'Gate: one lane');
+    assert.ok(!/<title>person/.test(h), 'disabled group not drawn');
+});
+
+test('activity: empty state draws only no-analysis ticks', () => {
+    const { s } = mk();
+    const h = s.render(T0);
+    assert.equal((h.match(/<title>no analysis<\/title>/g) || []).length, 60);
+    assert.match(h, />1 frame<\/text>/);
 });

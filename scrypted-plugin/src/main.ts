@@ -36,30 +36,30 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         token: {
             title: 'Token',
             type: 'password',
-            description: 'Sent as X-Verifier-Token. Empty if the service has no token.',
+            description: 'Service token (X-Verifier-Token).',
             onPut: () => this.settingsChanged(),
         },
         killSwitch: {
             title: 'Disable everywhere',
-            description: 'Kill switch: every camera passes raw motion through and no request is sent.',
+            description: 'Pass raw motion through everywhere.',
             type: 'boolean',
             defaultValue: false,
             onPut: () => this.settingsChanged(),
         },
-        personConfirm: thresholdSetting('personConfirm', 'A person is confirmed from this score (0.05-0.95).', () => this.thresholdsChanged()),
-        personKeep: thresholdSetting('personKeep', 'A tracked person keeps being followed down to this score; dashed in the panel. Not above Person confirm.', () => this.thresholdsChanged()),
-        vehicleDetect: thresholdSetting('vehicleDetect', 'A vehicle is detected (drawn, held) from this score. Not above Vehicle confirm.', () => this.thresholdsChanged()),
-        vehicleConfirm: thresholdSetting('vehicleConfirm', 'A moving vehicle confirms from this score (2 of 3 frames).', () => this.thresholdsChanged()),
-        animalDetect: thresholdSetting('animalDetect', 'An animal is detected (drawn, kept) from this score. Not above Animal confirm.', () => this.thresholdsChanged()),
+        personConfirm: thresholdSetting('personConfirm', 'Score that confirms a person.', () => this.thresholdsChanged()),
+        personKeep: thresholdSetting('personKeep', 'Score that keeps a person tracked.', () => this.thresholdsChanged()),
+        vehicleDetect: thresholdSetting('vehicleDetect', 'Score that detects a vehicle.', () => this.thresholdsChanged()),
+        vehicleConfirm: thresholdSetting('vehicleConfirm', 'Score that confirms a moving vehicle.', () => this.thresholdsChanged()),
+        animalDetect: thresholdSetting('animalDetect', 'Score that detects an animal.', () => this.thresholdsChanged()),
         secondLook: {
             group: 'Detection',
             title: 'Second look',
-            description: 'Re-checks uncertain detections with a zoomed-in pass on the Coral. Fewer false alerts, slightly more Coral load.',
+            description: 'Zoomed re-check of uncertain detections.',
             type: 'boolean',
             defaultValue: true,
             onPut: () => this.thresholdsChanged(),
         },
-        animalConfirm: thresholdSetting('animalConfirm', 'An animal is confirmed from this score.', () => this.thresholdsChanged()),
+        animalConfirm: thresholdSetting('animalConfirm', 'Score that confirms an animal.', () => this.thresholdsChanged()),
     });
 
     /** 'Second look' (Detection group, default on): sent to the service as second_look. */
@@ -180,9 +180,7 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
             }
             if (up !== undefined) this.lastUptime = up;
             reason = ok ? '' : `health not ok (coral ${h.model?.coral ?? 'unknown'})`;
-            this.healthText = ok
-                ? `ok, v${h.version ?? '?'}, coral ${h.model?.coral ?? '?'}, median ${h.coral_ms?.median ?? '?'} ms, ${h.cameras_active ?? '?'} cameras active`
-                : reason;
+            this.healthText = ok ? `OK \u00b7 v${h.version ?? '?'}` : reason;
         }
         catch (e: any) {
             const st = e?.status;
@@ -204,7 +202,7 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         // groups appear in the order of their first setting: Overview, Performance, Service, Detection
         return [
             { key: 'overview', group: 'Overview', title: 'Overview', type: 'html', readonly: true, value: this.overview() },
-            { key: 'refreshPerformance', group: 'Performance', title: 'Refresh', type: 'button', description: 'Fetch the service metrics now.' },
+            { key: 'refreshPerformance', group: 'Performance', title: 'Refresh', type: 'button', description: 'Fetch now.' },
             { key: 'performance', group: 'Performance', title: 'Service and Coral', type: 'html', readonly: true, value: renderPerformance(Date.now(), this.perfLatest, this.perfRing, this.perfDownSince) },
             ...stored.filter(x => !isThreshold(x)).map(x => ({ ...x, group: x.group || 'Service' })), // never ungrouped: no implicit 'General'
             {
@@ -213,7 +211,7 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
                 title: 'Service health',
                 value: this.healthText,
                 readonly: true,
-                description: 'Checked every 30 s and whenever a setting here is saved.',
+                description: 'Checked every 30 s.',
             },
             ...stored.filter(isThreshold),
         ];
