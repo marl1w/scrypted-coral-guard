@@ -153,13 +153,22 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     register(m: GuardMixin) { this.active.add(m); }
 
     /** name of another enabled camera that uses the same service camera id, if any. */
+    /** another camera (different device id) that uses the same service camera id, if any */
     findDuplicate(m: GuardMixin): string | undefined {
         for (const o of this.active)
-            if (o !== m && o.verifierId === m.verifierId)
-                return o.name;
+            if (o !== m && String(o.id) !== String(m.id) && o.verifierId === m.verifierId)
+                return `${o.name} (device ${o.id})`;
         return undefined;
     }
-    unregister(m: GuardMixin) { this.active.delete(m); this.releaseHw(m); }
+    unregister(m: GuardMixin) {
+        this.active.delete(m);
+        this.releaseHw(m);
+        if (this.live.get(String(m.id)) === m) this.live.delete(String(m.id));
+    }
+
+    /** the one live mixin per device id (a re-created chain replaces the previous instance) */
+    private live = new Map<string, GuardMixin>();
+    isLive(m: GuardMixin): boolean { const l = this.live.get(String(m.id)); return !l || l === m; }
 
     private settingsChanged() {
         for (const m of this.active)
@@ -291,7 +300,16 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     }
 
     async getMixin(mixinDevice: any, mixinDeviceInterfaces: ScryptedInterface[], mixinDeviceState: WritableDeviceState): Promise<any> {
-        return new GuardMixin({
+        // Scrypted re-creates a camera's mixin chain (e.g. when another mixin or the camera plugin changes) and may call
+        // getMixin before (or without) releaseMixin for the old chain: keep exactly one live instance per device.
+        const id = String((mixinDeviceState as any)?.id ?? mixinDevice?.id ?? '');
+        const old = id ? this.live.get(id) : undefined;
+        if (old) {
+            this.console.log(`${old.name || id}: replacing previous instance`);
+            this.live.delete(id);
+            try { await old.release(); } catch (e) { /* best effort */ }
+        }
+        const m = new GuardMixin({
             group: 'Coral Guard',
             groupKey: 'coral-guard',
             mixinDevice,
@@ -299,10 +317,12 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
             mixinDeviceState,
             mixinProviderNativeId: this.nativeId,
         }, this);
+        this.live.set(String(m.id || id), m);
+        return m;
     }
 
     async releaseMixin(id: string, mixinDevice: GuardMixin): Promise<void> {
-        await mixinDevice?.release();
+        await mixinDevice?.release(); // idempotent; unregister drops it from the live map if it is still the live one
     }
 }
 

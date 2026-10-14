@@ -359,7 +359,7 @@ test('verifier id is the name slug plus the Scrypted device id, so duplicates ca
 
 test('L10: a duplicate service camera id is warned about', async () => {
     const h = make({ dup: 'Other Cam' });
-    assert.ok(ctl.logs.some(l => /also used by "Other Cam"/.test(l[1])));
+    assert.ok(ctl.logs.some(l => /is also used by camera Other Cam/.test(l[1])));
     await h.mixin.release();
 });
 
@@ -1585,4 +1585,21 @@ test('Triggers setting: Detection group, all by default, empty or junk means all
     p.storageSettings = { values: { triggers: [] } }; assert.equal(p.triggers.length, 3);
     p.storageSettings = { values: { triggers: 'junk' } }; assert.equal(p.triggers.length, 3);
     p.storageSettings = { values: { triggers: ['Camera AI'] } }; assert.deepEqual(p.triggers, ['Camera AI']);
+});
+
+test('outermost check reads the device\'s current mixin list when available (last = outermost)', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    const sdkStub = require('./harness').sdkStub;
+    const orig = sdkStub.systemManager.getDeviceById;
+    try {
+        h.plugin.id = 'prov1';
+        sdkStub.systemManager.getDeviceById = (id: string) => ({ ...orig(id), mixins: ['a', 'b', 'prov1'] });
+        h.mixin['verifyPublished']();
+        assert.equal(h.mixin['notOutermost'], false);
+        sdkStub.systemManager.getDeviceById = (id: string) => ({ ...orig(id), mixins: ['prov1', 'z'] });
+        h.mixin['verifyPublished']();
+        assert.equal(h.mixin['notOutermost'], true);
+        assert.ok(ctl.logs.some(l => /NOT the outermost/.test(String(l[1]))));
+    } finally { sdkStub.systemManager.getDeviceById = orig; }
+    await h.mixin.release();
 });

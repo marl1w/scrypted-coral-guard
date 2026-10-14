@@ -37,10 +37,13 @@ test('L10: findDuplicate reports another mixin using the same service camera id'
     const P = loadProvider();
     const p: any = new P('n');
     const f = { onHealth() { }, applyConfig() { } };
-    const a = { ...f, verifierId: 'cam', name: 'A' }, b = { ...f, verifierId: 'cam', name: 'B' }, c = { ...f, verifierId: 'other', name: 'C' };
+    const a = { ...f, id: '1', verifierId: 'cam', name: 'A' }, b = { ...f, id: '2', verifierId: 'cam', name: 'B' }, c = { ...f, id: '3', verifierId: 'other', name: 'C' };
+    const a2 = { ...f, id: '2', verifierId: 'cam', name: 'B' };
     p.register(a); p.register(c);
-    assert.equal(p.findDuplicate(b), 'A');
+    assert.equal(p.findDuplicate(b), 'A (device 1)');
     assert.equal(p.findDuplicate(c), undefined);
+    p.active.delete(a); p.register(a2);
+    assert.equal(p.findDuplicate(b), undefined, 'two instances of the same device are not a duplicate camera');
     clearInterval(p.healthTimer);
 });
 
@@ -143,4 +146,27 @@ test('Second look: Detection group, on by default, sent with every config, a cha
     p.storageSettings = { values: { secondLook: false } };
     assert.equal(pushed, 2);
     assert.equal(p.secondLook, false);
+});
+
+test('one live mixin per device: a re-created chain replaces (and fully releases) the previous instance; a late releaseMixin of the old one is harmless', async () => {
+    const P = loadProvider();
+    const p: any = new P('n');
+    clearInterval(p.healthTimer);
+    const logs: string[] = [];
+    p.console = { log: (m: string) => logs.push(m), warn: (m: string) => logs.push(m) };
+    p.client = { check: async () => ({ ok: true }), config: async () => ({}), frame: async () => null, reset: async () => ({}) };
+    const a = await p.getMixin({}, ['VideoCamera', 'MotionSensor'], { id: 'cam1' });
+    assert.equal(p.active.size, 1);
+    const b = await p.getMixin({}, ['VideoCamera', 'MotionSensor'], { id: 'cam1' });
+    assert.notEqual(a, b);
+    assert.equal(a.released, true, 'the previous instance is released first');
+    assert.ok(logs.some(l => /replacing previous instance/.test(l)));
+    assert.equal(p.active.size, 1); assert.ok(p.active.has(b));
+    assert.equal(p.isLive(b), true); assert.equal(p.isLive(a), false);
+    await p.releaseMixin('cam1', a); // Scrypted releasing the old chain later
+    assert.equal(p.isLive(b), true, 'the live one stays');
+    assert.equal(p.findDuplicate(b), undefined, 'same device id is never a duplicate');
+    await p.releaseMixin('cam1', b);
+    assert.equal(p.active.size, 0);
+    await b.release(); // idempotent
 });

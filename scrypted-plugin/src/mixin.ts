@@ -192,7 +192,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const other = this.plugin.findDuplicate(this);
         if (other && !this.dupWarned) {
             this.dupWarned = true;
-            this.console.warn(`camera id "${this.verifierId}" is also used by "${other}": both would share one service session.`);
+            this.console.warn(`service camera id "${this.verifierId}" is also used by camera ${other}: both would share one service session.`);
         }
     }
 
@@ -485,6 +485,21 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private verifyPublished() {
         if (this.released || this.sensorless) // sensorless: the inner device has no motion state to compare with
             return;
+        if (this.plugin.isLive && !this.plugin.isLive(this))
+            return; // a stale instance never judges the chain
+        // the CURRENT mixin list of the device decides when it is readable: last = outermost
+        try {
+            const mixins = (sdk.systemManager.getDeviceById(this.id) as any)?.mixins;
+            const own = (this as any).mixinProviderId ?? this.plugin.id;
+            if (Array.isArray(mixins) && mixins.length && own) {
+                const last = String(mixins[mixins.length - 1]) === String(own);
+                if (!last && !this.notOutermost)
+                    this.console.warn('Coral Guard is NOT the outermost MotionSensor mixin: gating has no effect. Move Coral Guard to the end of this camera\'s Extensions list (last = outermost).');
+                this.notOutermost = !last;
+                return;
+            }
+        }
+        catch (e) { /* fall back to the shared-state check */ }
         const shown = !!this.mixinDevice.motionDetected;
         const gating = this.lastPublished !== this.episode.isRaw;
         if (!gating)
@@ -1175,6 +1190,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     }
 
     async release() {
+        if (this.released)
+            return; // idempotent: a replaced instance may also be released later by Scrypted
         clearTimeout(this.aiWaitTimer);
         if (this.jId) {
             // never leave a journal episode 'in progress' across a restart or a removal
