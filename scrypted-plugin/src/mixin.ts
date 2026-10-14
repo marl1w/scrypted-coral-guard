@@ -102,6 +102,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private clock: FrameClock | undefined;
     private hwDisabled = false;
     private hwFallbacks = 0;
+    private lastEpisodePostAt = 0;
     private gate: PixelGate | undefined;
     private gateBusy = false;
     private lastGatePost = 0;
@@ -310,7 +311,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** Push the tracker overrides and the plugin-wide thresholds (at start, on a change, after a service restart). */
     postConfig() {
         const person = serviceThresholds(this.thresholds);
-        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true };
+        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, name: String(this.name || this.id) };
         this.configPosted = false;
         if (this.released || this.mode === 'off' || this.plugin.config.killSwitch)
             return;
@@ -662,6 +663,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                         this.queue.shift();
                     this.kick();
                 }
+                else if (this.episode.confirmedGroups && arrivedAt - this.lastEpisodePostAt < DEFAULTS.holdIntervalMs - 100) {
+                    // confirmed (holding): about 1 fps is enough to follow the subject; drop, never queue
+                    return;
+                }
                 else if (this.busyGen === this.scanGen || this.queue.length) {
                     // one request in flight per camera, latest wins: drop, never queue.
                     this.apply(this.episode.skip(arrivedAt));
@@ -913,6 +918,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (!item)
                 return;
             this.episode.posted(monoNow());
+            this.lastEpisodePostAt = monoNow();
             if (item.jpeg.length <= MAX_THUMB_JPEG_BYTES) // base64 happens lazily when the panel renders
                 this.status.setLastFrame({ jpeg: item.jpeg, boxes: [] });
             else {
@@ -1119,6 +1125,11 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     }
 
     async release() {
+        if (this.jId) {
+            // never leave a journal episode 'in progress' across a restart or a removal
+            try { this.journal('end', { outcome: 'aborted', note: 'plugin restart', timeline_event: { t_ms: Date.now(), text: 'aborted (plugin restart)' } }); } catch { /* best effort */ }
+            this.jId = undefined;
+        }
         this.released = true;
         clearTimeout(this.streamFirstTimer);
         this.stopSource();

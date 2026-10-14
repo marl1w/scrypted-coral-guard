@@ -1076,7 +1076,7 @@ test('thresholds are posted to the service at start; an old service rejecting th
         config: async (_id: string, cfg: any) => { posted.push(cfg); if ('vehicle_thr' in cfg) { const e: any = new Error('bad'); e.status = 400; throw e; } return {}; },
     } });
     await eventually(() => posted.length === 2);
-    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, zoom_out: 0, second_look: true });
+    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, zoom_out: 0, second_look: true, name: 'Cam 1' });
     assert.deepEqual(posted[1], { start_thr: 0.65, cont_thr: 0.2 });
     assert.ok(!ctl.logs.some(l => /tracker config not applied/.test(String(l[1]))));
     await h.mixin.release();
@@ -1453,4 +1453,53 @@ test('journal: an unflagged scan is journalled only when it confirms (start back
     await sleep(100);
     assert.equal(v.calls.episodes.length, 0, 'a vetoed unflagged scan is never journalled');
     await v.mixin.release();
+});
+
+test('release closes an open journal episode as aborted (plugin restart); config carries the camera name', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    h.raw(true);
+    await eventually(() => h.calls.episodes.length === 1);
+    await h.mixin.release();
+    const end = h.calls.episodes[h.calls.episodes.length - 1];
+    assert.deepEqual([end.action, end.outcome, end.note], ['end', 'aborted', 'plugin restart']);
+    assert.equal(end.id, h.calls.episodes[0].id);
+    const n = h.calls.episodes.length;
+    const q = make({ settings: { mode: 'Gate' } });
+    await q.mixin.release();
+    assert.equal(q.calls.episodes.length, 0, 'nothing open: nothing sent');
+    assert.equal(n, 2);
+});
+
+test('posting rate: 2 fps while verifying, 1 fps once confirmed (holding), back to every frame at a max-hold re-pend; no heartbeat during the episode', async () => {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', heartbeatMs: 1, maxHoldS: 2, holdIntervalMs: 1000 } });
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    h.raw(true);
+    await eventually(() => h.mixin['episode'].scanning === true);
+    const feed = async (n: number, reply: any) => {
+        const before = h.calls.frame.length;
+        for (let i = 0; i < n; i++) {
+            frame(s, Date.now());
+            await sleep(250);
+            for (const f of h.calls.frame) f.d.res(reply);
+            await sleep(10);
+        }
+        return h.calls.frame.length - before;
+    };
+    const pending = await feed(4, idleReply);
+    assert.ok(pending >= 3, `verifying: every frame posted (${pending})`);
+    await feed(1, confirmedReply);
+    await eventually(() => motion() === true);
+    const holding = await feed(6, confirmedReply);
+    assert.ok(holding >= 1 && holding <= 3, `holding: about 1 fps (${holding} of 6 frames at ~4 fps)`);
+    assert.ok(h.calls.frame.every((f: any) => f.a[3] === false), 'no low-priority heartbeat during the episode');
+    await eventually(() => !h.mixin['episode'].confirmedGroups, 4000, 'max hold re-pends');
+    const repend = await feed(4, idleReply);
+    assert.ok(repend >= 3, `re-pend: back to every frame (${repend})`);
+    await h.mixin.release();
+});
+
+test('defaults: 2 fps while verifying, 1 fps once confirmed', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'src', 'defaults.ts'), 'utf8');
+    assert.match(src, /frameIntervalMs: 500,/); assert.match(src, /holdIntervalMs: 1000,/);
 });

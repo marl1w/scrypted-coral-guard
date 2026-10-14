@@ -68,9 +68,12 @@ export interface EpisodeEvent {
     outcome?: 'confirmed' | 'vetoed' | 'aborted' | 'released' | 'parked';
     groups?: string[];
     timeline_event?: { t_ms: number; text: string };
+    note?: string;
 }
 
 export interface TrackerConfig {
+    /** newer service: the camera's display name (journal, panels) */
+    name?: string;
     /** newer service: vehicle detect, animal confirm / keep thresholds */
     vehicle_thr?: number;
     /** newer service: extra shrunk-with-border pass, 0 = off */

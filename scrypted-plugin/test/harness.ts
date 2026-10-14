@@ -148,7 +148,7 @@ export function make(opts: { settings?: Record<string, any>; initial?: boolean; 
     // Mode is a real stored setting; every other former setting is an internal constant (src/defaults.ts)
     // that the tests override here. Reset to the pristine values first, then apply the test's overrides.
     const { mode, detect, ...tuning } = (opts.settings || {}) as Record<string, any>;
-    Object.assign(DEFAULTS, PRISTINE, { frameProcess: 'Per trigger', hwDecode: 'Off', heartbeatMs: 1e9 }, tuning);
+    Object.assign(DEFAULTS, PRISTINE, { frameProcess: 'Per trigger', hwDecode: 'Off', heartbeatMs: 1e9, holdIntervalMs: 0 }, tuning);
     ctl.pre = { ...(mode === undefined ? {} : { mode }), ...(detect === undefined ? {} : { detect }) };
     const { GuardMixin } = require('../src/mixin') as typeof import('../src/mixin');
     const mixin = new GuardMixin({ mixinDevice: {}, ...(opts.sensorless ? { mixinDeviceInterfaces: ['VideoCamera', 'Camera'] } : {}) } as any, plugin);

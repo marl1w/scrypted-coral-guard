@@ -5,6 +5,8 @@
 export const DEFAULTS = {
     /** JPEG sampling and posting interval during an episode, ms (2 fps; the service accepts 4 fps sustained, bursts of 10). The gray gate branch is fixed at 1 fps. */
     frameIntervalMs: 500,
+    /** posting interval once an episode is confirmed (holding phase), ms: 1 fps; a re-pend (max hold) goes back to frameIntervalMs. */
+    holdIntervalMs: 1000,
     /** seconds of recent frames handed to the service as pre-roll at a raw trigger (0 = off). */
     preRollS: 4,
     /** frames are scaled down to this width in px, never up. */
