@@ -71,6 +71,24 @@ def tracker_view(d, cfg):
     return d
 
 
+def promote_reason(dets, cfg, promo, t_ms, tracks, release_s=2.0):
+    """Load shedding: a low-priority frame on a busy service stays reduced UNLESS its camera is near a status change. Decided after the base pass:
+    a person/animal session still a candidate, a base detection that would start or confirm a person/animal track, a confirmed person/animal track whose
+    hold ends within release_s of this frame, or a vehicle whose moving/still classification is still pending (young track, or a strong vehicle with no track)."""
+    promo = promo or {}
+    if promo.get("person_state") == "candidate" or promo.get("animal_state") == "candidate":
+        return "candidate"
+    if any(mandatory(d, cfg, tracks) for d in dets):
+        return "would_start"
+    for k in ("person_hold", "animal_hold"):
+        h = promo.get(k)
+        if h is not None and h - t_ms <= release_s * 1000.0:
+            return "release"
+    if promo.get("vehicle_pending") or any(group_of(d) == "vehicle" and not d.get("weak") and d["score"] >= cfg.vehicle_thr and not has_track(d, tracks.get("vehicle", [])) for d in dets):
+        return "vehicle"
+    return None
+
+
 def select(dets, cfg, tracks):
     """-> candidate indices: mandatory (would start/confirm a person/animal track) first, then the most uncertain (closest to the confirm threshold)."""
     out = []
@@ -110,7 +128,7 @@ def _apply(d, status, score, cfg):
             d.pop("weak", None)
 
 
-def second_look(engine, img, dets, cfg, tracks, cache, now):
+def second_look(engine, img, dets, cfg, tracks, cache, now, reduced=False):
     """-> (detections with second-look marks, info). `cache`: entries {group, box, t, status, score} of earlier re-checks of this camera."""
     H, W = img.shape[:2]
     ttl = _SL["ttl_s"]
@@ -129,10 +147,12 @@ def second_look(engine, img, dets, cfg, tracks, cache, now):
                 d["second_look_doubt"] = True
             count("sl_reused")
             continue
-        if info["n"] >= _SL["max"]:
-            if mand:                                                     # the cap prevented the check: it cannot count for confirmation in this frame
+        if info["n"] >= (0 if reduced else _SL["max"]):
+            if mand:                                                     # the cap (or a reduced frame) prevented the check: it cannot count for confirmation here
                 d["second_look"], d["second_look_doubt"] = "skipped", True
-                count("sl_skipped")
+                count("shed" if reduced else "sl_skipped")
+            elif reduced and info["counts"].get("shed", 0) < _SL["max"]:      # the passes that would have run (at most the per-frame cap)
+                count("shed")
             continue
         win = crop_for(d["box"], W, H)
         res, tm = engine.recheck(img, win, g, cfg.cont_thr, cfg.vehicle_thr, cfg.animal_cont_thr, _SL["reject_factor"])

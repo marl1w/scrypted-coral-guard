@@ -233,6 +233,52 @@ class Engine:
         return out, {"preprocess_ms": (t1 - t0) * 1e3 + tm.get("quant_ms", 0.0), "infer_ms": tm.get("infer_ms", 0.0),
                      "post_ms": tm.get("post_ms", 0.0) + (time.perf_counter() - t2) * 1e3}
 
+    @staticmethod
+    def _dets_from_raw(raw, pthr, floor, weak_band):
+        dets = []
+        for s, a, b, c, e, label in raw:
+            g, thr_c = ("person", pthr) if label == "person" else (GROUP_THR[label][0], floor[label])
+            box = [round(a, 4), round(b, 4), round(c, 4), round(e, 4)]
+            if s >= thr_c:
+                dets.append({"cls": label, "group": g, "score": round(float(s), 3), "box": box})
+            elif label in WEAK_VEHICLE_CLASSES and weak_band and s >= WEAK_VEHICLE_THR:
+                dets.append({"cls": label, "group": g, "score": round(float(s), 3), "box": box, "weak": True})
+        return dets
+
+    def _zoom_pass(self, img, thr, zoom_out):
+        """ONE extra pass: the whole frame shrunk on a grey canvas of the original size. -> (raw boxes in full-frame coordinates, pre_ms, infer_ms, post_ms)."""
+        H, W = img.shape[:2]
+        t0 = time.perf_counter()
+        s_ = 1.0 - zoom_out
+        sw, sh = max(1, round(W * s_)), max(1, round(H * s_))
+        ox, oy = (W - sw) // 2, (H - sh) // 2
+        zc = np.full((H, W, 3), 114, np.uint8)
+        zc[oy:oy + sh, ox:ox + sw] = cv2.resize(img, (sw, sh), interpolation=cv2.INTER_AREA)
+        canvas, r, left, top = self._letterbox(zc)
+        t1 = time.perf_counter()
+        px = self.model.detect_px(canvas, CLASSES, thr, Y.NMS_IOU)
+        t2 = time.perf_counter()
+        tm = self.model.timing
+        out = []
+        for d in px:
+            s, a, b, c, e, label = Y.to_normalized(d, r, left, top, W, H)
+            a, c = min(1.0, max(0.0, (a * W - ox) / sw)), min(1.0, max(0.0, (c * W - ox) / sw))      # undo scale + offset, clamp
+            b, e = min(1.0, max(0.0, (b * H - oy) / sh)), min(1.0, max(0.0, (e * H - oy) / sh))
+            if c - a > 0.005 and e - b > 0.005:
+                out.append((s, a, b, c, e, label))
+        return out, (t1 - t0) * 1e3 + tm.get("quant_ms", 0.0), tm.get("infer_ms", 0.0), tm.get("post_ms", 0.0) + (time.perf_counter() - t2) * 1e3
+
+    def add_zoom(self, img, dets, zoom_out, person_thr=0.2, vehicle_thr=None, animal_thr=None):
+        """Adds the zoom-out pass to detections already computed (a frame that was first run reduced and then promoted). -> (detections, timings)."""
+        pthr = max(person_thr, 0.01)
+        thr, floor, weak_band, _ = self._floors(pthr, vehicle_thr, animal_thr)
+        zoom_raw, pre, infer, post = self._zoom_pass(img, thr, zoom_out)
+        t3 = time.perf_counter()
+        raw = [(d["score"], *d["box"], d["cls"]) for d in dets] + zoom_raw
+        raw = vehicle_group_nms(merge_tiles(raw))                            # zoom-out boxes act like whole-frame boxes: same merge as in detect()
+        out = self._dets_from_raw(raw, pthr, floor, weak_band)
+        return out, {"preprocess_ms": pre, "infer_ms": infer, "post_ms": post + (time.perf_counter() - t3) * 1e3}
+
     def detect(self, img, tiles="auto", person_thr=0.2, vehicle_thr=None, animal_thr=None, zoom_out=0.0):
         """img: BGR. Returns (detections, timings). detections: [{"cls","group","score","box":[x0,y0,x1,y1]}] sorted by score; person >= person_thr,
         vehicles and animals >= their defaults.DETECT_THR (car/truck/bus/motorcycle 0.40, bicycle 0.5, animals 0.3) plus weak vehicles [0.25, 0.40) flagged weak; each carries group person|vehicle|animal. timings: preprocess_ms, infer_ms, post_ms (summed over tiles)."""
@@ -275,27 +321,9 @@ class Engine:
                 raw.append((s, (a * tw + x0) / W, b, (c * tw + x0) / W, e, label))
             post += tm.get("post_ms", 0.0) + (time.perf_counter() - t2) * 1e3     # decode+NMS (in the model) + box normalisation
         zoom_raw = []
-        if zoom_out > 0:                                                       # ONE extra pass: whole frame shrunk on a grey canvas of the original size
-            t0 = time.perf_counter()
-            s_ = 1.0 - zoom_out
-            sw, sh = max(1, round(W * s_)), max(1, round(H * s_))
-            ox, oy = (W - sw) // 2, (H - sh) // 2
-            zc = np.full((H, W, 3), 114, np.uint8)
-            zc[oy:oy + sh, ox:ox + sw] = cv2.resize(img, (sw, sh), interpolation=cv2.INTER_AREA)
-            canvas, r, left, top = self._letterbox(zc)
-            t1 = time.perf_counter()
-            px = self.model.detect_px(canvas, CLASSES, thr, Y.NMS_IOU)
-            t2 = time.perf_counter()
-            tm = self.model.timing
-            infer += tm.get("infer_ms", 0.0)
-            pre += (t1 - t0) * 1e3 + tm.get("quant_ms", 0.0)
-            for d in px:
-                s, a, b, c, e, label = Y.to_normalized(d, r, left, top, W, H)
-                a, c = min(1.0, max(0.0, (a * W - ox) / sw)), min(1.0, max(0.0, (c * W - ox) / sw))      # undo scale + offset, clamp
-                b, e = min(1.0, max(0.0, (b * H - oy) / sh)), min(1.0, max(0.0, (e * H - oy) / sh))
-                if c - a > 0.005 and e - b > 0.005:
-                    zoom_raw.append((s, a, b, c, e, label))
-            post += tm.get("post_ms", 0.0) + (time.perf_counter() - t2) * 1e3
+        if zoom_out > 0:
+            zoom_raw, zp, zi, zq = self._zoom_pass(img, thr, zoom_out)
+            pre += zp; infer += zi; post += zq
         t3 = time.perf_counter()
         if hybrid:
             whole_raw = whole_raw + zoom_raw                                   # zoom-out boxes act like whole-frame boxes
@@ -304,13 +332,6 @@ class Engine:
             raw = raw + zoom_raw                                               # exempt from the tile-edge rule (applied above, to tile boxes only)
         raw = merge_tiles(raw) if (split or zoom_raw) else sorted(raw, reverse=True)
         raw = vehicle_group_nms(raw)
-        dets = []
-        for s, a, b, c, e, label in raw:
-            g, thr_c = ("person", pthr) if label == "person" else (GROUP_THR[label][0], floor[label])
-            box = [round(a, 4), round(b, 4), round(c, 4), round(e, 4)]
-            if s >= thr_c:
-                dets.append({"cls": label, "group": g, "score": round(float(s), 3), "box": box})
-            elif label in WEAK_VEHICLE_CLASSES and weak_band and s >= WEAK_VEHICLE_THR:
-                dets.append({"cls": label, "group": g, "score": round(float(s), 3), "box": box, "weak": True})
+        dets = self._dets_from_raw(raw, pthr, floor, weak_band)
         post += (time.perf_counter() - t3) * 1e3
         return dets, {"preprocess_ms": pre, "infer_ms": infer, "post_ms": post}

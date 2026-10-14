@@ -73,7 +73,7 @@ def test_metrics_requires_token_and_shape(box):
     st, m = box.req("GET", "/v1/metrics")
     assert st == 200 and set(m) == {"coral", "stages", "load", "host", "process", "gpu", "second_look", "journal", "uptime_s"}
     assert set(m["coral"]) == {"state", "invoke_ms", "utilization_pct", "invocations_per_s", "resets"} and m["coral"]["state"] == "ok"
-    assert set(m["load"]) == {"queue_depth", "dropped_stale_total", "dropped_stale_60s", "rejected_429_60s", "cameras_active", "frames_60s"}
+    assert set(m["load"]) == {"queue_depth", "dropped_stale_total", "dropped_stale_60s", "rejected_429_60s", "cameras_active", "frames_60s", "reduced_frames_60s", "shed_passes_60s", "promoted_frames_60s"}
     assert set(m["host"]) == {"cpu_pct", "load1", "mem_used_pct"} and set(m["process"]) == {"cpu_pct", "rss_mb"} and set(m["gpu"]) == {"available", "busy_pct"}
     assert m["coral"]["utilization_pct"] == 0 and m["load"]["frames_60s"] == 0
     h = box.req("GET", "/v1/health", auth=False)[1]

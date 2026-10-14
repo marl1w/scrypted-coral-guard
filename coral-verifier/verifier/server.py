@@ -31,7 +31,7 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.3.5"
+FALLBACK_VERSION = "0.3.6"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
@@ -167,7 +167,7 @@ class App:
                           "utilization_pct": round(min(100.0, busy / (win * 10.0)), 1), "invocations_per_s": round(roll.sum("inv") / win, 2), "resets": st["resets"]},
                 "stages": st["stages"],
                 "load": {"queue_depth": st["queue_depth"], "dropped_stale_total": st["dropped_stale"], "dropped_stale_60s": int(roll.sum("stale")),
-                         "rejected_429_60s": int(roll.sum("r429")), "cameras_active": self.registry.count(now), "frames_60s": int(roll.sum("frames"))},
+                         "rejected_429_60s": int(roll.sum("r429")), "shed_passes_60s": int(roll.sum("shed")), "reduced_frames_60s": int(roll.sum("reduced")), "promoted_frames_60s": int(roll.sum("promoted")), "cameras_active": self.registry.count(now), "frames_60s": int(roll.sum("frames"))},
                 "second_look": self._sl_metrics(roll),
                 "journal": self.journal.stats(),
                 "host": {"cpu_pct": sv["host_cpu"], "load1": load1, "mem_used_pct": mem},
@@ -436,10 +436,25 @@ class Handler(BaseHTTPRequestHandler):
         decode_ms = (time.perf_counter() - t_dec) * 1e3
         cfg = app.registry.config(cam)
 
-        def sl_hook(engine, frame, dets):
+        def sl_hook(engine, frame, dets, reduced=False):
             now = time.monotonic()
             ctx = app.registry.sl_context(cam, now)
-            out, info = SL.second_look(engine, frame, dets, cfg, ctx["tracks"], ctx["cache"], now)
+            extra = {"preprocess_ms": 0.0, "infer_ms": 0.0, "post_ms": 0.0}
+            promoted = None
+            if reduced:                                                  # busy low-priority frame: promote it back to full when its camera is near a status change
+                promoted = SL.promote_reason(dets, cfg, ctx["promo"], t, ctx["tracks"])
+                if promoted:
+                    reduced = False
+                    if cfg.zoom_out > 0:
+                        dets, tz = engine.add_zoom(frame, dets, cfg.zoom_out, cfg.cont_thr, cfg.vehicle_thr, cfg.animal_cont_thr)
+                        for k in extra:
+                            extra[k] += tz[k]
+            if not cfg.second_look:
+                return dets, {**extra, "counts": {}, "promoted": bool(promoted)}
+            out, info = SL.second_look(engine, frame, dets, cfg, ctx["tracks"], ctx["cache"], now, reduced)
+            for k in extra:
+                info[k] = info.get(k, 0.0) + extra[k]
+            info["promoted"] = bool(promoted)
             app.registry.sl_store(cam, info["cache"], now)
             return out, info
 
@@ -453,12 +468,12 @@ class Handler(BaseHTTPRequestHandler):
             shown = dets if verbose else [d for d in live if d["score"] >= REPLY_MIN_SCORE]
             return {"camera": cam, "t": sn["t"], "coral_ms": round(st["infer_ms"], 1), "queue_ms": round(st["queue_ms"], 1),
                     "decode_ms": round(st["decode_ms"], 2), "preprocess_ms": round(st["preprocess_ms"], 2), "infer_ms": round(st["infer_ms"], 2),
-                    "post_ms": round(st["post_ms"], 2), "second_look_ms": round(st.get("second_look_ms", 0.0), 2), "total_ms": round(st["total_ms"], 2), "detections": shown,
+                    "post_ms": round(st["post_ms"], 2), "second_look_ms": round(st.get("second_look_ms", 0.0), 2), "reduced": bool(st.get("reduced")), "total_ms": round(st["total_ms"], 2), "detections": shown,
                     "person": sn["person"], "vehicle": sn["vehicle"], "animal": sn["animal"], "session": sn["session"]}
 
         job = app.coral.submit(Job(img, tiles, cfg.cont_thr, finish, decode_ms, deadline, arrival, low=(prio == "low"),
                       thr={"vehicle_thr": cfg.vehicle_thr, "animal_thr": cfg.animal_cont_thr, "zoom_out": cfg.zoom_out},
-                      post=sl_hook if cfg.second_look else None))
+                      post=sl_hook if (cfg.second_look or cfg.zoom_out > 0) else None))
         if not job.event.wait(JOB_WAIT_S):
             job.complete(500, {"error": "timeout waiting for the Coral queue"})
         self._send(job.status, job.body)

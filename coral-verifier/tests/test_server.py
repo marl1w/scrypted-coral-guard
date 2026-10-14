@@ -27,7 +27,7 @@ def test_health_shape_and_no_auth_needed(box):
 def test_frame_reply_shape_and_session(box):
     st, r = box.frame("front_door", T0)
     assert st == 200
-    assert set(r) == {"camera", "t", "coral_ms", "queue_ms", "decode_ms", "preprocess_ms", "infer_ms", "post_ms", "second_look_ms", "total_ms", "detections", "person", "vehicle", "animal", "session"}
+    assert set(r) == {"camera", "t", "coral_ms", "queue_ms", "decode_ms", "preprocess_ms", "infer_ms", "post_ms", "second_look_ms", "reduced", "total_ms", "detections", "person", "vehicle", "animal", "session"}
     assert r["camera"] == "front_door" and r["t"] == T0
     for k in ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "coral_ms"):
         assert isinstance(r[k], float) and r[k] >= 0, k

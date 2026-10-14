@@ -450,6 +450,16 @@ class Session:
         self.frames += 1
         return t
 
+    def promotion_state(self, wall_now):
+        """What the load shedding needs to know about a camera: is anything about to change status?"""
+        if self.last_t is None:
+            return {}
+        eff = self._tick_t + max(0.0, wall_now - self.wall) * 1000.0
+        sn = self.snapshot(wall_now)
+        pending = any(not tr.parked and (self.last_t - tr.born_t) < (MOVE_REF_S + 1.0) * 1000.0 for tr in self.vehicle.tracks if self.vehicle._alive(tr, eff))
+        return {"person_state": sn["person"]["state"], "animal_state": self.animal.pt.state(eff), "person_hold": sn["person"]["hold_until_ms"],
+                "animal_hold": sn["animal"]["hold_until_ms"], "vehicle_pending": pending}
+
     def snapshot(self, wall_now=None):
         """State as of the last frame, advanced by the server time elapsed since it was received (hold and vehicle expiry never freeze)."""
         t = self.last_t
@@ -579,7 +589,7 @@ class Registry:
                                            "animal": [tuple(t.box) for t in s.animal.tracks],
                                            "person_conf": [tuple(t.box) for t in s.person.tracks if t.conf],            # confirmed tracks only
                                            "animal_conf": [tuple(t.box) for t in s.animal.tracks] if s.animal.pt.live(s.animal._tick_t or 0) else []}
-            return {"tracks": tracks, "cache": list(self._sl.get(camera, []))}
+            return {"tracks": tracks, "cache": list(self._sl.get(camera, [])), "promo": {} if s is None else s.promotion_state(wall_now)}
 
     def sl_store(self, camera, cache, wall_now):
         with self.lock:

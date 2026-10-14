@@ -92,6 +92,10 @@ MOVE_REF_S = 2.0
 MOVE_DIAG_FRAC = 0.03
 MOVE_IOU = 0.7
 
+# Load shedding: a prio=low frame (heartbeat / pixel gate) that reaches the worker while at least BUSY_DEPTH other frames wait runs only its BASE pass(es)
+# (single, or the hybrid whole + tiles) and skips the zoom-out pass and the second look; the reply says `reduced: true`.
+BUSY_DEPTH = 1
+
 # Second look (internal constants): `confirm_min` = the score the re-check must find the SAME group at for a person/animal detection to count toward starting or
 # confirming a track (otherwise it is doubtful: fed to the tracker capped at cont_thr + 0.05); at most `max` re-checks per frame, ttl of a re-check result per object, crop margin (fraction of the box size on each side), minimum crop side in
 # pixels, `reject_factor` (a re-check that finds the group again below reject_factor x its keep floor, with a first score below the confirm threshold, rejects), a NEW track is re-checked when its score is below `new_track_max`, and the vehicle confirm threshold used for the borderline band and priority.

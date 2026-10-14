@@ -19,6 +19,7 @@ import metrics as M
 import yolo_edgetpu as Y
 from child import child_main
 from detect import Engine
+from defaults import BUSY_DEPTH
 
 log = logging.getLogger("coral")
 STAGES = ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "second_look_ms")
@@ -215,6 +216,7 @@ class CoralManager:
                 if self._stop.is_set():
                     return
                 job = self.dq.pop(next((k for k, j in enumerate(self.dq) if not j.low), 0))   # normal frames first, low only when none waits
+                reduced = job.low and len(self.dq) >= BUSY_DEPTH                                 # busy: a low-priority frame gets its base pass(es) only
                 engine = self.engine
                 started = self.clock()
                 age = (started - job.arrival) * 1e3
@@ -225,16 +227,19 @@ class CoralManager:
                     job.complete(503, {"reason": "stale"})
                     continue
             try:
-                dets, tm = engine.detect(job.img, job.tiles, job.person_thr, **job.thr)
+                thr = {**job.thr, "zoom_out": 0.0} if reduced else job.thr
+                dets, tm = engine.detect(job.img, job.tiles, job.person_thr, **thr)
                 sl_ms = 0.0
+                promoted = False
                 if job.post is not None:
                     t_sl = time.perf_counter()
                     try:
-                        dets, ex = job.post(engine, job.img, dets)
+                        dets, ex = job.post(engine, job.img, dets, reduced)
                         for k in ("preprocess_ms", "infer_ms", "post_ms"):
                             tm[k] += ex.get(k, 0.0)
                         for name, n in ex.get("counts", {}).items():
                             self.roll.add(name, n)
+                        promoted = bool(ex.get("promoted"))                                          # near a status change: the optional passes ran after all
                         sl_ms = (time.perf_counter() - t_sl) * 1e3
                     except Y.CoralError:
                         raise
@@ -247,9 +252,16 @@ class CoralManager:
                 log.exception("detect failed")
                 job.complete(500, {"error": "detect failed"})
                 continue
+            reduced = reduced and not promoted
+            if promoted:
+                self.roll.add("promoted")
+            elif reduced:
+                self.roll.add("reduced")
+                if job.thr.get("zoom_out", 0.0) > 0:
+                    self.roll.add("shed")                                                             # the zoom-out pass that was not run
             done = self.clock()
             stages = {"decode_ms": job.decode_ms, "preprocess_ms": tm["preprocess_ms"], "infer_ms": tm["infer_ms"], "post_ms": tm["post_ms"],
-                      "queue_ms": (started - job.enq) * 1e3, "total_ms": (done - job.arrival) * 1e3 + 0.0, "second_look_ms": sl_ms}
+                      "queue_ms": (started - job.enq) * 1e3, "total_ms": (done - job.arrival) * 1e3 + 0.0, "second_look_ms": sl_ms, "reduced": reduced}
             self.roll.add("busy_ms", stages["infer_ms"]); self.roll.add("inv"); self.roll.add("frames")
             with self.lock:
                 for k in STAGES:
