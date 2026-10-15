@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="app-version" content="__VERSION__">
 <title>Coral Guard</title>
 <style>
@@ -110,6 +110,24 @@ textarea{width:100%;min-height:56px;margin-top:10px}
 svg.chart{width:100%;height:auto}
 svg.chart text{fill:var(--mut);font-size:9px}
 @media (max-width:520px){.vbtns button{font-size:17px}.vq{font-size:23px}.appbar{height:52px}}
+.chip.auto{color:var(--acc)}
+.vswipe{display:none}
+/* phones: question, one frame at a time (swipe for the others) and the answer buttons fixed at the bottom, all on one screen */
+@media (max-width:600px){
+  #vaView .bar{padding:6px 12px}
+  #vBody{padding:0 12px 150px}
+  .vq{font-size:21px;margin:8px 0 2px}
+  #vaView .frames{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:8px;-webkit-overflow-scrolling:touch;margin-top:8px}
+  #vaView .frames>div{flex:0 0 100%;scroll-snap-align:center}
+  .vswipe{display:block;text-align:center;margin-top:4px}
+  .vbar{position:fixed;left:0;right:0;bottom:0;z-index:7;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -2px 6px rgba(0,0,0,.15);
+    padding:8px 12px calc(8px + env(safe-area-inset-bottom))}
+  .vbar .vbtns{margin:0;gap:10px}
+  .vbar .vbtns button{padding:10px;min-height:54px;font-size:18px}
+  .vbar .vsub{margin:6px 0 0;justify-content:center}
+  .vbar .vsub button{min-height:32px;padding:4px 12px;font-size:13px}
+  #vNote{min-height:40px}
+}
 </style>
 </head>
 <body>
@@ -132,7 +150,6 @@ svg.chart text{fill:var(--mut);font-size:9px}
 <div id="reView" hidden>
   <div class="bar"><div id="reBar"></div><span id="rTot" class="mut"></span></div>
   <main>
-    <section id="rToSec"><h2 id="rToH">To review</h2><div class="empty" id="rToEmpty" hidden>Nothing to review</div><div class="grid" id="rToGrid"></div><button class="more" id="rToMore" hidden>Load more</button></section>
     <section id="rDoSec"><h2 id="rDoH">Reviewed</h2><div class="empty" id="rDoEmpty" hidden>Nothing reviewed yet</div><div class="grid" id="rDoGrid"></div><button class="more" id="rDoMore" hidden>Load more</button></section>
   </main>
 </div>
@@ -182,7 +199,7 @@ function motionText(m){const o=m&&m.motion;if(!o)return null;const n=(v,w)=>v?` 
   return `occupied ${fmtS(o.occupied_s)} \u00b7 motion ${fmtS(o.motion_s)}`+n(o.still_releases,"still release")+n(o.reraises,"re-raise")}
 function isMotionEv(t){return /^motion (released|re-raised)/.test(t||"")}
 function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.outcome||""),m.outcome||m.status));
-  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));return c}
+  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
 function card(m){
   const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",dn(m)));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
   c.appendChild(E("div","mut",fmtT(m.start_ms)));if(m.motion&&m.motion.motion_s!==m.motion.occupied_s)c.appendChild(E("div","mut",motionText(m)));c.appendChild(chips(m));
@@ -234,9 +251,12 @@ function vRender(){
   if(!m){b.appendChild(E("div","empty","Nothing left to review"));return}
   const q=m.question||{text:"Is this a real event?",group:null,yes:"correct",no:"false_alarm"};
   b.appendChild(E("div","vq",q.text));if((q.others||[]).length)b.appendChild(E("div","mut","Also: "+q.others.join(", ")));b.appendChild(E("div","mut",dn(m)+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));
-  const row=E("div","vbtns");row.appendChild(btn("good","Yes (Y)","check",()=>vAnswer(true)));row.appendChild(btn("wrong","No (N)","close",()=>vAnswer(false)));b.appendChild(row);
-  const sub=E("div","vsub");sub.appendChild(btn("","Skip (S)","next",vSkip));sub.appendChild(btn("","Previous","prev",vBack));b.appendChild(sub);
-  const fr=E("div","frames");for(const f of framesOf(m).slice(0,3)){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,q.group||"none"));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
+  const bar=E("div","vbar");                                                  // phones: fixed at the bottom, so question, frame and answer share one screen
+  const row=E("div","vbtns");row.appendChild(btn("good","Yes (Y)","check",()=>vAnswer(true)));row.appendChild(btn("wrong","No (N)","close",()=>vAnswer(false)));bar.appendChild(row);
+  const sub=E("div","vsub");sub.appendChild(btn("","Skip (S)","next",vSkip));sub.appendChild(btn("","Previous","prev",vBack));bar.appendChild(sub);b.appendChild(bar);
+  const shown=framesOf(m).slice(0,3);
+  const fr=E("div","frames");for(const [i,f] of shown.entries()){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,q.group||"none"));col.appendChild(E("div","mut",f.role+(shown.length>1?` (${i+1}/${shown.length})`:"")));fr.appendChild(col)}b.appendChild(fr);
+  if(shown.length>1)b.appendChild(E("div","mut vswipe","swipe for the other frames"));
   const note=E("textarea");note.id="vNote";note.placeholder="Note (optional)";note.value=m.label_note||"";b.appendChild(note)}
 async function vAnswer(yes){
   const m=V.cur;if(!m)return;const q=m.question,n=$("#vNote");const label=yes?q.yes:q.no;
@@ -244,7 +264,8 @@ async function vAnswer(yes){
   V.hist.push(m.id);V.last={id:m.id,q,yes,note:n&&n.value?n.value:null};followUp();await vLoad(m.id,!m.label)}
 function followUp(){                                                           // only after a No: "What is it?" refines the label of the event just answered
   const f=$("#follow");f.replaceChildren();const l=V.last;if(!l||l.yes){f.hidden=true;return}
-  f.hidden=false;f.appendChild(E("span","mut","What is it?"));
+  f.hidden=false;const vb=document.querySelector("#vaView .vbar");                 // phones: above the fixed answer bar, not over it
+  f.style.bottom=vb&&getComputedStyle(vb).position==="fixed"?vb.offsetHeight+"px":"";f.appendChild(E("span","mut","What is it?"));
   for(const c of["person","vehicle","animal","nothing","other"]){const b=E("button","",c);b.onclick=async()=>{
     const wrong=["person","vehicle","animal"].includes(c)&&c!==l.q.group;
     await post(`${API}/${eid(l.id)}/label`,{label:wrong?"wrong_class":l.q.no,note:("is: "+c+(l.note?" - "+l.note:""))});f.hidden=true};f.appendChild(b)}
@@ -256,19 +277,19 @@ document.addEventListener("keydown",e=>{
   const k=e.key.toLowerCase();if(k==="y")vAnswer(true);else if(k==="n")vAnswer(false);else if(k==="s"||k==="arrowright")vSkip();else if(k==="arrowleft")vBack()});
 
 /* ---------- reviewed tab ---------- */
-const R={to:{off:0},do:{off:0}};
+const R={do:{off:0}};
 function more(sel,got,limit,off,total){$(sel).hidden=got<limit||off>=total||total===0}      // no button when the list is empty, short, or fully loaded
-async function reLoad(kind,reset){
-  const s=R[kind],grid=$(kind==="to"?"#rToGrid":"#rDoGrid"),my=s.seq=(s.seq||0)+1;if(reset){s.off=0;grid.replaceChildren()}
-  const p=new URLSearchParams({limit:12,offset:s.off,labelled:kind==="do"?"true":"false"});if(kind==="to")p.set("status","closed");
-  for(const[k,v]of fparams("re",{label:kind==="do"}))p.set(k,v);
+async function reLoad(kind,reset){                                             // the Reviewed list (what is left to review lives in Validate)
+  const s=R[kind],grid=$("#rDoGrid"),my=s.seq=(s.seq||0)+1;if(reset){s.off=0;grid.replaceChildren()}
+  const p=new URLSearchParams({limit:12,offset:s.off,labelled:"true"});
+  for(const[k,v]of fparams("re",{label:true}))p.set(k,v);
   const r=await j(`${API}?${p}`);if(my!==s.seq)return;                       // a newer request replaced this one: never append stale items
   r.items.forEach(m=>grid.appendChild(card(m)));s.off+=r.items.length;
-  more(kind==="to"?"#rToMore":"#rDoMore",r.items.length,12,s.off,r.total);$(kind==="to"?"#rToH":"#rDoH").textContent=(kind==="to"?"To review":"Reviewed")+" ("+r.total+")";
-  $(kind==="to"?"#rToEmpty":"#rDoEmpty").hidden=r.total>0}                      // the empty state is ONE message outside the grid
-async function reAll(){reLoad("to",true);reLoad("do",true);
+  more("#rDoMore",r.items.length,12,s.off,r.total);$("#rDoH").textContent="Reviewed ("+r.total+")";
+  $("#rDoEmpty").hidden=r.total>0}                                              // the empty state is ONE message outside the grid
+async function reAll(){reLoad("do",true);
   const t=$("#rTot");try{const s=await j(`${API}/summary?${sparams("re")}`);const x=s.totals;
-    t.textContent=x.reviewed+" reviewed \u00b7 "+x.reviewable+" to review \u00b7 "+x.ongoing+" in progress"}catch(e){t.textContent=""}}
+    t.textContent=x.reviewed+" reviewed \u00b7 "+(x.auto_validated?x.auto_validated+" auto-validated \u00b7 ":"")+x.reviewable+" to review \u00b7 "+x.ongoing+" in progress"}catch(e){t.textContent=""}}
 
 /* ---------- summary dashboard ---------- */
 const SU={hours:168,sort:"precision",dir:1};
@@ -290,10 +311,10 @@ async function suLoad(){
   const s=await j(`${API}/summary?${p}`),b=$("#suBody"),T=s.totals;b.replaceChildren();
   if(!T.events){b.appendChild(E("div","empty","No events in this period"));return}
   const k=E("div","kpis");k.appendChild(kpi("Events",T.events));k.appendChild(kpi("Reviewed",pct(T.closed?T.reviewed/T.closed:null)));
-  k.appendChild(kpi("Precision",T.reviewed?pct(T.precision):"-"));k.appendChild(kpi("False alarms",T.false_alarm));k.appendChild(kpi("Missed",T.missed));if(T.still_releases!=null)k.appendChild(kpi("Still releases",T.still_releases+(T.reraises?" / "+T.reraises+" re-raised":"")));b.appendChild(k);
+  k.appendChild(kpi("Precision",T.reviewed?pct(T.precision):"-"));k.appendChild(kpi("Auto-validated",T.auto_validated||0));k.appendChild(kpi("False alarms",T.false_alarm));k.appendChild(kpi("Missed",T.missed));if(T.still_releases!=null)k.appendChild(kpi("Still releases",T.still_releases+(T.reraises?" / "+T.reraises+" re-raised":"")));b.appendChild(k);
   if(!T.reviewed)b.appendChild(E("div","empty","Review events to see accuracy"));
   b.appendChild(E("h2","","Cameras"));
-  const cols=[["camera","Camera"],["events","Events"],["reviewed","Reviewed"],["precision","Precision"],["false_alarm","False alarms"],["missed","Missed"],["confirmed","Confirmed"],["vetoed","Vetoed"],["unflagged","Unflagged"]];
+  const cols=[["camera","Camera"],["events","Events"],["reviewed","Reviewed"],["auto_validated","Auto"],["precision","Precision"],["false_alarm","False alarms"],["missed","Missed"],["confirmed","Confirmed"],["vetoed","Vetoed"],["unflagged","Unflagged"]];
   const rows=[...s.cameras].sort((a,c)=>{const x=a[SU.sort],y=c[SU.sort];if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return (x<y?-1:x>y?1:0)*SU.dir});
   const tb=E("table"),hr=tb.insertRow();cols.forEach(([key,t])=>{const th=E("th","s",t+(SU.sort===key?(SU.dir>0?" ▲":" ▼"):""));th.onclick=()=>{SU.dir=SU.sort===key?-SU.dir:1;SU.sort=key;suLoad()};hr.appendChild(th)});
   for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{F.va.camera=F.re.camera=c.camera;hashWrite();V.hist=[];tab(c.reviewable>0?"va":"re")};   // unreviewed events: Validate, else Reviewed
@@ -372,7 +393,7 @@ function tab(n){TAB=n;hashWrite();for(const k in VIEWS){$(VIEWS[k]).hidden=k!==n
   if(n==="va"){V.pre=null;vLoad(null,false)}else if(n==="re")reAll();else if(n==="su")suLoad();else load(true)}
 function refresh(){if(TAB==="ev")load(true);else if(TAB==="va")vLoad(null,false);else if(TAB==="re")reAll();else suLoad()}
 for(const k in BTN)$(BTN[k]).onclick=()=>tab(k);
-$("#more").onclick=()=>load(false);$("#rToMore").onclick=()=>reLoad("to",false);$("#rDoMore").onclick=()=>reLoad("do",false);
+$("#more").onclick=()=>load(false);$("#rDoMore").onclick=()=>reLoad("do",false);
 hashRead();
 for(const t of TABS)MENUS[t]=filterMenu(t,$("#"+t+"Bar"));
 cams().then(()=>{for(const t of TABS)MENUS[t].paint()});

@@ -47,6 +47,9 @@ JOURNAL = {
     "clamp_s": 86400.0,             # client times (t_ms) are clamped to server time +- this
     "max_list": 200,
     "merge_after_veto_s": 5.0,      # an unflagged episode starting this soon after a VETOED camera episode of the same camera is merged into it
+    "auto_validate": True,          # label repeat empty frames `correct` without asking (autovalidate.py)
+    "auto_det_min": 0.25,           # a box of any group at this score or more makes a frame not empty (no auto-validation, not a reference)
+    "auto_pending_s": 120.0,        # an episode waiting for its auto-validation check is shown in Validate anyway after this long
     "ingress_ips": ("172.30.32.2",),   # Home Assistant Supervisor ingress gateway: requests from here with X-Ingress-Path skip the token (journal routes only)
 }
 

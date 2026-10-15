@@ -1,4 +1,4 @@
-"""The review page's script is EXECUTED (node, fake DOM, stubbed fetch): Load more / empty messages for Events, To review and Reviewed."""
+"""The review page's script is EXECUTED (node, fake DOM, stubbed fetch): Load more / empty messages for Events and Reviewed."""
 import json, os, re, shutil, subprocess
 import pytest
 
@@ -15,10 +15,10 @@ def run():
 
 
 def test_every_load_more_button_and_empty_message_starts_hidden(run):
-    assert run["initial"] == {"more": True, "rToMore": True, "rDoMore": True, "empty": True, "rToEmpty": True, "rDoEmpty": True}
+    assert run["initial"] == {"more": True, "rDoMore": True, "empty": True, "rDoEmpty": True}
 
 
-@pytest.mark.parametrize("name", ["events", "to_review", "reviewed"])
+@pytest.mark.parametrize("name", ["events", "reviewed"])
 def test_load_more_follows_loaded_versus_total(run, name):
     s = run["scenarios"][name]
     assert s["empty"] == {"hidden": True, "emptyShown": True}                         # empty list: no button, ONE empty message
@@ -30,7 +30,11 @@ def test_load_more_follows_loaded_versus_total(run, name):
 
 
 def test_empty_list_never_adds_cards_to_the_grid(run):
-    assert run["toReviewGridChildren"] == 0
+    assert run["reviewedGridChildren"] == 0
+
+
+def test_reviewed_tab_has_no_to_review_section(run):
+    assert run["reviewedTabHasNoToReview"] is True                                         # what is left to review is the Validate tab
 
 
 def test_hidden_attribute_cannot_be_overridden_by_a_display_rule():

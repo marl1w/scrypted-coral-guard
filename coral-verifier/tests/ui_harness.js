@@ -28,7 +28,7 @@ function boot(hash) {
     const id = /\sid="([^"]+)"/.exec(m[2]); if (!id) continue;
     const e = new El(m[1]); e.id = id[1]; e.hidden = /\shidden(\s|$|=)/.test(m[2]); ids[id[1]] = e;
   }
-  const initial = { more: ids.more.hidden, rToMore: ids.rToMore.hidden, rDoMore: ids.rDoMore.hidden, empty: ids.empty.hidden, rToEmpty: ids.rToEmpty.hidden, rDoEmpty: ids.rDoEmpty.hidden };
+  const initial = { more: ids.more.hidden, rDoMore: ids.rDoMore.hidden, empty: ids.empty.hidden, rDoEmpty: ids.rDoEmpty.hidden };
   const state = { responder: () => ({ total: 0, items: [], cameras: [], rows: [], totals: {}, days: [], groups: [] }), calls: [], hash: [] };
   Object.assign(doc, { querySelector: s => (s[0] === "#" ? ids[s.slice(1)] || new El("x") : new El("x")), querySelectorAll: () => [], createElement: t => new El(t),
     createTextNode: t => { const e = new El("#text"); e._text = String(t); return e }, createElementNS: (ns, t) => new El(t),
@@ -55,7 +55,6 @@ const SUMMARY = { cameras: [{ camera: "garden_1", display_name: "Garden" }, { ca
   // ---- Load more / empty message per list ----
   const lists = [
     ["events", "#more", "empty", "load(true)", "load(false)", u => u.startsWith("v1/journal?") && !u.includes("labelled") && !u.includes("summary") && !u.includes("next"), 24],
-    ["to_review", "#rToMore", "rToEmpty", 'reLoad("to",true)', 'reLoad("to",false)', u => u.includes("labelled=false"), 12],
     ["reviewed", "#rDoMore", "rDoEmpty", 'reLoad("do",true)', 'reLoad("do",false)', u => u.includes("labelled=true"), 12],
   ];
   for (const [name, more, emptyId, first, next, match, limit] of lists) {
@@ -70,9 +69,10 @@ const SUMMARY = { cameras: [{ camera: "garden_1", display_name: "Garden" }, { ca
     set(0, 0); await run(first); await run(next); await run(next); res.emptyThenMoreClicks = { hidden: btn.hidden, emptyShown: !empty.hidden };
     out.scenarios[name] = res;
   }
-  state.responder = u => (u.includes("labelled=false") ? page(0, 0) : u.includes("summary") ? SUMMARY : {});
-  await run('reLoad("to",true)'); await run('reLoad("to",false)');
-  out.toReviewGridChildren = ids.rToGrid.children.length;
+  state.responder = u => (u.includes("labelled=true") ? page(0, 0) : u.includes("summary") ? SUMMARY : {});
+  await run('reLoad("do",true)'); await run('reLoad("do",false)');
+  out.reviewedGridChildren = ids.rDoGrid.children.length;
+  out.reviewedTabHasNoToReview = !("rToGrid" in ids) && !("rToSec" in ids);
 
   // ---- Filter menu ----
   state.responder = u => (u.includes("summary") ? SUMMARY : page(0, 0));

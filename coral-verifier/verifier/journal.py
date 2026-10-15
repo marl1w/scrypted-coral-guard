@@ -5,6 +5,7 @@ snapshot per snapshot_every_s of frame time (capped). JPEG bytes are stored exac
 import json, logging, math, os, queue, re, shutil, threading, time
 from collections import deque
 from defaults import JOURNAL as J
+import autovalidate
 
 log = logging.getLogger("journal")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{5,63}$")
@@ -76,6 +77,7 @@ class Journal:
         self.dropped = 0
         self._q = queue.Queue(maxsize=self.lim["queue_max"])
         self._worker = None
+        self.auto = None
         try:
             os.makedirs(root, exist_ok=True)
             self._load()
@@ -86,6 +88,8 @@ class Journal:
             self._purge_legacy()
             self._worker = threading.Thread(target=self._run, name="journal", daemon=True)
             self._worker.start()
+            if self.lim["auto_validate"]:
+                self.auto = autovalidate.AutoValidator(self)
 
     def _purge_legacy(self):
         """Unflagged episodes that never confirmed are noise (any label): removed at startup and in maintenance; the count is logged."""
@@ -421,8 +425,32 @@ class Journal:
     def _close(self, st, outcome, end_ms):
         m = st["meta"]
         m["status"], m["outcome"], m["end_ms"] = "closed", outcome, end_ms
+        if self.auto is not None and m["label"] is None and autovalidate.eligible(m) and self.auto.submit("check", m["id"]):
+            m["auto_pending"] = int(self.clock())                            # out of Validate until the check answers
         self._flush(st)
         st["best"] = st["last"] = None
+
+    def _auto_result(self, eid, ref):
+        """The auto-validation's answer (worker): `ref` = the user-validated episode showing the same scene, or None."""
+        with self.lock:
+            st = self.eps.get(eid)
+            if st is None:
+                return
+            m = st["meta"]
+            m.pop("auto_pending", None)
+            if ref and m["label"] is None:
+                r = self.eps.get(ref)
+                when = time.strftime("%d/%m %H:%M", time.localtime(r["meta"]["start_ms"] / 1000.0)) if r else ref[:8]
+                note = f"auto: same empty scene as the event of {when}"
+                m["label"], m["label_note"], m["auto"] = "correct", note, {"ref": ref, "t_ms": int(self.clock())}
+                m["labels"] = (m["labels"] + [{"label": "correct", "note": note, "t_ms": int(self.clock()), "auto": True}])[-20:]
+            try:
+                self._save_meta(st)
+            except OSError as e:
+                log.error("journal write failed: %s", e)
+
+    def _waiting_auto(self, m):
+        return bool(m.get("auto_pending")) and self.clock() - m["auto_pending"] < self.lim["auto_pending_s"] * 1000.0
 
     # ---------------- frames ----------------
     @staticmethod
@@ -548,7 +576,7 @@ class Journal:
         Returns {item, remaining}: `remaining` counts all matching unlabelled closed episodes (the returned one included)."""
         with self.lock:
             rows = [dict(st["meta"]) for st in self.eps.values()
-                    if st["meta"]["status"] == "closed" and st["meta"]["label"] is None and (not camera or st["meta"]["camera"] == camera)
+                    if st["meta"]["status"] == "closed" and st["meta"]["label"] is None and not self._waiting_auto(st["meta"]) and (not camera or st["meta"]["camera"] == camera)
                     and (not outcome or self._outcome_ok(st["meta"], outcome)) and (not group or group in st["meta"]["groups"])
                     and (t_from is None or st["meta"]["start_ms"] >= t_from) and (t_to is None or st["meta"]["start_ms"] <= t_to)]
             ref = self.eps.get(after) if after and ID_RE.match(after) else None
@@ -611,11 +639,15 @@ class Journal:
                 return 404, {"error": "unknown episode"}
             m = st["meta"]
             m["label"], m["label_note"] = label, note
+            m.pop("auto", None)                                               # the user's own answer replaces an automatic one
+            m.pop("auto_pending", None)
             m["labels"] = (m["labels"] + [{"label": label, "note": note, "t_ms": int(self.clock())}])[-20:]
             try:
                 self._save_meta(st)
             except OSError:
                 return 500, {"error": "journal write failed"}
+            if self.auto is not None and autovalidate.eligible(m):
+                self.auto.submit("ref", eid)                                  # a new (or withdrawn) reference scene
             return 200, {"id": eid, "label": label, "label_note": note}
 
     def summary(self, t_from=None, t_to=None, camera=None, tz_offset_min=0, group=None):
@@ -630,7 +662,7 @@ class Journal:
         cat = self.category
 
         def acc():
-            return {"events": 0, "closed": 0, "ongoing": 0, "reviewable": 0, "reviewed": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0,
+            return {"events": 0, "closed": 0, "ongoing": 0, "reviewable": 0, "reviewed": 0, "auto_validated": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0,
                     "still_releases": 0, "reraises": 0}
 
         def add(row, m):
@@ -646,7 +678,9 @@ class Journal:
                 row["closed"] += 1
                 if not m["label"]:
                     row["reviewable"] += 1
-            if m["label"]:
+            if m.get("auto"):                                                # counted apart: accuracy figures stay what the user checked
+                row["auto_validated"] += 1
+            elif m["label"]:
                 row["reviewed"] += 1
                 row[m["label"]] += 1
 
@@ -663,7 +697,7 @@ class Journal:
                 row["total"] += 1
                 k = m["outcome"] or "ongoing"
                 row["by_outcome"][k] = row["by_outcome"].get(k, 0) + 1
-                k = m["label"] or "unlabeled"
+                k = "auto" if m.get("auto") else (m["label"] or "unlabeled")
                 row["by_label"][k] = row["by_label"].get(k, 0) + 1
                 add(groups.setdefault(g, {"group": g, **acc()}), m)
             day = time.strftime("%Y-%m-%d", time.gmtime(m["start_ms"] / 1000.0 + 60 * tz_offset_min))
@@ -676,4 +710,5 @@ class Journal:
     def stats(self):
         with self.lock:
             return {"enabled": self.enabled, "episodes": len(self.eps), "ongoing": sum(1 for s in self.eps.values() if s["meta"]["status"] == "ongoing"),
-                    "bytes": sum(s["bytes"] for s in self.eps.values()), "queue": self._q.qsize(), "dropped": self.dropped}
+                    "bytes": sum(s["bytes"] for s in self.eps.values()), "queue": self._q.qsize(), "dropped": self.dropped,
+                    "auto": self.auto.stats() if self.auto is not None else None}

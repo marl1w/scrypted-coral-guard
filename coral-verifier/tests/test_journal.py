@@ -524,8 +524,8 @@ def test_reviewable_has_one_definition_closed_and_unlabelled(tmp_path):
 
 def test_ui_lists_render_one_empty_message_and_hide_load_more_when_empty():
     html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "verifier", "ui.html")).read()
-    assert html.index('id="rToSec"') < html.index('id="rDoSec"') and html.index('id="rToGrid"') < html.index('id="rDoGrid"')      # Reviewed below To review
-    assert 'id="rToEmpty"' in html and 'id="rDoEmpty"' in html and 'E("div","empty",kind==="to"' not in html                # one message outside the grid, never a card in it
+    assert 'id="rToSec"' not in html and 'id="rDoSec"' in html                                                                 # Reviewed only: what is left to review is Validate
+    assert 'id="rDoEmpty"' in html and 'E("div","empty"' not in html.split("async function reLoad")[1].split("async function reAll")[0]   # one message outside the grid, never a card in it
     assert "total===0" in html and html.count("more(") >= 3                                                                    # Load more: hidden for empty / short / fully loaded lists
     assert 'x.reviewable' in html and '" in progress"' in html and "T.reviewed/T.closed" in html and "x.events-x.reviewed" not in html
 
