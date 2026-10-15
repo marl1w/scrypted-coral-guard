@@ -13,6 +13,8 @@ const { mediaManager } = sdk;
 
 export interface FrameStream {
     stop(): void;
+    /** burst (fast confirm): JPEG frames at the burst rate instead of the interval; no-op when the stream was started without burstFps. */
+    setBurst?(on: boolean): void;
     /** resolves when ffmpeg has exited (after stop() or on its own). */
     exited: Promise<string | undefined>;
 }
@@ -22,6 +24,12 @@ export interface FrameOptions {
     /** optional override: an ffmpeg input URL (e.g. rtsp://...). Skips getVideoStream. */
     inputUrl?: string;
     intervalMs: number;
+    /**
+     * burst rate (fps) the JPEG branch can switch to at runtime (setBurst). The decoder output is sampled at this rate and a
+     * `framestep@burst` filter keeps every Nth frame (N = burstFps x interval) BEFORE scaling and JPEG encode, so idle cost stays
+     * the interval's; setBurst toggles that filter's timeline (`enable`) through ffmpeg's stdin command interface.
+     */
+    burstFps?: number;
     /** pre-roll in ms, 0 = none. Passed as RequestMediaStreamOptions.prebuffer. */
     prebufferMs: number;
     /** width cap in px; never upscales. */
@@ -168,20 +176,35 @@ export function stderrTail(text: string, n = 15): string {
     return maskUrls(text).split(/\r?\n/).map(l => l.trimEnd()).filter(Boolean).slice(-n).join(' | ');
 }
 
-function chainHead(hw: boolean, fps: number): string {
-    return `fps=${fps.toFixed(4)},`; // hardware decode returns system-memory frames (nv12): no hwdownload step
+/** frames the burst filter keeps out of burstFps when not bursting (1 = no burst filter). */
+export function burstStep(fps: number, burstFps?: number): number {
+    return burstFps && burstFps > fps ? Math.max(1, Math.round(burstFps / fps)) : 1;
+}
+
+/** name of the runtime-switchable filter (ffmpeg stdin command target). */
+export const BURST_FILTER = 'framestep@burst';
+
+/** ffmpeg stdin command line that turns the burst on (framestep disabled: every burstFps frame passes) or off. */
+export function burstCommand(on: boolean): string {
+    return `c${BURST_FILTER} -1 enable ${on ? 0 : 1}\n`;
+}
+
+function chainHead(hw: boolean, fps: number, burstFps?: number): string {
+    // hardware decode returns system-memory frames (nv12): no hwdownload step
+    const step = burstStep(fps, burstFps);
+    return step > 1 ? `fps=${(fps * step).toFixed(4)},${BURST_FILTER}=step=${step},` : `fps=${fps.toFixed(4)},`;
 }
 
 /** Filter graph with two outputs: [v1] the JPEG frames, [v2] the tiny gray frames for the pixel gate (1 fps, area scaling). */
-export function grayGraph(hw: boolean, fps: number, maxWidth: number, gw: number, gh: number): string {
+export function grayGraph(hw: boolean, fps: number, maxWidth: number, gw: number, gh: number, burstFps?: number): string {
     // fps first (JPEG branch rate), one full-size scale, then the gray branch is sampled at exactly 1 fps from the reduced picture
-    return `${chainHead(hw, fps)}scale='min(${maxWidth},iw)':-2,split=2[v1][b];[b]fps=1,scale=${gw}:${gh}:flags=area,format=gray[v2]`;
+    return `${chainHead(hw, fps, burstFps)}scale='min(${maxWidth},iw)':-2,split=2[v1][b];[b]fps=1,scale=${gw}:${gh}:flags=area,format=gray[v2]`;
 }
 
 /** Video filter chain: optional hwdownload (never scale_vaapi: not available without VPP), fps, CPU scale. */
-export function filterChain(hw: boolean, fps: number, maxWidth: number): string {
+export function filterChain(hw: boolean, fps: number, maxWidth: number, burstFps?: number): string {
     // fps FIRST: every frame is decoded, but only one per interval is downloaded, scaled and JPEG-encoded.
-    return `${chainHead(hw, fps)}scale='min(${maxWidth},iw)':-2`;
+    return `${chainHead(hw, fps, burstFps)}scale='min(${maxWidth},iw)':-2`;
 }
 
 /** scheme://host:port of a stream URL, credentials and query dropped (safe to log). */
@@ -275,15 +298,19 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
         ...args,
         '-an', '-sn',
         ...(o.gray
-            ? ['-filter_complex', grayGraph(!!o.hwaccel, fps, width, o.gray.width, o.gray.height),
+            ? ['-filter_complex', grayGraph(!!o.hwaccel, fps, width, o.gray.width, o.gray.height, o.burstFps),
                 '-map', '[v1]', ...jpegOut,
                 '-map', '[v2]', '-c:v', 'rawvideo', '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:3']
-            : ['-vf', filterChain(!!o.hwaccel, fps, width), ...jpegOut]),
+            : ['-vf', filterChain(!!o.hwaccel, fps, width, o.burstFps), ...jpegOut]),
     ];
 
     if (o.hwaccel && o.vaDriver)
         env = { ...env, LIBVA_DRIVER_NAME: o.vaDriver };
-    const cp = child_process.spawn(ffmpegPath, args, { env, stdio: ['ignore', 'pipe', 'pipe', ...(o.gray ? ['pipe' as const] : [])] }) as unknown as child_process.ChildProcessWithoutNullStreams;
+    const canBurst = burstStep(fps, o.burstFps) > 1;
+    // stdin is a pipe only for the burst commands (ffmpeg reads its interactive commands from it); otherwise ignored as before
+    const cp = child_process.spawn(ffmpegPath, args, { env, stdio: [canBurst ? 'pipe' : 'ignore', 'pipe', 'pipe', ...(o.gray ? ['pipe' as const] : [])] }) as unknown as child_process.ChildProcessWithoutNullStreams;
+    cp.stdin?.on?.('error', () => { /* ffmpeg gone: a burst command is best effort */ });
+    let burstOn = false;
     if (o.gray) {
         const { width, height, onGray } = o.gray;
         const size = width * height;
@@ -364,5 +391,11 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
     return {
         stop: () => { stopping = true; clearTimeout(hwTimer); try { cp.kill('SIGKILL'); } catch (e) { /* already gone */ } },
         exited,
+        setBurst: (on: boolean) => {
+            if (!canBurst || on === burstOn || stopping || !cp.stdin || cp.stdin.destroyed)
+                return;
+            burstOn = on;
+            try { cp.stdin.write(burstCommand(on)); } catch (e) { /* best effort */ }
+        },
     };
 }

@@ -83,7 +83,8 @@ const framesStub = {
         if ((ctl as any).failStart)
             return Promise.reject(new Error('getVideoStream failed'));
         let exitRes: (e?: string) => void = () => { };
-        const fs = { stop: () => { r.stopped = true; }, exited: new Promise<string | undefined>(res => { exitRes = res; }) };
+        (r as any).burst = [] as boolean[];
+        const fs = { setBurst: (on: boolean) => { (r as any).burst.push(on); }, stop: () => { r.stopped = true; }, exited: new Promise<string | undefined>(res => { exitRes = res; }) };
         r.exit = exitRes;
         return Promise.resolve(fs);
     },
@@ -133,14 +134,14 @@ export async function releaseAll() {
 import { DEFAULTS } from '../src/defaults';
 const PRISTINE = JSON.parse(JSON.stringify(DEFAULTS));
 
-export function make(opts: { settings?: Record<string, any>; initial?: boolean; hangStart?: boolean; client?: any; persistWrites?: boolean; holdReset?: boolean; dup?: string; sensorless?: boolean; interfaces?: string[] } = {}) {
+export function make(opts: { settings?: Record<string, any>; initial?: boolean; hangStart?: boolean; client?: any; persistWrites?: boolean; holdReset?: boolean; dup?: string; sensorless?: boolean; interfaces?: string[]; fast?: boolean; graceMs?: number } = {}) {
     hook(true);
     (ctl as any).notified = 0;
     ctl.starts = []; ctl.listeners = 0; ctl.removed = 0; ctl.logs = []; ctl.writes = []; (ctl as any).detections = [];
     ctl.state.motionDetected = !!opts.initial; ctl.hangStart = !!opts.hangStart; ctl.persistWrites = opts.persistWrites !== false;
     const calls = { frame: [] as { a: any[]; d: ReturnType<typeof deferred> }[], reset: [] as { a: any[]; d: ReturnType<typeof deferred> }[], check: 0, episodes: [] as any[] };
     const client = opts.client || {
-        frame: (...a: any[]) => { const d = deferred(); calls.frame.push({ a, d }); return d.p; },
+        frame: (...a: any[]) => { const d = deferred(); const o = a[3]; if (o && typeof o === 'object') a = [a[0], a[1], a[2], !!o.low, o]; calls.frame.push({ a, d }); return d.p; }, // a[3] = low priority, a[4] = the frame options
         reset: (...a: any[]) => { const d = deferred(); calls.reset.push({ a, d }); if (!opts.holdReset) d.res({}); return d.p; },
         health: async () => ({ ok: true }),
         check: async () => { calls.check++; return { ok: true }; },
@@ -148,7 +149,7 @@ export function make(opts: { settings?: Record<string, any>; initial?: boolean; 
         episodeEvent: async (_cam: string, ev: any) => { if ((ctl as any).journalDelay && ev.action === 'start') await new Promise(r => setTimeout(r, (ctl as any).journalDelay)); calls.episodes.push(ev); if ((ctl as any).journal404) { const e: any = new Error('not found'); e.status = 404; throw e; } return {}; },
     };
     const dups: string[] = opts.dup ? [opts.dup] : [];
-    const plugin: any = { config: { killSwitch: false, baseUrl: '', token: '', timeoutMs: 2000, frameTimeoutMs: 800 }, client, register() { }, unregister() { }, hw: new Map<string, any>(), acquireHw(m: any, max: number) { if (this.hw.has(m.id)) { this.hw.set(m.id, m); return true; } if (this.hw.size >= max) return false; this.hw.set(m.id, m); return true; }, releaseHw(m: any) { if (this.hw.get(m.id) === m) this.hw.delete(m.id); }, get hwSlotsUsed() { return this.hw.size; }, findDuplicate: () => dups[0] };
+    const plugin: any = { config: { killSwitch: false, baseUrl: '', token: '', timeoutMs: 2000, frameTimeoutMs: 800 }, client, register() { }, unregister() { }, hw: new Map<string, any>(), acquireHw(m: any, max: number) { if (this.hw.has(m.id)) { this.hw.set(m.id, m); return true; } if (this.hw.size >= max) return false; this.hw.set(m.id, m); return true; }, releaseHw(m: any) { if (this.hw.get(m.id) === m) this.hw.delete(m.id); }, get hwSlotsUsed() { return this.hw.size; }, findDuplicate: () => dups[0], fastConfirm: !!opts.fast, graceMs: opts.graceMs ?? 0 }; // fast confirm and grace: off unless a test turns them on (today's behaviour)
     // Mode is a real stored setting; every other former setting is an internal constant (src/defaults.ts)
     // that the tests override here. Reset to the pristine values first, then apply the test's overrides.
     const { mode, detect, ...tuning } = (opts.settings || {}) as Record<string, any>;

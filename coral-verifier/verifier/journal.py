@@ -43,6 +43,11 @@ class Journal:
         groups = [g for g in (m.get("groups") or []) if g in GROUPS]                  # episode order: the first is the one asked about
         g = groups[0] if groups else None
         others = groups[1:]
+        if m.get("outcome") == "vetoed" and m.get("kind") != "unflagged" and m.get("inconclusive"):
+            names = {"person": "a person", "vehicle": "a vehicle", "animal": "an animal"}
+            det = [names[x] for x in (m.get("detect") or []) if x in names]
+            what = " or ".join(det) if det else "someone or something"
+            return {"key": "inconclusive", "text": f"Was {what} there?", "group": None, "others": [], "yes": "missed", "no": "correct"}
         if m.get("outcome") == "vetoed" and m.get("kind") != "unflagged":
             return {"key": "empty", "text": "Is the frame really empty?", "group": None, "others": [], "yes": "correct", "no": "missed"}
         if m.get("kind") == "unflagged":
@@ -64,6 +69,7 @@ class Journal:
         self.lim = {**J, **limits}
         self.lock = threading.RLock()
         self.eps = {}                  # id -> state {"meta", "dir", "bytes", ...runtime}
+        self.alias = {}                # merged unflagged episode id -> the camera episode it was merged into
         self.ring = {}                 # camera -> deque of (wall_ms, t_ms, jpeg, dets)
         self.enabled = True
         self._next_maint = 0.0
@@ -175,6 +181,9 @@ class Journal:
                 meta.setdefault("end_ms", None); meta.setdefault("outcome", None); meta.setdefault("label", None); meta.setdefault("last_activity_ms", 0)
                 size = sum(e.stat().st_size for e in os.scandir(d) if e.is_file())
                 self.eps[name] = self._state(meta, d, size)
+                for mid in meta.get("merged_ids") or []:
+                    if isinstance(mid, str) and ID_RE.match(mid):
+                        self.alias[mid] = name
             except Exception as e:
                 log.warning("journal: skipping %s: %s", name, e)
 
@@ -281,11 +290,38 @@ class Journal:
                 if not isinstance(ev, dict):
                     raise ValueError("timeline_event must be an object")
                 ev = {"t_ms": _num(ev.get("t_ms"), "timeline_event.t_ms"), "text": _str(ev.get("text"), "timeline_event.text", 300)}
+            inconclusive = body.get("inconclusive")
+            if inconclusive is not None and not isinstance(inconclusive, bool):
+                raise ValueError("inconclusive must be true or false")
+            detect = body.get("detect")
+            if detect is not None and (not isinstance(detect, list) or any(g not in GROUPS for g in detect)):
+                raise ValueError("detect must be a list of person|vehicle|animal")
         except ValueError as e:
             return 400, {"error": str(e)[:200]}
         with self.lock:
-            st = self.eps.get(eid)
             now = self.clock()
+            reply_id = eid
+            if eid in self.alias:                                                       # an unflagged episode merged into a vetoed camera episode
+                eid = self.alias[eid]
+                kind = None                                                              # the merged item stays a camera episode
+                if action == "start":
+                    action = "update"
+            elif action == "start" and kind == "unflagged" and eid not in self.eps:
+                tgt = self._merge_target(camera, self._clamp(t_ms, now))
+                if tgt is not None:
+                    tm = tgt["meta"]
+                    self.alias[reply_id] = eid = tm["id"]
+                    tm["merged_ids"] = (tm.get("merged_ids") or []) + [reply_id]
+                    tm["merged_from"] = {"outcome": tm["outcome"], "end_ms": tm["end_ms"], "inconclusive": bool(tm.get("inconclusive"))}
+                    tm["status"], tm["end_ms"], tm["outcome"] = "ongoing", None, None      # reopened: the unflagged part decides the outcome
+                    tm.pop("inconclusive", None)
+                    tm["timeline"] = (tm["timeline"] + [{"t_ms": self._clamp(t_ms, now), "text": "merged: unflagged episode after the veto"}])[-200:]
+                    for wall, ft, jpeg, dets in list(self.ring.get(camera, ())):
+                        if now - wall <= self.lim["adopt_s"] * 1000.0:
+                            self._link(tgt, ft, jpeg, dets)
+                    kind = None                                                          # the item stays a camera episode
+                    action = "update"
+            st = self.eps.get(eid)
             if action == "start":
                 if st is not None:
                     if st["meta"]["camera"] != camera:
@@ -318,6 +354,13 @@ class Journal:
                 m["groups"] = groups
             if note is not None:
                 m["note"] = note
+            if inconclusive is not None:
+                if inconclusive:
+                    m["inconclusive"] = True
+                else:
+                    m.pop("inconclusive", None)
+            if detect is not None:
+                m["detect"] = detect
             if ev:
                 ev["t_ms"] = self._clamp(ev["t_ms"], now)
                 m["timeline"] = (m["timeline"] + [ev])[-200:]
@@ -326,7 +369,7 @@ class Journal:
                 if action == "end":
                     self._close(st, outcome or "released", self._clamp(t_ms, now))
                     if self._discard_if_unconfirmed_unflagged(st):                  # noise: an unflagged episode that never confirmed is not kept
-                        return 200, {"id": eid, "status": "discarded", "outcome": outcome or "released"}
+                        return 200, {"id": reply_id, "status": "discarded", "outcome": outcome or "released"}
                 else:
                     if outcome:
                         m["outcome"] = outcome
@@ -335,7 +378,21 @@ class Journal:
                 log.error("journal write failed: %s", e)
                 return 500, {"error": "journal write failed"}
             self._maintain(force=action == "end")
-            return 200, {"id": eid, "status": m["status"], "outcome": m["outcome"]}
+            out = {"id": reply_id, "status": m["status"], "outcome": m["outcome"]}
+            if reply_id != eid:
+                out["merged_into"] = eid
+            return 200, out
+
+    def _merge_target(self, camera, t_ms):
+        """The closed, VETOED camera episode of this camera that ended at most merge_after_veto_s before t_ms (2 s of clock skew tolerated), newest first."""
+        win = self.lim.get("merge_after_veto_s", 5.0) * 1000.0
+        best = None
+        for st in self.eps.values():
+            m = st["meta"]
+            if (m["camera"] == camera and m.get("status") == "closed" and m.get("outcome") == "vetoed" and m.get("kind") != "unflagged"
+                    and m.get("end_ms") is not None and -2000 <= t_ms - m["end_ms"] <= win and (best is None or m["end_ms"] > best["meta"]["end_ms"])):
+                best = st
+        return best
 
     def _create(self, camera, eid, t_ms, mode, kind, groups, note, now):
         d = os.path.join(self.root, eid)

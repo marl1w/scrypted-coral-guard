@@ -101,7 +101,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private listener: EventListenerRegister | undefined;
     private claimListener: EventListenerRegister | undefined;
     /** the camera's own detection classes (ObjectsDetected events of the inner device), newest last. */
-    private claimEvents: { at: number; groups: Group[]; other: string[] }[] = [];
+    private claimEvents: { at: number; groups: Group[]; other: string[]; person?: boolean }[] = [];
     private claimFrom = 0;
     private unverifiedLogged = false;
     private released = false;
@@ -150,6 +150,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** scanGen that has a /frame request in flight (one per camera, latest wins). */
     private busyGen: number | undefined;
     private scanActive = false;
+    /** 'Fast confirm' burst: monotonic end of the burst phase of the current scan (0 = none), the ffmpeg burst state, the newest frame waiting for the in-flight reply. */
+    private burstUntil = 0;
+    private burstOn = false;
+    private burstNext: { jpeg: Buffer; t: number } | undefined;
     private warmRetry: NodeJS.Timeout | undefined;
     private warmAttempt = 0;
     private resetPromise: Promise<void> = Promise.resolve();
@@ -259,6 +263,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             detect: this.detectGroups(),
             killSwitch: g.killSwitch,
             vehicleConfirm: this.thresholds.vehicleConfirm,
+            graceMs: this.plugin.graceMs ?? 3000,
         };
     }
 
@@ -370,7 +375,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** Push the tracker overrides and the plugin-wide thresholds (at start, on a change, after a service restart). */
     postConfig() {
         const person = serviceThresholds(this.thresholds);
-        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, name: String(this.name || this.id) };
+        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, fast_confirm: this.plugin.fastConfirm ?? true, name: String(this.name || this.id) };
         this.configPosted = false;
         if (this.released || this.mode === 'off' || this.plugin.config.killSwitch)
             return;
@@ -396,7 +401,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private journal(action: 'start' | 'update' | 'end', extra: Partial<EpisodeEvent> = {}) {
         if (this.journalOff || !this.jId || typeof (this.plugin.client as any).episodeEvent !== 'function')
             return;
-        const ev: EpisodeEvent = { id: this.jId, action, t_ms: Date.now(), mode: this.mode, kind: this.jKind, ...extra };
+        const ev: EpisodeEvent = { id: this.jId, action, t_ms: Date.now(), mode: this.mode, kind: this.jKind, ...(action === 'start' ? { detect: this.detectGroups() } : {}), ...extra };
         if (action === 'start') this.jOpen.add(ev.id);
         if (action === 'end') { if (!this.jOpen.has(ev.id)) return; this.jOpen.delete(ev.id); } // exactly one end per id
         // strictly in order per camera: an update or end must never overtake its start (the service would drop it)
@@ -413,7 +418,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (log.kind === 'summary' && this.jId) {
                 const s = log.summary;
                 const outcome = s.outcome === 'maxhold' ? 'released' : s.outcome;
-                this.journal('end', { outcome: outcome as EpisodeEvent['outcome'], groups: s.confirmedBy, timeline_event: { t_ms: Date.now(), text: `${outcome}${s.note ? ` (${s.note})` : ''}` } });
+                this.journal('end', { outcome: outcome as EpisodeEvent['outcome'], groups: s.confirmedBy, ...(s.inconclusive ? { inconclusive: true } : {}), timeline_event: { t_ms: Date.now(), text: `${outcome}${s.inconclusive ? ' (inconclusive: too little evidence)' : ''}${s.note ? ` (${s.note})` : ''}` } });
                 this.jId = undefined;
                 this.jConfirmed = false;
             }
@@ -444,7 +449,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
         if (this.jId && cg && !this.jConfirmed) {
             this.jConfirmed = true;
-            this.journal('update', { outcome: 'confirmed', groups: cg, timeline_event: { t_ms: Date.now(), text: `${this.jReconfirm ? 're-confirmed after max hold' : 'confirmed'} ${cg.join('+') || 'subject'}` } });
+            this.journal('update', { outcome: 'confirmed', groups: cg, timeline_event: { t_ms: Date.now(), text: `${this.jReconfirm ? 're-confirmed after max hold' : 'confirmed'} ${cg.join('+') || 'subject'}${this.episode.lateConfirm ? ' (after raw end, grace)' : ''}` } });
             this.jReconfirm = false;
         }
         else if (this.jId && !cg && this.jConfirmed && this.episode.pending) {
@@ -695,6 +700,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.queue = [];
                 this.bridgeT = 0;
                 this.fast.scan(this.loopStartedAt);
+                this.burstUntil = this.plugin.fastConfirm ?? true ? this.loopStartedAt + DEFAULTS.burstMaxMs : 0;
+                this.burstNext = undefined;
+                this.syncBurst();
                 if (this.snapPaced && !this.frames)
                     this.bridgeSnapshot(); // the stream starts cold: the latest keyframe goes first
                 if (this.frames && this.warm) {
@@ -713,6 +721,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.scanGen++; // scan over (also in Keep-warm, where the process keeps running)
             this.scanActive = false;
             this.queue = [];
+            this.burstUntil = 0;
+            this.burstNext = undefined;
+            this.syncBurst();
             if (this.frames && !wantWarm)
                 this.stopSource();
             else if (!this.frames && wantWarm && !this.warmRetry)
@@ -787,7 +798,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             },
             destination: DEFAULTS.analysisDestination,
             longProbe: this.probeFallback,
-            minGapMs: Math.round(interval * 0.6),
+            minGapMs: Math.round(Math.min(interval, 1000 / Math.max(1, DEFAULTS.burstFps)) * 0.6),
+            burstFps: warm ? DEFAULTS.burstFps : undefined,
             gray: warm && this.mode !== 'off' && !this.plugin.config.killSwitch ? { width: 128, height: 72, minGapMs: 600, onGray: f => this.onGray(f) } : undefined,
             intervalMs: interval,
             prebufferMs: streamUrl ? 0 : Math.max(KEYFRAME_PREBUFFER_MS, usePreRoll ? v.preRollS * 1000 : 0),
@@ -819,6 +831,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 const t = this.clock!.stamp(arrivedAt);
                 if (this.clock!.inBurst && t <= this.bridgeT)
                     return; // pre-roll older than the opening snapshot: capture times must stay monotonic
+                this.syncBurst(arrivedAt);
                 if (this.clock!.inBurst) {
                     // pre-roll frame: sent in order, immediately, never waiting for the burst to end.
                     this.queue.push({ jpeg, t });
@@ -829,6 +842,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 else if (this.episode.confirmedGroups && arrivedAt - this.lastEpisodePostAt < DEFAULTS.holdIntervalMs - 100) {
                     // confirmed (holding): about 1 fps is enough to follow the subject; drop, never queue
                     return;
+                }
+                else if (this.bursting(arrivedAt) && this.busyGen === this.scanGen && !this.queue.length) {
+                    // burst: the newest frame goes as soon as the in-flight reply arrives (latest wins, the one it replaces is skipped)
+                    if (this.burstNext)
+                        this.apply(this.episode.skip(arrivedAt));
+                    this.burstNext = { jpeg, t };
                 }
                 else if (this.busyGen === this.scanGen || this.queue.length) {
                     // one request in flight per camera, latest wins: drop, never queue.
@@ -1108,16 +1127,19 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             return;
         const other: string[] = [];
         let verifiable = false;
+        let person = false;
         for (const d of data?.detections || []) {
             const c = String(d?.className || '').toLowerCase();
             if (!c || c === 'motion' || NOT_A_CLAIM.includes(c))
                 continue;
-            if (claimGroup(c)) verifiable = true; else other.push(c);
+            const g = claimGroup(c);
+            if (g) verifiable = true; else other.push(c);
+            if (g === 'person') person = true;
         }
         if (!verifiable && !other.length)
             return;
         const now = monoNow();
-        this.claimEvents = this.claimEvents.filter(e => now - e.at < 10000).concat({ at: now, groups: verifiable ? ['person'] : [], other });
+        this.claimEvents = this.claimEvents.filter(e => now - e.at < 10000).concat({ at: now, groups: verifiable ? ['person'] : [], other, person });
         if (this.cameraRaw && this.aiWaitTimer) {
             // the claim the held-back edge was waiting for: it becomes a trigger now
             clearTimeout(this.aiWaitTimer);
@@ -1152,6 +1174,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
         return 'ai';
     }
+    /** the camera's own AI claimed a person for the current scan (from 3 s before its start). */
+    private personClaimed(): boolean {
+        if (!this.scanActive) return false;
+        const from = this.loopStartedAt - 3000;
+        return this.claimEvents.some(e => e.person && e.at >= from);
+    }
+
     private hasClaimSince(from: number): boolean {
         if (!this.triggers.includes('Camera AI')) return false;
         return this.claimEvents.some(e => e.at >= from && (e.groups.length > 0 || e.other.length > 0));
@@ -1197,6 +1226,22 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }, delay);
     }
 
+    /** burst phase of the current scan: fast confirm on, not yet confirmed, within burstMaxMs of the scan start. */
+    private bursting(now = monoNow()): boolean {
+        return this.scanActive && now < this.burstUntil && !this.episode.confirmedGroups && !this.episode.degraded;
+    }
+
+    /** switch the warm ffmpeg's JPEG rate to the burst rate and back (best effort; a no-op for streams without the burst filter). */
+    private syncBurst(now = monoNow()) {
+        const want = this.bursting(now);
+        if (!want)
+            this.burstNext = undefined;
+        if (want === this.burstOn)
+            return;
+        this.burstOn = want;
+        this.frames?.setBurst?.(want);
+    }
+
     private stopSource() {
         this.srcGen++;
         this.scanGen++; // an in-flight request of the old process no longer blocks, its reply is void
@@ -1237,7 +1282,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     this.console.log(`snapshot ${Math.round(item.jpeg.length / 1024)} KB is too large for the panel thumbnail (limit ${Math.round(MAX_THUMB_JPEG_BYTES / 1024)} KB), keeping the previous one`);
                 }
             }
-            const reply = await this.plugin.client.frame(this.verifierId, item.jpeg, item.t, this.episode.synthetic && this.fastGen !== gen);
+            const burst = this.bursting();
+            const reply = await this.plugin.client.frame(this.verifierId, item.jpeg, item.t, {
+                low: this.episode.synthetic && this.fastGen !== gen,
+                deadlineMs: burst ? DEFAULTS.burstDeadlineMs : undefined,
+                claim: (this.plugin.fastConfirm ?? true) && this.personClaimed() ? 'person' : undefined,
+            });
             if (gen !== this.scanGen || this.released)
                 return;
             if (reply === null) {
@@ -1272,6 +1322,11 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         finally {
             if (this.busyGen === gen)
                 this.busyGen = undefined;
+            this.syncBurst();
+            if (this.burstNext && gen === this.scanGen && !this.queue.length) {
+                this.queue.push(this.burstNext);
+                this.burstNext = undefined;
+            }
             this.kick(); // current generation, whatever the old one was
         }
     }

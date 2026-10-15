@@ -1076,7 +1076,7 @@ test('thresholds are posted to the service at start; an old service rejecting th
         config: async (_id: string, cfg: any) => { posted.push(cfg); if ('vehicle_thr' in cfg) { const e: any = new Error('bad'); e.status = 400; throw e; } return {}; },
     } });
     await eventually(() => posted.length === 2);
-    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, zoom_out: 0, second_look: true, name: 'Cam 1' });
+    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, zoom_out: 0, second_look: true, fast_confirm: false, name: 'Cam 1' });
     assert.deepEqual(posted[1], { start_thr: 0.65, cont_thr: 0.2 });
     assert.ok(!ctl.logs.some(l => /tracker config not applied/.test(String(l[1]))));
     await h.mixin.release();

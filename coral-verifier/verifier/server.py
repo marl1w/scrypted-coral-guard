@@ -31,7 +31,7 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.3.11"
+FALLBACK_VERSION = "0.3.12"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
@@ -44,7 +44,7 @@ FIRST_BYTE_S = 2.0             # a NEW connection must start its request within 
 RESERVED_HEALTH_SLOTS = 4      # connections beyond max_connections that only GET /v1/health may use
 CAM_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 MODEL_FILES = {320: "yolov9-s-relu6-best_320_int8_edgetpu.tflite", 512: "yolov9-s-relu6-tpumax_512_int8_edgetpu.tflite"}
-TRACKER_KEYS = ("start_thr", "cont_thr", "confirm_n", "confirm_m", "hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s", "vehicle_thr", "animal_start_thr", "animal_cont_thr", "zoom_out", "second_look", "name")
+TRACKER_KEYS = ("start_thr", "cont_thr", "confirm_n", "confirm_m", "hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s", "vehicle_thr", "animal_start_thr", "animal_cont_thr", "zoom_out", "second_look", "name", "fast_confirm", "fast_n", "fast_window_ms", "fast_move")
 log = logging.getLogger("verifier")
 
 
@@ -414,6 +414,9 @@ class Handler(BaseHTTPRequestHandler):
         prio = (q.get("prio") or ["normal"])[0]
         if prio not in ("normal", "low"):
             return self._send(400, {"error": "prio must be normal|low"})
+        claim = (q.get("claim") or [None])[0]
+        if claim not in (None, "person", "vehicle", "animal"):
+            return self._send(400, {"error": "claim must be person|vehicle|animal"})
         if not app.registry.would_admit(cam, time.monotonic()):
             app.coral.roll.add("r429")
             return self._send(429, {"error": "too many cameras"})
@@ -461,7 +464,7 @@ class Handler(BaseHTTPRequestHandler):
         def finish(dets, st):
             dets = S.person_animal_overlap(dets)                                                        # one object scored as person and animal: boost the person
             live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected"]      # rejected: never; doubtful person/animal: score capped
-            sn = app.registry.update(cam, t, live, time.monotonic())
+            sn = app.registry.update(cam, t, live, time.monotonic(), claim)
             try:
                 app.journal.record_frame_async(cam, sn["t"], body, dets)
             except Exception:

@@ -7,6 +7,15 @@ export const DEFAULTS = {
     frameIntervalMs: 500,
     /** posting interval once an episode is confirmed (holding phase), ms: 1 fps; a re-pend (max hold) goes back to frameIntervalMs. */
     holdIntervalMs: 1000,
+    /**
+     * 'Fast confirm' burst: while an episode is not yet confirmed, from the scan start for at most burstMaxMs, frames are posted back to
+     * back (the next as soon as the previous reply arrives, one in flight, latest wins) and the warm ffmpeg samples JPEGs at burstFps
+     * instead of 1000 / frameIntervalMs (runtime switch, no idle cost). Burst frames carry deadline_ms = burstDeadlineMs so a busy
+     * service sheds them instead of queueing.
+     */
+    burstFps: 6,
+    burstMaxMs: 1500,
+    burstDeadlineMs: 300,
     /** seconds of recent frames handed to the service as pre-roll at a raw trigger (0 = off). */
     preRollS: 4,
     /** frames are scaled down to this width in px, never up. */

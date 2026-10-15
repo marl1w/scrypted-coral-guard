@@ -463,7 +463,7 @@ def test_summary_categories_confirmed_vetoed_unflagged_other(tmp_path):
     mk(j, clk, "ct-000003", "a", 3000, "released", [])                                                         # nothing confirmed: other
     mk(j, clk, "ct-000004", "a", 4000, "vetoed", ["person"])
     mk(j, clk, "ct-000005", "a", 5000, "aborted", [])
-    mk(j, clk, "ct-000006", "a", 6000, "released", ["animal"], kind="unflagged")                              # by kind, whatever the outcome
+    mk(j, clk, "ct-000006", "b", 6000, "released", ["animal"], kind="unflagged")                              # by kind, whatever the outcome (another camera: no merge into the veto)
     ep(j, "a", "ct-000007", "start", 7000, groups=["person"], timeline_event={"t_ms": 7100, "text": "Person confirmed"}); ep(j, "a", "ct-000007", "end", 7200, outcome="aborted")
     T = j.summary()["totals"]
     assert (T["confirmed"], T["vetoed"], T["unflagged"], T["other"], T["events"]) == (3, 1, 1, 2, 7)
@@ -631,3 +631,46 @@ def test_stale_episodes_do_not_count_against_the_ongoing_caps(tmp_path):
     assert ep(j, "a", "cap-00004", "start", clk.t)[0] == 200 and ep(j, "b", "cap-00005", "start", clk.t)[0] == 200
     assert j.get("cap-00001")["status"] == "closed" and j.get("cap-00001")["outcome"] == "stale"
     j.stop()
+
+
+def test_unflagged_episode_right_after_a_veto_is_merged_into_the_camera_episode(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    assert ep(j, "cam1", "cam-ep-01", "start", 1000, kind="camera", timeline_event={"t_ms": 1000, "text": "camera trigger"})[0] == 200
+    assert ep(j, "cam1", "cam-ep-01", "end", 7000, outcome="vetoed", inconclusive=True)[0] == 200
+    st, r = ep(j, "cam1", "unf-ep-01", "start", 7600, kind="unflagged", timeline_event={"t_ms": 7600, "text": "unflagged (heartbeat)"})
+    assert st == 200 and r["id"] == "unf-ep-01" and r["merged_into"] == "cam-ep-01" and r["status"] == "ongoing"
+    assert ep(j, "cam1", "unf-ep-01", "update", 7700, kind="unflagged", outcome="confirmed", groups=["person"], timeline_event={"t_ms": 7700, "text": "confirmed person"})[0] == 200
+    assert ep(j, "cam1", "unf-ep-01", "end", 9000, kind="unflagged", outcome="released", groups=["person"])[0] == 200
+    items = j.list()["items"]
+    assert [m["id"] for m in items] == ["cam-ep-01"]                                   # ONE item
+    m = j.get("cam-ep-01")
+    assert m["kind"] == "camera" and m["outcome"] == "released" and m["groups"] == ["person"] and "inconclusive" not in m
+    assert Journal.category(m) == "confirmed" and m["question"]["key"] == "person_present"
+    texts = [e["text"] for e in m["timeline"]]
+    assert texts[0] == "camera trigger" and "merged: unflagged episode after the veto" in texts and "confirmed person" in texts
+    assert m["merged_from"]["outcome"] == "vetoed" and m["merged_ids"] == ["unf-ep-01"]
+    j2 = Journal(str(tmp_path), clock=clk)                                             # the alias survives a restart
+    assert j2.alias == {"unf-ep-01": "cam-ep-01"}
+
+
+def test_unflagged_episode_later_or_on_another_camera_is_not_merged(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    ep(j, "cam1", "cam-ep-01", "start", 1000, kind="camera"); ep(j, "cam1", "cam-ep-01", "end", 7000, outcome="vetoed")
+    assert "merged_into" not in ep(j, "cam1", "unf-ep-01", "start", 12_500, kind="unflagged")[1]       # 5.5 s after the veto
+    assert "merged_into" not in ep(j, "cam2", "unf-ep-02", "start", 7500, kind="unflagged")[1]
+    ep(j, "cam1", "cam-ep-02", "start", 20_000, kind="camera"); ep(j, "cam1", "cam-ep-02", "end", 26_000, outcome="released")
+    assert "merged_into" not in ep(j, "cam1", "unf-ep-03", "start", 26_500, kind="unflagged")[1]       # not a veto
+
+
+def test_inconclusive_veto_asks_a_neutral_yes_no_question(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    ep(j, "cam1", "cam-ep-01", "start", 1000, kind="camera", detect=["person", "animal"])
+    ep(j, "cam1", "cam-ep-01", "end", 7000, outcome="vetoed", inconclusive=True)
+    q = j.get("cam-ep-01")["question"]
+    assert q == {"key": "inconclusive", "text": "Was a person or an animal there?", "group": None, "others": [], "yes": "missed", "no": "correct"}
+    ep(j, "cam1", "cam-ep-02", "start", 9000, kind="camera"); ep(j, "cam1", "cam-ep-02", "end", 15_000, outcome="vetoed", inconclusive=True)
+    assert j.get("cam-ep-02")["question"]["text"] == "Was someone or something there?"
+    ep(j, "cam1", "cam-ep-03", "start", 20_000, kind="camera"); ep(j, "cam1", "cam-ep-03", "end", 26_000, outcome="vetoed")
+    assert j.get("cam-ep-03")["question"]["key"] == "empty"                           # a well-founded veto keeps the old question
+    assert ep(j, "cam1", "cam-ep-04", "start", 30_000, inconclusive="yes")[0] == 400
+    assert ep(j, "cam1", "cam-ep-05", "start", 30_000, detect=["car"])[0] == 400

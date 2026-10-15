@@ -78,6 +78,22 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
             type: 'boolean',
             defaultValue: true,
         },
+        fastConfirm: {
+            group: 'Detection',
+            title: 'Fast confirm',
+            description: 'Burst frames while a trigger is unconfirmed and let the service confirm a moving person (or one the camera AI claims) after 3 frames in 0.7 s instead of 2 of 3 seconds. Off: the 2-of-3-seconds rule only.',
+            type: 'boolean',
+            defaultValue: true,
+            onPut: () => this.thresholdsChanged(),
+        },
+        graceMs: {
+            group: 'Detection',
+            title: 'Grace after motion ends (ms)',
+            description: 'An unconfirmed trigger keeps being verified this long after the camera motion ends before it is vetoed (0 = veto at once).',
+            type: 'number',
+            defaultValue: 3000,
+            onPut: () => { for (const m of this.active) m.applyConfig(); },
+        },
         secondLook: {
             group: 'Detection',
             title: 'Second look',
@@ -119,6 +135,18 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     get publishVerified(): boolean {
         const v = (this.storageSettings.values as any).publishVerified;
         return v === undefined || v === null || v === '' ? true : v === true || v === 'true';
+    }
+
+    /** 'Fast confirm' (Detection group, default on): burst frames + the service's fast_confirm. */
+    get fastConfirm(): boolean {
+        const v = (this.storageSettings.values as any).fastConfirm;
+        return v === undefined || v === null || v === '' ? true : v === true || v === 'true';
+    }
+
+    /** 'Grace after motion ends' in ms (default 3000, clamped 0..10000). */
+    get graceMs(): number {
+        const n = Number((this.storageSettings.values as any).graceMs);
+        return Number.isFinite(n) && (this.storageSettings.values as any).graceMs !== '' ? Math.min(10000, Math.max(0, n)) : 3000;
     }
 
     /** 'Second look' (Detection group, default on): sent to the service as second_look. */

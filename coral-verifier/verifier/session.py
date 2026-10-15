@@ -11,11 +11,12 @@ and 4 fps senders cannot confirm on near-duplicate frames.
     be re-matched when the gap was <= hold + 1 s at the previous tick (the reference simulation's off-by-one)
   - stationary lock: IoU > 0.7 between the current box and the track's box still_s (default 3 s, as in the reference simulation) earlier, rolling
   - max_hold_s: SERVICE-SIDE safety with no counterpart in the reference simulation: a track with no detection >= start_thr for that long ends (default 600 s)
+  - fast confirm (per camera, off by default): FastConfirm below runs on every FRAME (not ticks); when it fires, the tick track under that box is confirmed at once
 Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`snapshot(wall_now)`) advances with the server clock.
 """
 import math, re, threading
 
-from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU
+from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, FAST_IOU
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -55,6 +56,10 @@ class Config:
     zoom_out: float = _T["zoom_out"]
     second_look: bool = _T["second_look"]
     name: str = _T["name"]
+    fast_confirm: bool = _T["fast_confirm"]
+    fast_n: int = _T["fast_n"]
+    fast_window_ms: float = _T["fast_window_ms"]
+    fast_move: float = _T["fast_move"]
 
     def validate(self):
         for k, v in asdict(self).items():
@@ -76,6 +81,12 @@ class Config:
             raise ValueError("animal_cont_thr must be <= animal_start_thr")
         if self.cont_thr > self.start_thr:
             raise ValueError("cont_thr must be <= start_thr")
+        if not 2 <= self.fast_n <= 10:
+            raise ValueError("fast_n must be in [2, 10]")
+        if not 100 <= self.fast_window_ms <= 5000:
+            raise ValueError("fast_window_ms must be in [100, 5000]")
+        if not 0 <= self.fast_move <= 5:
+            raise ValueError("fast_move must be in [0, 5]")
         if not (1 <= self.confirm_n <= self.confirm_m <= 20):
             raise ValueError("need 1 <= confirm_n <= confirm_m <= 20")
         for k in ("hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s"):
@@ -295,6 +306,47 @@ class PersonTracker:
         return "candidate" if any((not tr.conf) and secs(eff, tr.born) <= self.cfg.confirm_m - 1 for tr in self.tracks) else "idle"
 
 
+class _FTrack:
+    __slots__ = ("box", "last", "hist")
+
+
+class FastConfirm:
+    """Per-FRAME person tracks for the fast confirmation: greedy IoU (FAST_IOU) over detections >= start_thr, each track keeps its qualifying frames
+    [(t, score, box)] of the last fast_window_ms. step() returns (how, n_frames, box) when a track has >= fast_n of them and either moved (centre shift
+    between the first and the last >= fast_move x the box height: "fast_move") or the frame carries claim=person ("fast_claim"); otherwise None."""
+    def __init__(self):
+        self.tracks = []
+
+    def step(self, t, dets, cfg, claim=None):
+        win = cfg.fast_window_ms
+        hi = [d for d in dets if d[0] >= cfg.start_thr]
+        trks = self.tracks = [tr for tr in self.tracks if t - tr.last <= win]
+        used, best = set(), None
+        for i, j in greedy_iou([tr.box for tr in trks], [d[1] for d in hi], FAST_IOU):
+            tr, d = trks[i], hi[j]; used.add(j)
+            tr.box = d[1]
+            if t > tr.last:                                       # frames with the same (clamped) time count once
+                tr.hist.append((t, d[0], d[1]))
+            tr.last = t
+            tr.hist = [h for h in tr.hist if t - h[0] <= win]
+            if len(tr.hist) < cfg.fast_n:
+                continue
+            b0, b1 = tr.hist[0][2], tr.hist[-1][2]
+            h = max(b0[3] - b0[1], b1[3] - b1[1], 1e-3)
+            moved = math.hypot((b1[0] + b1[2] - b0[0] - b0[2]) / 2.0, (b1[1] + b1[3] - b0[1] - b0[3]) / 2.0) / h
+            how = "fast_move" if moved >= cfg.fast_move else ("fast_claim" if claim == "person" else None)
+            if how and (best is None or len(tr.hist) > best[1]):
+                best = (how, len(tr.hist), tr.box)
+        for j, d in enumerate(hi):
+            if j not in used:
+                tr = _FTrack(); tr.box = d[1]; tr.last = t; tr.hist = [(t, d[0], d[1])]
+                trks.append(tr)
+        if len(trks) > MAX_TRACKS:
+            trks.sort(key=lambda tr: -tr.last)
+            del trks[MAX_TRACKS:]
+        return best
+
+
 class _VTrack:
     __slots__ = ("id", "cls", "box", "last", "born_t", "anchor", "stable_since", "parked", "hist", "moving")
 
@@ -445,8 +497,30 @@ class Session:
         self._tick_t = None
         self._tick_snap = None
         self._tick_dets = None
+        self.fast = FastConfirm()
+        self._force = None            # (tick time, box, how): a fast confirmation re-applied whenever that tick is re-stepped (same-tick merge)
+        self.confirmed_by = None      # "fast_move" | "fast_claim" | "ticks" for the current confirmation, None while not confirmed
 
-    def update(self, t_ms, detections, wall_now=None):
+    def _apply_force(self):
+        """Confirm the tentative tick track under the fast-confirmed box (same tick only). Returns True when a track was confirmed now."""
+        f = self._force
+        if f is None or f[0] != self._tick_t:
+            return False
+        p = self.person
+        cands = [tr for tr in p.tracks if tr.last == self._tick_t]
+        if any(tr.conf for tr in cands if _cd(tr.box, f[1]) <= GATE):
+            return False
+        tent = sorted((_cd(tr.box, f[1]), k) for k, tr in enumerate(cands) if not tr.conf and _cd(tr.box, f[1]) <= GATE)
+        if not tent:
+            return False
+        tr = cands[tent[0][1]]
+        tr.conf = True
+        if p.first_conf is None:
+            p.first_conf = self._tick_t
+        p.last_seen = self.last_t
+        return True
+
+    def update(self, t_ms, detections, wall_now=None, claim=None):
         """detections: [{"cls": str, "score": float, "box": [x0,y0,x1,y1]}]. Returns the effective (clamped) t."""
         t = int(t_ms)
         if self.last_t is not None and t < self.last_t:
@@ -471,6 +545,18 @@ class Session:
             self._tick_snap = self.person.export()
             self._tick_dets = pdets
         self.person.step(self._tick_t, t, pdets)
+        if self.cfg.fast_confirm:
+            raw = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person"]
+            hit = self.fast.step(t, sorted(raw, key=lambda d: -d[0])[:MAX_TRACK_DETS], self.cfg, claim)
+            if hit and (self._force is None or self._force[0] != self._tick_t):
+                self._force = (self._tick_t, hit[2], hit[0])
+            self._apply_force()
+        live = bool(self.person.live(self._tick_t))
+        if not live:
+            self.confirmed_by = None
+        elif self.confirmed_by is None:
+            f = self._force
+            self.confirmed_by = f[2] if f is not None and f[0] == self._tick_t else "ticks"
         self.vehicle.step(t, vdets)
         self.animal.step(t, adets)
         self.frames += 1
@@ -498,7 +584,7 @@ class Session:
         present = state in ("confirmed", "holding")
         return {
             "t": t,
-            "person": {"state": state, "confirmed": present, "present": present,
+            "person": {"state": state, "confirmed": present, "present": present, "confirmed_by": self.confirmed_by if present else None,
                        "since_ms": int(min(tr.born for tr in live)) if live else None,
                        "last_seen_ms": p.last_seen, "tracks": len(live),
                        "tracks_detail": [{"id": tr.id, "box": [round(v, 4) for v in tr.box], "score": round(float(tr.score), 3), "last_seen_ms": int(tr.last),
@@ -512,7 +598,7 @@ class Session:
 
 def empty_snapshot():
     return {"t": None,
-            "person": {"state": "idle", "confirmed": False, "present": False, "since_ms": None, "last_seen_ms": None, "tracks": 0, "tracks_detail": [],
+            "person": {"state": "idle", "confirmed": False, "present": False, "confirmed_by": None, "since_ms": None, "last_seen_ms": None, "tracks": 0, "tracks_detail": [],
                        "hold_until_ms": None},
             "vehicle": {"moving": False, "hold_until_ms": None, "tracks": []},
             "animal": {"present": False, "confirmed": False, "hold_until_ms": None, "tracks": []},
@@ -577,14 +663,14 @@ class Registry:
                 s.animal.set_cfg(cfg)
             return cfg
 
-    def update(self, camera, t_ms, detections, wall_now):
+    def update(self, camera, t_ms, detections, wall_now, claim=None):
         with self.lock:
             self.sweep(wall_now)
             s = self._live(camera, wall_now)
             if s is None:
                 self._admit(camera, wall_now)
                 s = self._sessions[camera] = Session(self.config(camera), wall_now)
-            s.update(t_ms, detections, wall_now)
+            s.update(t_ms, detections, wall_now, claim)
             return s.snapshot(wall_now)
 
     def known(self, camera, wall_now):

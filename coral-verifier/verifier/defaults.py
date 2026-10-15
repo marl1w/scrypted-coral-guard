@@ -46,6 +46,7 @@ JOURNAL = {
     "max_ongoing_per_camera": 8,
     "clamp_s": 86400.0,             # client times (t_ms) are clamped to server time +- this
     "max_list": 200,
+    "merge_after_veto_s": 5.0,      # an unflagged episode starting this soon after a VETOED camera episode of the same camera is merged into it
     "ingress_ips": ("172.30.32.2",),   # Home Assistant Supervisor ingress gateway: requests from here with X-Ingress-Path skip the token (journal routes only)
 }
 
@@ -67,7 +68,15 @@ TRACKER = {
     "name": "",                     # display name of the camera (journal and review page); "" = derived from the id
     "second_look": True,            # re-check borderline / brand-new detections on a full-resolution crop (one extra Coral pass each, max SECOND_LOOK["max"] per frame)
     "zoom_out": 0.0,                # 0 = off; > 0 adds ONE Coral pass with the whole frame shrunk to (1 - zoom_out) on a grey canvas (large, edge-cut objects)
+    # Fast person confirmation (0.3.12, off unless the client turns it on per camera): one IoU-tracked person track with >= fast_n frames >= start_thr within
+    # fast_window_ms of frame time confirms at once when its box centre moved >= fast_move x the box height between its first and last qualifying frame
+    # (static look-alikes never move) or the frame carries claim=person (the camera's own AI says person). Everything else keeps the tick rule.
+    "fast_confirm": False,
+    "fast_n": 3,
+    "fast_window_ms": 700.0,
+    "fast_move": 0.15,
 }
+FAST_IOU = 0.3                  # fast-confirm track matching between consecutive frames (IoU), frames are ~0.15-0.5 s apart
 
 # Detection classes beyond person (COCO names of the 17-class model). group -> {class: threshold}. Person uses the per-frame person_thr (the camera's
 # cont_thr); airplane, train, boat and elephant are decoded by nobody and ignored. Internal constants, not add-on options.

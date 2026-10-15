@@ -21,6 +21,8 @@ export interface EpisodeConfig {
     killSwitch: boolean;
     /** Vehicle confirm (moving) threshold; default 0.6. */
     vehicleConfirm?: number;
+    /** an unconfirmed episode whose raw motion ended keeps verifying this long after the raw end before a veto (0 = off). */
+    graceMs?: number;
 }
 
 /** Detection groups the service confirms; the camera may claim one (see setClaim). Parked vehicles never confirm. */
@@ -90,6 +92,14 @@ export interface EpisodeSummary {
     confirmedDetail?: string[];
     /** what opened the episode: the camera's motion or the pixel gate. */
     origin?: 'camera' | 'synth';
+    /** how the service confirmed the person (service 0.3.12+): 'fast_move' | 'fast_claim' | 'ticks'. */
+    confirmPath?: string;
+    /** service replies of the pending phase up to and including the confirming one. */
+    confirmFrames?: number;
+    /** confirmed after the camera's raw motion had ended (inside the grace window). */
+    afterRawEnd?: boolean;
+    /** a veto resting on too little evidence (fewer than 2 analysed frames, or no verdict before the raw end). */
+    inconclusive?: boolean;
 }
 
 export type LogEvent =
@@ -125,6 +135,9 @@ export class Episode {
     private firstService?: EpisodeSummary['service'];
     private confirmService?: EpisodeSummary['service'];
     private skipped = 0;
+    private pendingReplies = 0;
+    private confirmPath?: string;
+    private confirmFrames?: number;
     private holdOver = false;
     private degradedReason?: string;
     private lastMotion = false;
@@ -152,6 +165,8 @@ export class Episode {
     /** the groups that confirmed the current episode while it is confirmed (active), else undefined */
     get confirmedGroups(): string[] | undefined { return this.state === 'active' ? this.confirmedBy.slice() : undefined; }
     get pending() { return this.state === 'pending'; }
+    /** the current confirmation came after the camera's raw motion had ended (grace window). */
+    get lateConfirm() { return this.state === 'active' && this.confirmedAt !== undefined && this.rawEndedAt !== undefined && this.rawEndedAt >= this.pendingSince && this.confirmedAt > this.rawEndedAt; }
     /** a pixel-gate episode is running (pending or confirmed). */
     get synthetic() { return this.origin === 'synth' && (this.state === 'pending' || this.state === 'active'); }
     get bypassed() { return this.cfg.mode === 'off' || this.cfg.killSwitch; }
@@ -179,6 +194,8 @@ export class Episode {
         this.verdictAt = undefined;
         this.firstService = this.confirmService = undefined;
         this.skipped = 0;
+        this.pendingReplies = 0;
+        this.confirmPath = this.confirmFrames = undefined;
         if (fresh) {
             this.startedAt = now;
             this.origin = 'camera';
@@ -214,6 +231,11 @@ export class Episode {
                 confirmedBy: confirmed && this.confirmedBy.length ? this.confirmedBy.slice() : undefined,
                 confirmedDetail: confirmed && this.confirmedDetail.length ? this.confirmedDetail.slice() : undefined,
                 origin: this.origin,
+                confirmPath: confirmed ? this.confirmPath : undefined,
+                confirmFrames: confirmed ? this.confirmFrames : undefined,
+                afterRawEnd: confirmed && this.rawEndedAt !== undefined && this.rawEndedAt >= this.pendingSince && this.confirmedAt! > this.rawEndedAt ? true : undefined,
+                inconclusive: outcome === 'vetoed' && (this.pendingReplies < 2 || this.verdictAt === undefined
+                    || (this.rawEndedAt !== undefined && this.rawEndedAt >= this.pendingSince && this.verdictAt > this.rawEndedAt)) ? true : undefined,
             },
         });
         this.holdOver = false;
@@ -394,6 +416,7 @@ export class Episode {
         const on = (g: Group) => !this.cfg.detect || this.cfg.detect.includes(g);
         const veh = vehicleView(r, this.cfg.vehicleConfirm);
         if (this.state === 'pending') {
+            this.pendingReplies++;
             this.vehTicks.push(veh.tick);
             if (this.vehTicks.length > 3) this.vehTicks.shift();
         }
@@ -411,6 +434,8 @@ export class Episode {
                 this.confirmedFrameOffset = frameT - this.pendingSince;
                 this.confirmService = timings;
                 this.confirmedBy = by;
+                this.confirmFrames = this.pendingReplies;
+                this.confirmPath = by.includes('person') && typeof r.person?.confirmed_by === 'string' ? r.person.confirmed_by : undefined;
                 this.confirmedDetail = by.map(g => g === 'vehicle' && veh.best ? `vehicle (${veh.best.cls} ${veh.best.score.toFixed(2)})` : g === 'animal' ? animalDetail(r) : g);
                 this.holdOver = false;
             }
@@ -423,10 +448,19 @@ export class Episode {
         return this.out(logs, reset);
     }
 
+    /** confirm timeout, extended to graceMs after the raw end when the camera's motion ended while still unconfirmed. */
+    private vetoAt(): number {
+        const base = this.pendingSince + this.cfg.confirmTimeoutMs;
+        const g = this.cfg.graceMs ?? 0;
+        if (g > 0 && !this.rawTrue && this.rawEndedAt !== undefined && this.rawEndedAt >= this.pendingSince)
+            return Math.max(base, this.rawEndedAt + g);
+        return base;
+    }
+
     tick(now: number): Effects {
         const logs: LogEvent[] = [];
         if (!this.passthrough) {
-            if (this.state === 'pending' && now - this.pendingSince >= this.cfg.confirmTimeoutMs) {
+            if (this.state === 'pending' && now >= this.vetoAt()) {
                 // A veto needs at least one verdict. No reply at all means the service or the stream
                 // is not working: fail open instead of silently dropping a real trigger.
                 if (this.verdictAt === undefined)
@@ -483,9 +517,11 @@ export function formatSummary(s: EpisodeSummary): string {
     const parts = [
         `${s.mode} raw ${t(s.startedAt)}-${s.rawEndedAt !== undefined ? t(s.rawEndedAt) : 'ongoing'}`,
         s.confirmedAfterMs !== undefined
-            ? `confirmed +${s.confirmedAfterMs} ms` + (s.confirmedFrameOffsetMs !== undefined && s.confirmedFrameOffsetMs < 0 ? ` (frame ${(s.confirmedFrameOffsetMs / 1000).toFixed(1)}s, pre-roll)` : '')
+            ? `confirmed +${s.confirmedAfterMs} ms` + (s.confirmPath ? ` (${s.confirmPath}${s.confirmFrames ? `, ${s.confirmFrames} frame${s.confirmFrames === 1 ? '' : 's'}` : ''})` : '')
+            + (s.afterRawEnd ? ' (after raw end, grace)' : '')
+            + (s.confirmedFrameOffsetMs !== undefined && s.confirmedFrameOffsetMs < 0 ? ` (frame ${(s.confirmedFrameOffsetMs / 1000).toFixed(1)}s, pre-roll)` : '')
             : 'never confirmed',
-        s.outcome === 'vetoed' ? 'VETOED' : `${s.outcome} ${t(s.closedAt)}`,
+        s.outcome === 'vetoed' ? (s.inconclusive ? 'VETOED (inconclusive)' : 'VETOED') : `${s.outcome} ${t(s.closedAt)}`,
         `held beyond raw ${s.heldBeyondRawS.toFixed(0)}s`,
     ];
     if (s.postedAfterMs !== undefined)

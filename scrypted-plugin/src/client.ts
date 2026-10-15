@@ -27,6 +27,8 @@ export interface PersonState {
     tracks_detail?: { id: number; box?: number[]; score?: number; last_seen_ms?: number; since_ms?: number; stationary?: boolean }[];
     /** service 0.3.0+: frame time until which the group is held */
     hold_until_ms?: number | null;
+    /** service 0.3.12+: how the current confirmation was reached ('fast_move' | 'fast_claim' | 'ticks'), null while not confirmed */
+    confirmed_by?: string | null;
 }
 
 export interface VehicleState {
@@ -69,6 +71,10 @@ export interface EpisodeEvent {
     groups?: string[];
     timeline_event?: { t_ms: number; text: string };
     note?: string;
+    /** service 0.3.12+: a veto resting on too little evidence */
+    inconclusive?: boolean;
+    /** service 0.3.12+: the camera's enabled detection groups (the review question of an inconclusive veto names them) */
+    detect?: string[];
 }
 
 export interface TrackerConfig {
@@ -92,6 +98,20 @@ export interface TrackerConfig {
     max_hold_s?: number;
     parked_after_s?: number;
     session_ttl_s?: number;
+    /** service 0.3.12+: fast person confirmation (moving track or camera person claim) */
+    fast_confirm?: boolean;
+    fast_n?: number;
+    fast_window_ms?: number;
+    fast_move?: number;
+}
+
+export interface FrameOptions {
+    /** background frame (heartbeat, pixel gate): served only when no normal frame waits */
+    low?: boolean;
+    /** the longest the frame may wait in the service queue, ms (stale otherwise) */
+    deadlineMs?: number;
+    /** the camera's own AI claims this class for the current episode */
+    claim?: 'person';
 }
 
 /** Plain explanation of an HTTP status for logs and the panel, the code only in brackets. */
@@ -211,14 +231,16 @@ export class VerifierClient {
     }
 
     /** Returns null when the service says to skip the frame (stale or 429). */
-    async frame(camera: string, jpeg: Buffer, tMs: number, lowPriority = false): Promise<FrameReply | null> {
+    async frame(camera: string, jpeg: Buffer, tMs: number, opt: boolean | FrameOptions = false): Promise<FrameReply | null> {
+        const o2: FrameOptions = typeof opt === 'boolean' ? { low: opt } : opt;
         let prefix = this.framePaths.get(camera);
         if (!prefix) {
             assertCameraId(camera);
             this.framePaths.set(camera, prefix = `/v1/cameras/${encodeURIComponent(camera)}/frame?t=`);
         }
         const o = this.opts();
-        const r = await this.request<any>('POST', prefix + Math.round(tMs) + (lowPriority ? '&prio=low' : ''), jpeg, 'image/jpeg', true, o.frameTimeoutMs ?? o.timeoutMs, true);
+        const q = (o2.low ? '&prio=low' : '') + (o2.deadlineMs && o2.deadlineMs > 0 ? `&deadline_ms=${Math.round(o2.deadlineMs)}` : '') + (o2.claim === 'person' ? '&claim=person' : '');
+        const r = await this.request<any>('POST', prefix + Math.round(tMs) + q, jpeg, 'image/jpeg', true, o.frameTimeoutMs ?? o.timeoutMs, true);
         if (r === null)
             return null;
         if (!validFrameReply(r))

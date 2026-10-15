@@ -390,3 +390,17 @@ test('hardware decode: an exit with code 0 before the first JPEG is a hardware f
         assert.equal(await g.exited, undefined, 'software start is unaffected');
     } finally { delete process.env.FAKE_MODE; }
 });
+
+// ---- frames: the runtime burst switch ----
+
+test('frames: the burst filter keeps idle cost (every Nth frame before scale/encode) and switches through a stdin command', () => {
+    const F = loadFrames();
+    assert.equal(F.burstStep(2, 6), 3);
+    assert.equal(F.burstStep(2, undefined), 1);
+    assert.equal(F.burstStep(4, 3), 1);
+    assert.equal(F.filterChain(false, 2, 960, 6), "fps=6.0000,framestep@burst=step=3,scale='min(960,iw)':-2");
+    assert.equal(F.filterChain(false, 2, 960), "fps=2.0000,scale='min(960,iw)':-2");
+    assert.match(F.grayGraph(false, 2, 960, 128, 72, 6), /^fps=6\.0000,framestep@burst=step=3,scale=.*split=2\[v1\]\[b\];\[b\]fps=1,/);
+    assert.equal(F.burstCommand(true), 'cframestep@burst -1 enable 0\n');
+    assert.equal(F.burstCommand(false), 'cframestep@burst -1 enable 1\n');
+});
