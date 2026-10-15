@@ -76,7 +76,7 @@ TRACKER = {
     "fast_window_ms": 1000.0,
     "fast_move": 0.03,
 }
-# 0.3.16 rule B, LOGGED ONLY: claim=person + one person box at or above this, not on a still track, would confirm (reported as person.would_b_ms).
+# Rule B (logged in 0.3.16, live since 0.3.18): claim=person + one person box at or above this, not on a still track, confirms (confirmed_by fast_b).
 FAST_B_THR = 0.45
 # 0.3.15: with claim=person (the camera's own AI says person) one frame at or above this confirms at once (two independent sources agree).
 FAST_SINGLE_CLAIM = 0.75

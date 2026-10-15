@@ -174,3 +174,7 @@ Rule B, logged only: with `claim=person`, the first frame that has a person box 
 ## 0.3.17 notes
 
 Plugin only. (1) Exclusion zones judge a detection by the point it stands on: it is excluded when the bottom centre of its box lies in a zone, or when the box lies almost entirely inside the zones; the old rule (at least 60 % of the box area outside) masked a person walking on a path whose upper body overlapped a background zone. (2) The camera's ObjectDetector events are now received with a plain listener: a `mixinId` listener never got them because the server does not mask property-less events, so camera AI claims (Camera AI trigger, class claims, `claim=person`, rule B) were never seen before. The plugin skips its own `verified_*` events.
+
+## 0.3.18 notes
+
+Rule B is live: with `claim=person`, the first frame with a person box at or above `FAST_B_THR` (0.45) that does not overlap a still person track confirms (`confirmed_by: fast_b`); when the tick tracker has no track under that box (scores below `start_thr` create none) a confirmed track is created from it and then kept alive like any confirmed track. `fast_claim` (one frame >= 0.75) still wins when it fires on the same frame. `would_b_ms` keeps reporting the first B frame.

@@ -60,7 +60,7 @@ def test_static_high_score_box_does_not_fast_confirm_and_falls_back_to_ticks():
 def test_claim_person_confirms_a_static_box():
     box = (0.4, 0.3, 0.55, 0.8)
     sn = run(new(), [[person(0.7, box)]] * 3, claim="person")
-    assert sn[2]["person"]["present"] and sn[2]["person"]["confirmed_by"] == "fast_claim"
+    assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "fast_b"            # camera AI person + one box >= 0.45 (rule B)
     sn = run(new(), [[person(0.7, box)]] * 3, claim="vehicle")                     # only a person claim counts
     assert not sn[2]["person"]["present"]
 
@@ -156,21 +156,21 @@ def test_camera_ai_person_plus_one_strong_frame_confirms_at_once():
     box = (0.4, 0.3, 0.55, 0.8)
     sn = run(new(), [[person(0.78, box)]], claim="person")
     assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "fast_claim"
-    sn = run(new(), [[person(0.70, box)]], claim="person")                           # below 0.75: needs a second frame
-    assert not sn[0]["person"]["present"]
+    sn = run(new(), [[person(0.70, box)]], claim="person")                           # below 0.75: rule B confirms instead
+    assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "fast_b"
     sn = run(new(), [[person(0.90, box)]])                                           # no camera claim: one frame never confirms
     assert not sn[0]["person"]["present"]
 
 
-def test_rule_b_is_reported_but_never_confirms():
+def test_rule_b_confirms_on_camera_ai_person_plus_one_weak_box():
     box = (0.4, 0.3, 0.55, 0.8)
     sess = new()
     sess.update(T0, [person(0.5, box)], claim="person")
     p = sess.snapshot()["person"]
-    assert p["would_b_ms"] == T0 and not p["present"]                              # logged only
+    assert p["would_b_ms"] == T0 and p["present"] and p["confirmed_by"] == "fast_b"
     sess2 = new()
     sess2.update(T0, [person(0.5, box)])                                            # no camera claim: no B
-    assert sess2.snapshot()["person"]["would_b_ms"] is None
+    assert sess2.snapshot()["person"]["would_b_ms"] is None and not sess2.snapshot()["person"]["present"]
     sess3 = new()
     sess3.update(T0, [person(0.4, box)], claim="person")                             # below 0.45
-    assert sess3.snapshot()["person"]["would_b_ms"] is None
+    assert sess3.snapshot()["person"]["would_b_ms"] is None and not sess3.snapshot()["person"]["present"]

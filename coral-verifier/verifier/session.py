@@ -528,10 +528,18 @@ class Session:
         if any(tr.conf for tr in cands if _cd(tr.box, f[1]) <= GATE):
             return False
         tent = sorted((_cd(tr.box, f[1]), k) for k, tr in enumerate(cands) if not tr.conf and _cd(tr.box, f[1]) <= GATE)
-        if not tent:
+        if tent:
+            tr = cands[tent[0][1]]
+            tr.conf = True
+        elif f[2] == "fast_b":
+            # rule B can fire on a box below start_thr, for which the tick tracker made no track: create it confirmed;
+            # from now on it is kept alive like any confirmed track (matched down to cont_thr)
+            tr = _PTrack(); tr.id = p.nid; p.nid += 1
+            tr.box = f[1]; tr.last = self._tick_t; tr.last_hi = self._tick_t; tr.born = self._tick_t; tr.hits = 1
+            tr.hist = [(self._tick_t, f[1])]; tr.still = False; tr.score = FAST_B_THR; tr.conf = True
+            p.tracks.append(tr)
+        else:
             return False
-        tr = cands[tent[0][1]]
-        tr.conf = True
         if p.first_conf is None:
             p.first_conf = self._tick_t
         p.last_seen = self.last_t
@@ -568,10 +576,17 @@ class Session:
             if hit and (self._force is None or self._force[0] != self._tick_t):
                 self._force = (self._tick_t, hit[2], hit[0])
             self._apply_force()
-            if claim == "person" and self.would_b is None:
+            # rule B (live since 0.3.18): the camera's AI says person and Coral sees a person box >= FAST_B_THR that is not a
+            # still object -> confirm on this frame
+            if claim == "person":
                 stills = [tr.box for tr in self.person.live(self._tick_t) if tr.still]
-                if any(d[0] >= FAST_B_THR and all(iou(d[1], sb) <= 0.5 for sb in stills) for d in raw):
-                    self.would_b = t
+                cand = [d for d in raw if d[0] >= FAST_B_THR and all(iou(d[1], sb) <= 0.5 for sb in stills)]
+                if cand:
+                    if self.would_b is None:
+                        self.would_b = t
+                    if self._force is None or self._force[0] != self._tick_t:
+                        self._force = (self._tick_t, max(cand, key=lambda d: d[0])[1], "fast_b")
+                        self._apply_force()
         live = bool(self.person.live(self._tick_t))
         if not live:
             self.confirmed_by = None
