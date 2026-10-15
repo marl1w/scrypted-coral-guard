@@ -412,8 +412,9 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
 
     private presence = new Map<string, PresenceSensor>();
     private announced = new Map<string, string>(); // nativeId -> name last announced
+    private pruned = new Map<string, string>(); // cameraId -> enabled groups last checked for stale sensors
 
-    /** announces a camera's presence sensors (one per enabled group); repeats only when the name changes. */
+    /** announces a camera's presence sensors (one per enabled group, repeated only when the name changes) and removes those of disabled groups. */
     ensurePresence(cameraId: string, cameraName: string, groups: string[]) {
         for (const g of groups) {
             if (!(g in PRESENCE_LABEL)) continue;
@@ -424,6 +425,20 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
                 nativeId, name, type: ScryptedDeviceType.Sensor, interfaces: [ScryptedInterface.OccupancySensor],
                 info: { manufacturer: 'Coral Guard', model: `${PRESENCE_LABEL[g as PresenceGroup]} presence` },
             })).catch(e => this.console.warn(`${name}: could not announce the presence sensor`, e));
+        }
+        // a disabled group has no sensor: remove one left from an earlier setting (it would linger in HomeKit and Home Assistant); checked when the groups change
+        const key = [...groups].sort().join(',');
+        if (this.pruned.get(cameraId) === key) return;
+        this.pruned.set(cameraId, key);
+        const known = new Set<string>((sdk.deviceManager as any).getNativeIds?.() ?? []);
+        for (const g of Object.keys(PRESENCE_LABEL) as PresenceGroup[]) {
+            if (groups.includes(g)) continue;
+            const nativeId = presenceNativeId(cameraId, g);
+            if (!known.has(nativeId) && !this.announced.has(nativeId)) continue;
+            this.announced.delete(nativeId);
+            this.presence.delete(nativeId);
+            Promise.resolve().then(() => sdk.deviceManager.onDeviceRemoved(nativeId))
+                .catch(e => this.console.warn(`${presenceName(cameraName, g)}: could not remove the presence sensor`, e));
         }
     }
 

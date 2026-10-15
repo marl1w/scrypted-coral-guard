@@ -88,6 +88,10 @@ export interface TrackerConfig {
     name?: string;
     /** newer service: vehicle detect, animal confirm / keep thresholds */
     vehicle_thr?: number;
+    /** newer service (0.3.23): minimum box size per group, share of the frame area, 0 = off */
+    min_area_person?: number;
+    min_area_vehicle?: number;
+    min_area_animal?: number;
     /** newer service: extra shrunk-with-border pass, 0 = off */
     zoom_out?: number;
     /** newer service: re-check uncertain detections with a zoomed-in pass */

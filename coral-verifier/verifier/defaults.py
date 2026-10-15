@@ -78,6 +78,11 @@ TRACKER = {
     "fast_n": 2,
     "fast_window_ms": 1000.0,
     "fast_move": 0.03,
+    # Minimum size per group (0.3.23): a detection whose box covers less than this share of the frame area never reaches the trackers
+    # (it stays in the journal and in verbose replies with too_small: true). 0 = off. Per camera, set by the client (the plugin's camera settings).
+    "min_area_person": 0.0,
+    "min_area_vehicle": 0.0,
+    "min_area_animal": 0.0,
 }
 # Rule B (logged in 0.3.16, live since 0.3.18): claim=person + one person box at or above this, not on a still track, confirms (confirmed_by fast_b).
 FAST_B_THR = 0.45

@@ -38,6 +38,19 @@ class TooManyCameras(Exception):
     pass
 
 
+MIN_AREA_KEYS = ("min_area_person", "min_area_vehicle", "min_area_animal")
+
+
+def too_small(d, cfg):
+    """True when the detection's box covers less of the frame than its group's minimum (min_area_<group>, 0 = off)."""
+    g = d.get("group") or ("person" if d["cls"] == "person" else ("vehicle" if d["cls"] in VEHICLES or d["cls"] == "bicycle" else "animal"))
+    m = getattr(cfg, f"min_area_{g}", 0.0)
+    if not m:
+        return False
+    x0, y0, x1, y1 = d["box"]
+    return max(0.0, x1 - x0) * max(0.0, y1 - y0) < m
+
+
 @dataclass
 class Config:
     start_thr: float = _T["start_thr"]
@@ -60,6 +73,9 @@ class Config:
     fast_n: int = _T["fast_n"]
     fast_window_ms: float = _T["fast_window_ms"]
     fast_move: float = _T["fast_move"]
+    min_area_person: float = _T["min_area_person"]
+    min_area_vehicle: float = _T["min_area_vehicle"]
+    min_area_animal: float = _T["min_area_animal"]
 
     def validate(self):
         for k, v in asdict(self).items():
@@ -94,6 +110,9 @@ class Config:
                 raise ValueError(f"{k} must be in [0, 86400]")
         if self.session_ttl_s <= 0:
             raise ValueError("session_ttl_s must be > 0")
+        for k in MIN_AREA_KEYS:
+            if not 0 <= getattr(self, k) <= 0.25:
+                raise ValueError(f"{k} must be in [0, 0.25]")
         return self
 
     def updated(self, changes):

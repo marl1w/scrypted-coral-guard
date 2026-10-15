@@ -463,7 +463,10 @@ class Handler(BaseHTTPRequestHandler):
 
         def finish(dets, st):
             dets = S.person_animal_overlap(dets)                                                        # one object scored as person and animal: boost the person
-            live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected"]      # rejected: never; doubtful person/animal: score capped
+            for d in dets:
+                if S.too_small(d, cfg):
+                    d["too_small"] = True                                                               # below the camera's minimum size for its group: never tracked
+            live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected" and not d.get("too_small")]      # rejected / too small: never; doubtful person/animal: score capped
             sn = app.registry.update(cam, t, live, time.monotonic(), claim)
             try:
                 app.journal.record_frame_async(cam, sn["t"], body, dets)

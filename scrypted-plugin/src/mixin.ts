@@ -90,6 +90,24 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             type: 'string',
             placeholder: 'plugin default',
         },
+        minPerson: {
+            title: 'Minimum person size',
+            description: 'Smaller person boxes are ignored: % of the frame area (0-25). Empty = off.',
+            type: 'string',
+            placeholder: 'off',
+        },
+        minVehicle: {
+            title: 'Minimum vehicle size',
+            description: 'Smaller vehicle boxes are ignored: % of the frame area (0-25). Empty = off.',
+            type: 'string',
+            placeholder: 'off',
+        },
+        minAnimal: {
+            title: 'Minimum animal size',
+            description: 'Smaller animal boxes are ignored: % of the frame area (0-25). Empty = off.',
+            type: 'string',
+            placeholder: 'off',
+        },
     });
     /** label -> stream id of the last rendered Stream choices */
     private streamLabels = new Map<string, string>([[STREAM_DEFAULT_LABEL, 'default']]);
@@ -410,10 +428,30 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.apply(this.episode.setConfig(this.episodeConfig(), monoNow()));
     }
 
+    private minWarned = '';
+    /** Per-camera minimum sizes (settings in % of the frame area) as service fractions; empty or invalid = 0 (off, invalid warned once). */
+    private minAreas() {
+        const v = this.storageSettings.values, bad: string[] = [];
+        const frac = (raw: unknown, title: string) => {
+            const s = String(raw ?? '').trim().replace('%', '').replace(',', '.');
+            if (!s)
+                return 0;
+            const n = Number(s);
+            if (!Number.isFinite(n) || n < 0 || n > 25) { bad.push(title); return 0; }
+            return n / 100;
+        };
+        const r = { min_area_person: frac(v.minPerson, 'Minimum person size'), min_area_vehicle: frac(v.minVehicle, 'Minimum vehicle size'), min_area_animal: frac(v.minAnimal, 'Minimum animal size') };
+        const w = bad.join(', ');
+        if (w && w !== this.minWarned)
+            this.console.warn(`${w}: not a number between 0 and 25; ignored`);
+        this.minWarned = w;
+        return r;
+    }
+
     /** Push the tracker overrides and the plugin-wide thresholds (at start, on a change, after a service restart). */
     postConfig() {
         const person = serviceThresholds(this.thresholds);
-        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, fast_confirm: this.plugin.fastConfirm ?? true, name: String(this.name || this.id) };
+        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, ...this.minAreas(), zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, fast_confirm: this.plugin.fastConfirm ?? true, name: String(this.name || this.id) };
         this.configPosted = false;
         if (this.released || this.mode === 'off' || this.plugin.config.killSwitch)
             return;
