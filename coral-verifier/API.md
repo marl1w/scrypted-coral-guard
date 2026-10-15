@@ -162,3 +162,7 @@ Frame replies carry `person.fast` while fast confirm is on: `{hi, n, moved}` = p
 ## 0.3.14 notes
 
 Fast confirm retuned on real walks (0.3.13 diagnostics: strong frames are sparse while a person enters, the best track held 2 strong frames in 0.7 s, and walking moved the box 0.04-0.07 box heights between frames): `fast_n` 2, `fast_window_ms` 1000, `fast_move` 0.03, the two qualifying frames at least 200 ms apart (`FAST_MIN_SPAN_MS`), and movement is the larger of the centre shift and the change in box height (walking towards or away from the camera). A static box still never fast-confirms without `claim=person`.
+
+## 0.3.15 notes
+
+With `claim=person` (the camera's own AI reports a person, which on real walks arrives together with the trigger) one frame with a person at or above `FAST_SINGLE_CLAIM` (0.75) confirms at once (`confirmed_by: fast_claim`); without a claim a single frame never confirms. The plugin's pre-roll hand-over sends the newest 3 ring frames (about the last 1.5 s) instead of 6, so live frames reach the service sooner.

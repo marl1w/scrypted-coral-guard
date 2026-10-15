@@ -150,3 +150,13 @@ def test_many_cameras_bursting_at_once_degrade_gracefully_and_none_starves():
         assert max(ok.values()) <= 3 * min(ok.values()) + 2, ok
     finally:
         b.close()
+
+
+def test_camera_ai_person_plus_one_strong_frame_confirms_at_once():
+    box = (0.4, 0.3, 0.55, 0.8)
+    sn = run(new(), [[person(0.78, box)]], claim="person")
+    assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "fast_claim"
+    sn = run(new(), [[person(0.70, box)]], claim="person")                           # below 0.75: needs a second frame
+    assert not sn[0]["person"]["present"]
+    sn = run(new(), [[person(0.90, box)]])                                           # no camera claim: one frame never confirms
+    assert not sn[0]["person"]["present"]

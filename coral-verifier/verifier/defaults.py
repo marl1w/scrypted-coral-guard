@@ -76,6 +76,8 @@ TRACKER = {
     "fast_window_ms": 1000.0,
     "fast_move": 0.03,
 }
+# 0.3.15: with claim=person (the camera's own AI says person) one frame at or above this confirms at once (two independent sources agree).
+FAST_SINGLE_CLAIM = 0.75
 # 0.3.14: the two qualifying frames must be at least this far apart (frame time), so "seen twice" is two looks, not two copies.
 FAST_MIN_SPAN_MS = 200.0
 FAST_IOU = 0.3                  # fast-confirm track matching between consecutive frames (IoU), frames are ~0.15-0.5 s apart

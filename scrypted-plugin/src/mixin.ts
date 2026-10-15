@@ -25,8 +25,8 @@ const DETECT_CHOICES = ['Person', 'Vehicle', 'Animal'];
 const MODES = new Map<string, Mode>([['Off', 'off'], ['Shadow', 'shadow'], ['Gate', 'gate']]);
 /** the contract accepts a burst of up to 10 frames; never queue more than that. */
 const BURST_MAX = 10;
-/** warm ring hand-over at a trigger: only the last few frames, sent sequentially, keep the burst short. */
-const PREROLL_BURST_MAX = 6;
+/** warm ring hand-over at a trigger: only the newest frames (about the last 1.5 s), sent sequentially, so the live frames follow quickly. */
+const PREROLL_BURST_MAX = 3;
 const VERIFY_DELAY_MS = 300;
 const NO_FRAMES_MS = 10000;
 /** camera class names that are never a claim about what moved. */

@@ -16,7 +16,7 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 """
 import math, re, threading
 
-from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, FAST_IOU, FAST_MIN_SPAN_MS
+from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -352,6 +352,11 @@ class FastConfirm:
             if j not in used:
                 tr = _FTrack(); tr.box = d[1]; tr.last = t; tr.hist = [(t, d[0], d[1])]
                 trks.append(tr)
+        # camera AI says person + one strong Coral frame: confirm on that frame
+        if best is None and claim == "person":
+            top = max((d for d in hi if d[0] >= FAST_SINGLE_CLAIM), key=lambda d: d[0], default=None)
+            if top is not None:
+                best = ("fast_claim", 1, top[1])
         if len(trks) > MAX_TRACKS:
             trks.sort(key=lambda tr: -tr.last)
             del trks[MAX_TRACKS:]
