@@ -72,10 +72,12 @@ TRACKER = {
     # fast_window_ms of frame time confirms at once when its box centre moved >= fast_move x the box height between its first and last qualifying frame
     # (static look-alikes never move) or the frame carries claim=person (the camera's own AI says person). Everything else keeps the tick rule.
     "fast_confirm": False,
-    "fast_n": 3,
-    "fast_window_ms": 700.0,
-    "fast_move": 0.15,
+    "fast_n": 2,
+    "fast_window_ms": 1000.0,
+    "fast_move": 0.03,
 }
+# 0.3.14: the two qualifying frames must be at least this far apart (frame time), so "seen twice" is two looks, not two copies.
+FAST_MIN_SPAN_MS = 200.0
 FAST_IOU = 0.3                  # fast-confirm track matching between consecutive frames (IoU), frames are ~0.15-0.5 s apart
 
 # Detection classes beyond person (COCO names of the 17-class model). group -> {class: threshold}. Person uses the per-frame person_thr (the camera's

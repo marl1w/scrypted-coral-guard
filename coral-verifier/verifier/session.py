@@ -16,7 +16,7 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 """
 import math, re, threading
 
-from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, FAST_IOU
+from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, FAST_IOU, FAST_MIN_SPAN_MS
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -333,7 +333,14 @@ class FastConfirm:
             tr.hist = [h for h in tr.hist if t - h[0] <= win]
             b0, b1 = tr.hist[0][2], tr.hist[-1][2]
             h = max(b0[3] - b0[1], b1[3] - b1[1], 1e-3)
-            moved = math.hypot((b1[0] + b1[2] - b0[0] - b0[2]) / 2.0, (b1[1] + b1[3] - b0[1] - b0[3]) / 2.0) / h
+            # movement = centre shift or size change (walking towards/away from the camera), in box heights
+            shift = math.hypot((b1[0] + b1[2] - b0[0] - b0[2]) / 2.0, (b1[1] + b1[3] - b0[1] - b0[3]) / 2.0) / h
+            grow = abs((b1[3] - b1[1]) - (b0[3] - b0[1])) / h
+            moved = max(shift, grow)
+            if tr.hist[-1][0] - tr.hist[0][0] < FAST_MIN_SPAN_MS:
+                if len(tr.hist) > self.diag["n"]:
+                    self.diag["n"], self.diag["moved"] = len(tr.hist), round(moved, 3)
+                continue
             if len(tr.hist) > self.diag["n"] or (len(tr.hist) == self.diag["n"] and moved > self.diag["moved"]):
                 self.diag["n"], self.diag["moved"] = len(tr.hist), round(moved, 3)
             if len(tr.hist) < cfg.fast_n:

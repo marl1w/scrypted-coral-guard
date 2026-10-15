@@ -158,3 +158,7 @@ The plugin publishes Coral-verified detections on the camera's ObjectDetector as
 ## 0.3.13 notes
 
 Frame replies carry `person.fast` while fast confirm is on: `{hi, n, moved}` = person boxes at or above `start_thr` in this frame, frames of the best fast track within `fast_window_ms`, and that track's centre shift in box heights. The plugin logs the strongest values seen before confirmation when an episode did not confirm through the fast path (`fast: N strong frames, best track N in window, moved X`), so the fast-confirm parameters can be tuned on real episodes.
+
+## 0.3.14 notes
+
+Fast confirm retuned on real walks (0.3.13 diagnostics: strong frames are sparse while a person enters, the best track held 2 strong frames in 0.7 s, and walking moved the box 0.04-0.07 box heights between frames): `fast_n` 2, `fast_window_ms` 1000, `fast_move` 0.03, the two qualifying frames at least 200 ms apart (`FAST_MIN_SPAN_MS`), and movement is the larger of the centre shift and the change in box height (walking towards or away from the camera). A static box still never fast-confirms without `claim=person`.

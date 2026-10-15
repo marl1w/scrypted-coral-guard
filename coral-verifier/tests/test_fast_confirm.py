@@ -1,4 +1,4 @@
-"""Fast person confirmation (0.3.12): >= fast_n frames >= start_thr of one IoU track within fast_window_ms, plus movement or claim=person."""
+"""Fast person confirmation (0.3.12, retuned 0.3.14): >= fast_n (2) frames >= start_thr of one IoU track at least 200 ms apart within fast_window_ms (1 s), plus movement (centre shift or size change >= fast_move 0.03) or claim=person."""
 import json, threading, time
 
 import session as S
@@ -29,11 +29,22 @@ def run(sess, frames, dt=200, claim=None):
     return out
 
 
-def test_moving_person_confirms_after_three_frames_200ms_apart():
-    sn = run(new(), [[person(0.7, walking(i, 0.05))] for i in range(3)])          # 0.10 centre shift over a 0.5 box height = 0.2 >= 0.15
-    assert [s["person"]["state"] for s in sn] == ["candidate", "candidate", "confirmed"]
-    assert sn[2]["person"]["present"] and sn[2]["person"]["confirmed_by"] == "fast_move"
+def test_moving_person_confirms_on_the_second_frame_200ms_later():
+    sn = run(new(), [[person(0.7, walking(i, 0.05))] for i in range(3)])          # 0.05 shift over a 0.5 box height = 0.1 >= 0.03
+    assert [s["person"]["state"] for s in sn][:2] == ["candidate", "confirmed"]
+    assert sn[1]["person"]["present"] and sn[1]["person"]["confirmed_by"] == "fast_move"
     assert sn[0]["person"]["confirmed_by"] is None
+
+
+def test_two_frames_closer_than_200ms_do_not_qualify():
+    sn = run(new(), [[person(0.7, walking(i, 0.05))] for i in range(2)], dt=120)
+    assert not any(s["person"]["present"] for s in sn)
+
+
+def test_walking_towards_the_camera_counts_as_movement():
+    grow = lambda i: (0.4 - i * 0.01, 0.3 - i * 0.02, 0.55 + i * 0.01, 0.8 + i * 0.02)   # same centre, box grows
+    sn = run(new(), [[person(0.7, grow(i))] for i in range(2)])
+    assert sn[1]["person"]["present"] and sn[1]["person"]["confirmed_by"] == "fast_move"
 
 
 def test_static_high_score_box_does_not_fast_confirm_and_falls_back_to_ticks():
@@ -55,8 +66,8 @@ def test_claim_person_confirms_a_static_box():
 
 
 def test_frames_spread_beyond_the_window_do_not_qualify():
-    sn = run(new(), [[person(0.7, walking(i, 0.05))] for i in range(3)], dt=370)  # 3 frames over 740 ms > 700 ms window, all in one tick
-    assert not sn[2]["person"]["present"]
+    sn = run(new(), [[person(0.7, walking(i, 0.05))] for i in range(2)], dt=1100)  # 2 frames 1.1 s apart > 1 s window
+    assert not sn[1]["person"]["present"] or sn[1]["person"]["confirmed_by"] == "ticks"
 
 
 def test_scores_below_start_thr_do_not_count():
