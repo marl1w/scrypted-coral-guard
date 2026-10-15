@@ -122,6 +122,10 @@ Point the plugin at the service: when the service runs on the same host as Scryp
 
 Disable the mixin on the camera (Extensions, untick Coral Guard) or turn on the kill switch in the plugin settings. The kill switch restores pass-through of raw motion within a second. Removing the mixin is different: once removed, a write from this mixin is delivered as an event but not persisted, so the shared `motionDetected` state is only guaranteed to be right again at the camera's next motion write. `release()` makes a best-effort write of the raw value, and you can see a short blip (a held or gated state that lingers until the next camera motion event). Do not rely on it as an instant, guaranteed reset.
 
+## Presence child devices (0.3.20)
+
+The provider is also a DeviceProvider. Each mixin announces `presence:<cameraId>:<group>` children (Sensor, OccupancySensor) with `onDeviceDiscovered` at start and again only when the camera is renamed. `trackFrom` derives per-group presence from the same tracked items the status panel shows (`presenceOf`, boxes inside exclusion zones skipped) and writes `occupied` only on change. `onTick` clears them after `DEFAULTS.presenceStaleMs` without an analysed frame, and `release` clears them at once. Children are never removed automatically, so HomeKit pairings survive mixin rebuilds; delete them from the Scrypted UI if a camera goes away.
+
 ## Ordering: Coral Guard must be the outermost MotionSensor mixin
 
 Scrypted publishes the motion state of the outermost mixin that implements MotionSensor. If another MotionSensor mixin (for example the recorder or the object detector) sits outside Coral Guard, its value masks ours and gating has no effect. After publishing a gated value the plugin reads the shared state back, and if it does not match it logs once "Coral Guard is NOT the outermost MotionSensor mixin: gating has no effect" and shows the same warning in the camera's Status line. Fix: open the camera, Extensions, and drag or re-add Coral Guard so it is the last (outermost) entry, then check that the warning is gone.

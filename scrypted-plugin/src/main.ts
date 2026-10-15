@@ -1,8 +1,10 @@
-import { MixinProvider, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, Settings, SettingValue, WritableDeviceState } from '@scrypted/sdk';
+import sdk, { DeviceProvider, MixinProvider, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, Settings, SettingValue, WritableDeviceState } from '@scrypted/sdk';
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
 import { VerifierClient } from './client';
 import { DEFAULTS } from './defaults';
 import { GuardMixin } from './mixin';
+import { parsePresenceNativeId, PRESENCE_LABEL, presenceName, presenceNativeId, PresenceGroup } from './presence';
+import { PresenceSensor } from './presence-sensor';
 import { maskUrls } from './util';
 import { renderOverview } from './overview';
 import { MetricsRing, renderPerformance } from './performance';
@@ -27,7 +29,7 @@ export interface GlobalConfig {
     killSwitch: boolean;
 }
 
-export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, Settings {
+export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, DeviceProvider, Settings {
     // Enabling is opt-in: nothing here ever calls plugins.setMixins, so the user turns the
     // mixin on per camera in the Scrypted UI (Extensions).
     storageSettings = new StorageSettings(this, {
@@ -404,6 +406,47 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         }, this);
         this.live.set(String(m.id || id), m);
         return m;
+    }
+
+    // ---- per-class presence sensors (child devices) -------------------------------------------
+
+    private presence = new Map<string, PresenceSensor>();
+    private announced = new Map<string, string>(); // nativeId -> name last announced
+
+    /** announces a camera's presence sensors (one per enabled group); repeats only when the name changes. */
+    ensurePresence(cameraId: string, cameraName: string, groups: string[]) {
+        for (const g of groups) {
+            if (!(g in PRESENCE_LABEL)) continue;
+            const nativeId = presenceNativeId(cameraId, g as PresenceGroup), name = presenceName(cameraName, g as PresenceGroup);
+            if (this.announced.get(nativeId) === name) continue;
+            this.announced.set(nativeId, name);
+            Promise.resolve().then(() => sdk.deviceManager.onDeviceDiscovered({
+                nativeId, name, type: ScryptedDeviceType.Sensor, interfaces: [ScryptedInterface.OccupancySensor],
+                info: { manufacturer: 'Coral Guard', model: `${PRESENCE_LABEL[g as PresenceGroup]} presence` },
+            })).catch(e => this.console.warn(`${name}: could not announce the presence sensor`, e));
+        }
+    }
+
+    setPresence(cameraId: string, group: PresenceGroup, on: boolean) {
+        const nativeId = presenceNativeId(cameraId, group);
+        if (!this.announced.has(nativeId)) return; // group disabled for this camera
+        this.presenceDevice(nativeId)?.set(on);
+    }
+
+    private presenceDevice(nativeId: string): PresenceSensor | undefined {
+        if (!parsePresenceNativeId(nativeId)) return undefined;
+        let d = this.presence.get(nativeId);
+        if (!d) { d = new PresenceSensor(nativeId); this.presence.set(nativeId, d); }
+        return d;
+    }
+
+    async getDevice(nativeId: string): Promise<any> {
+        return this.presenceDevice(nativeId);
+    }
+
+    async releaseDevice(_id: string, nativeId: string): Promise<void> {
+        this.presence.delete(nativeId);
+        this.announced.delete(nativeId);
     }
 
     async releaseMixin(id: string, mixinDevice: GuardMixin): Promise<void> {

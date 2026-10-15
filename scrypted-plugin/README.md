@@ -7,6 +7,7 @@ A Scrypted plugin that checks every camera motion trigger with a Google Coral an
 - Fewer false alerts: rain, insects, shadows and headlights no longer raise motion.
 - Recordings that keep going while something is there, even if the camera's own motion stops.
 - Near-instant confirmation: a short pre-roll of the seconds before the trigger lets a detection be confirmed within a fraction of a second.
+- Presence per class: one occupancy sensor per camera for people, vehicles and animals (still and parked vehicles included), named `{Camera} {Category} Presence`, published to HomeKit and to anything reading Scrypted devices, such as Home Assistant.
 - A safe rollout: every camera starts in Shadow (nothing changes, decisions are only measured) and the plugin fails open, so a problem never hides real motion.
 
 ## How it works
@@ -55,6 +56,10 @@ Exclusion zones (per camera): name a zone, draw it with Scrypted's zone editor, 
 ### Cameras without a motion sensor
 
 Cameras without a motion sensor of their own (for example a derived or cropped stream) can use Coral Guard too: the camera gains a motion sensor that only Coral Guard drives. Shadow never sets it; Gate sets it only when the service confirms something on its own (the same confirm, hold and release rules and Detect filter apply). When the service is unavailable it stays off, because there is no camera motion to pass through.
+
+## Presence sensors
+
+For every enabled camera the plugin adds child devices named `<camera> Person Presence`, `<camera> Vehicle Presence` and `<camera> Animal Presence`, one per detection group the camera has enabled. Each is a Sensor with an occupancy state that is on while the service tracks at least one subject of that group outside the exclusion zones, including still people and still or parked vehicles. This is broader than the camera's own occupancy, which stays tied to confirmed subjects in Gate. The sensors are fed by every analysed frame (camera episodes and the 2 s idle frames) and go off when no frame has been analysed for 15 s (mode Off, kill switch, service down). They are separate devices, so HomeKit publishes them as occupancy sensors and Home Assistant shows them as binary sensors.
 
 ## The status panel
 

@@ -11,6 +11,7 @@ import { DEFAULTS } from './defaults';
 import { CameraStatus, StatusState } from './status';
 import { backoffMs, Effects, Episode, Group, vehicleView, VEHICLE_HOLD_WINDOW_MS, EpisodeConfig, EpisodeSummary, formatSummary, Mode } from './episode';
 import { isMasked, maskReply, parseZones, Zone } from './zones';
+import { PRESENCE_GROUPS, presenceOf } from './presence';
 import type { NowInfo, NowReason, TrackedItem } from './status';
 import { applyAnimalOverride, DEFAULT_THRESHOLDS, serviceThresholds, Thresholds } from './thresholds';
 import { fetchSnapshot, FastPathTimer, SNAP_MAX_FAILS } from './fastpath';
@@ -223,6 +224,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             }, () => { /* keep the default names */ });
         this.tickTimer = setInterval(() => this.onTick(), 1000);
         plugin.register(this);
+        plugin.ensurePresence(this.id, this.name || this.id, this.detectGroups());
         this.syncSource(false);
         this.refreshStatus();
         this.postConfig();
@@ -323,6 +325,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             for (const a of r.animal.tracks || [])
                 items.push({ group: 'animal', cls: a.cls, state: 'held', sinceMs: a.since_ms, lastSeenMs: a.last_seen_ms, box: a.box, detected: !!a.box && dets.some(d => groupOf(d) === 'animal' && iou(d.box, a.box!) > 0.3), holdLeftMs: left(r.animal.hold_until_ms) });
         this.status.setTracked(items, Date.now());
+        this.publishPresence(presenceOf(items, enabled, box => zones.length > 0 && isMasked(box, zones, DEFAULTS.zoneMinVisible)));
         const active = items.filter(i => i.state !== 'parked' && i.state !== 'still');
         this.lastTrack = active.length ? {
             groups: [...new Set(active.map(i => i.group))],
@@ -330,6 +333,24 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             lastSeenMs: p?.present ? (p.last_seen_ms ?? undefined) : Date.now(),
         } : undefined;
         this.refreshStatus();
+    }
+
+    // ---- per-class presence sensors ---------------------------------------------------------------
+
+    private presenceAt = 0;
+
+    /** one analysed frame: every group the tracker holds, still and parked included. */
+    private publishPresence(present: Record<string, boolean>) {
+        this.presenceAt = Date.now();
+        this.plugin.ensurePresence(this.id, this.name || this.id, this.detectGroups()); // cheap: repeats only on a rename
+        for (const g of PRESENCE_GROUPS) this.plugin.setPresence(this.id, g, !!present[g]);
+    }
+
+    /** no analysed frame for a while (mode off, service down, camera gone): nothing is known to be there. */
+    private expirePresence(force = false) {
+        if (!this.presenceAt || (!force && Date.now() - this.presenceAt < DEFAULTS.presenceStaleMs)) return;
+        this.presenceAt = 0;
+        for (const g of PRESENCE_GROUPS) this.plugin.setPresence(this.id, g, false);
     }
 
     private nowInfo(): NowInfo {
@@ -696,6 +717,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private onTick() {
         if (this.released)
             return;
+        this.expirePresence();
         const now = monoNow();
         // Per trigger: shorter than the confirm timeout, so a dead stream fails open before any veto.
         // A source restart does not abort an episode in progress: only ~10 s without any frame does.
@@ -1529,6 +1551,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     async release() {
         if (this.released)
             return; // idempotent: a replaced instance may also be released later by Scrypted
+        this.expirePresence(true);
         clearTimeout(this.aiWaitTimer);
         clearTimeout(this.snapTimer);
         this.snapTimer = undefined;
