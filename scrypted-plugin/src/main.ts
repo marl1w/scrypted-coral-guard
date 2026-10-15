@@ -87,6 +87,13 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
             onPut: () => this.thresholdsChanged(),
         },
         animalConfirm: thresholdSetting('animalConfirm', 'Score that confirms an animal.', () => this.thresholdsChanged()),
+        publishVerified: {
+            group: 'Detection',
+            title: 'Publish verified detections',
+            description: "Gate mode: the camera's ObjectDetector events carry Coral-verified person/vehicle/animal classes instead of the camera's raw AI classes. Off: raw events pass through.",
+            type: 'boolean',
+            defaultValue: true,
+        },
     });
 
     /** 'Triggers' (Detection group): empty or unparsable = all three, never none. */
@@ -105,6 +112,12 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     /** 'Camera AI fast path' (Detection group, default on). */
     get aiFastPath(): boolean {
         const v = (this.storageSettings.values as any).aiFastPath;
+        return v === undefined || v === null || v === '' ? true : v === true || v === 'true';
+    }
+
+    /** 'Publish verified detections' (Detection group, default on). */
+    get publishVerified(): boolean {
+        const v = (this.storageSettings.values as any).publishVerified;
         return v === undefined || v === null || v === '' ? true : v === true || v === 'true';
     }
 
@@ -323,7 +336,9 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         const thisMarker = `${MARKER}:${this.id}`;
         if (interfaces.some(i => i.startsWith(MARKER) && i !== thisMarker))
             return;
-        return [ScryptedInterface.MotionSensor, ScryptedInterface.Settings, thisMarker];
+        // ObjectDetector only where the camera has one: owning it hides the camera's raw events from other listeners,
+        // the mixin re-publishes them (or the verified classes) itself
+        return [ScryptedInterface.MotionSensor, ScryptedInterface.Settings, ...(interfaces.includes(ScryptedInterface.ObjectDetector) ? [ScryptedInterface.ObjectDetector] : []), thisMarker];
     }
 
     async getMixin(mixinDevice: any, mixinDeviceInterfaces: ScryptedInterface[], mixinDeviceState: WritableDeviceState): Promise<any> {

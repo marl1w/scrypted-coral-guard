@@ -2,7 +2,7 @@
 // lets the pure Episode state machine decide what to publish. All network I/O is async and
 // bounded by AbortController timeouts in client.ts; nothing here ever blocks the plugin.
 
-import sdk, { EventListenerRegister, MotionSensor, ScryptedInterface, Setting, SettingValue, VideoCamera } from '@scrypted/sdk';
+import sdk, { EventListenerRegister, MediaObject, MotionSensor, ObjectDetectionTypes, ObjectDetector, ObjectsDetected, ScryptedInterface, Setting, SettingValue, VideoCamera } from '@scrypted/sdk';
 import { SettingsMixinDeviceBase, SettingsMixinDeviceOptions } from '@scrypted/sdk/settings-mixin';
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
 import { randomUUID } from 'crypto';
@@ -43,8 +43,10 @@ const AI_CLAIM_WAIT_MS = 1500;
 const STREAM_DEFAULT_LABEL = 'Default (already open stream)';
 /** a chosen (non-default) stream must deliver its first JPEG within this long, else the default stream is used. */
 const STREAM_FIRST_FRAME_MS = 25000;
+/** the one mapping table: verified group -> class name published on the camera's ObjectDetector (the camera's own names win, see publishClass). */
+export const PUBLISH_CLASS: Record<Group, string> = { person: 'people', vehicle: 'vehicle', animal: 'dog_cat' };
 
-export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSensor> implements MotionSensor {
+export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSensor> implements MotionSensor, ObjectDetector {
     storageSettings = new StorageSettings(this, {
         mode: {
             title: 'Mode',
@@ -168,6 +170,11 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** the camera has no MotionSensor of its own: motion comes only from Coral Guard */
     readonly sensorless: boolean;
     private readonly ifaces: string[] | undefined;
+    /** the camera's own ObjectDetector class names (getObjectTypes), once known. */
+    private cameraClasses: string[] | undefined;
+    /** verified groups already announced in the current confirmation, and when the last verified event went out. */
+    private emittedGroups: string[] = [];
+    private lastDetectionAt = 0;
 
     constructor(options: SettingsMixinDeviceOptions<VideoCamera & MotionSensor>, private plugin: GuardProvider) {
         super(options);
@@ -191,7 +198,15 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             try { this.motionDetected = false; } catch (e) { /* ignore */ }
         }
         // the camera's own AI class (e.g. people / vehicle / dog_cat / package), when the device reports one
-        this.claimListener = device.listen({ event: ScryptedInterface.ObjectDetector, mixinId: this.id }, (_s, _d, data) => this.onObjectsDetected(data));
+        // (mixinId: the layer below this mixin, so these are the camera's raw events, never our own re-published ones)
+        this.claimListener = device.listen({ event: ScryptedInterface.ObjectDetector, mixinId: this.id }, (_s, _d, data) => {
+            this.forwardRaw(data);
+            this.onObjectsDetected(data);
+        });
+        if (this.ownsDetector)
+            Promise.resolve().then(() => (this.mixinDevice as any)?.getObjectTypes?.()).then((t: ObjectDetectionTypes | undefined) => {
+                if (Array.isArray(t?.classes)) this.cameraClasses = t!.classes!.map(c => String(c));
+            }, () => { /* keep the default names */ });
         this.tickTimer = setInterval(() => this.onTick(), 1000);
         plugin.register(this);
         this.syncSource(false);
@@ -486,7 +501,84 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             });
         }
         this.syncSource(fx.scanning);
+        this.verifiedDetections(false);
         this.refreshStatus();
+    }
+
+    // ---- ObjectDetector: verified classes for external consumers ----
+
+    /** the mixin claims ObjectDetector only when the camera has one (see canMixin). */
+    private get ownsDetector(): boolean {
+        return Array.isArray(this.ifaces) && this.ifaces.includes(ScryptedInterface.ObjectDetector);
+    }
+
+    /** verified detections replace the camera's raw ones: Gate mode, publishing on, not disabled, service up. */
+    private get publishingVerified(): boolean {
+        return this.ownsDetector && this.plugin.publishVerified !== false && this.mode === 'gate'
+            && !this.plugin.config.killSwitch && !this.episode.degraded && !this.released;
+    }
+
+    /** class name published for a verified group: the camera's own name for it when it lists one, else the table's. */
+    publishClass(g: Group): string {
+        const def = PUBLISH_CLASS[g];
+        const cam = this.cameraClasses;
+        if (!cam || cam.includes(def)) return def;
+        return cam.find(c => claimGroup(c.toLowerCase()) === g) ?? def;
+    }
+
+    private emitDetections(data: ObjectsDetected) {
+        sdk.deviceManager.onMixinEvent(this.id, this, ScryptedInterface.ObjectDetector, data)?.catch?.(() => { /* best effort */ });
+    }
+
+    /**
+     * The camera's raw ObjectDetector event, re-published unchanged whenever Coral Guard does not publish verified
+     * ones (Off, Shadow, kill switch, service down, setting off). In verified mode only classes the service cannot
+     * verify (e.g. package) still pass through; person/vehicle/animal come only from confirmations.
+     */
+    private forwardRaw(data: any) {
+        if (this.released || !this.ownsDetector || !data)
+            return;
+        if (!this.publishingVerified) {
+            this.emitDetections(data);
+            return;
+        }
+        const keep = (data.detections || []).filter((d: any) => {
+            const c = String(d?.className || '').toLowerCase();
+            return c && c !== 'motion' && !claimGroup(c);
+        });
+        if (keep.length)
+            this.emitDetections({ ...data, detections: keep });
+    }
+
+    /** confirm transition (new group): one event at once; held: repeat every DEFAULTS.detectionRepeatMs (pulse-style consumers keep seeing it); nothing otherwise. */
+    private verifiedDetections(tick: boolean) {
+        const cg = this.publishingVerified ? (this.episode.confirmedGroups ?? []).filter((g): g is Group => g in PUBLISH_CLASS) : [];
+        if (!cg.length) {
+            this.emittedGroups = [];
+            return;
+        }
+        const now = monoNow();
+        const fresh = cg.some(g => !this.emittedGroups.includes(g));
+        if (!fresh && !(tick && now - this.lastDetectionAt >= DEFAULTS.detectionRepeatMs))
+            return;
+        this.emittedGroups = cg;
+        this.lastDetectionAt = now;
+        this.emitDetections({
+            detections: cg.map(g => ({ className: this.publishClass(g), score: 1 })),
+            timestamp: Date.now(),
+            sourceId: this.plugin.id ?? 'coral-guard',
+        });
+    }
+
+    async getObjectTypes(): Promise<ObjectDetectionTypes> {
+        if (!this.publishingVerified)
+            return (this.mixinDevice as any).getObjectTypes();
+        const other = (this.cameraClasses ?? []).filter(c => !claimGroup(c.toLowerCase()) && c.toLowerCase() !== 'motion');
+        return { classes: [...this.detectGroups().map(g => this.publishClass(g)), ...other] };
+    }
+
+    async getDetectionInput(detectionId: string, eventId?: any): Promise<MediaObject> {
+        return (this.mixinDevice as any).getDetectionInput(detectionId, eventId);
     }
 
     private feedEpisode(e: EpisodeSummary, unflagged = false) {
@@ -592,6 +684,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (this.episode.synthetic && (now - this.lastGateOpenAt >= SYNTH_QUIET_MS || now - this.synthStartedAt >= SYNTH_MAX_MS))
             this.apply(this.episode.synthEnd(now));
         this.apply(this.episode.tick(now));
+        this.verifiedDetections(true);
     }
 
     // ---- frame source ----------------------------------------------------------------------

@@ -4,6 +4,10 @@
 import Module = require('module');
 
 export interface Ctl {
+    /** ObjectDetector events the mixin published */
+    detections: any[];
+    /** the camera's getObjectTypes classes (undefined: a default list) */
+    cameraClasses: string[] | undefined;
     starts: { o: any; stopped: boolean; exit: (e?: string) => void }[];
     listeners: number;
     removed: number;
@@ -17,20 +21,20 @@ export interface Ctl {
     pre: Record<string, string | number>;
 }
 
-export const ctl: Ctl = { starts: [], listeners: 0, removed: 0, logs: [], writes: [], state: { motionDetected: false }, persistWrites: true, hangStart: false, pre: {} };
+export const ctl: Ctl = { detections: [], cameraClasses: undefined, starts: [], listeners: 0, removed: 0, logs: [], writes: [], state: { motionDetected: false }, persistWrites: true, hangStart: false, pre: {} };
 let listenCb: (s: any, d: any, v: boolean) => void = () => { };
 let claimCb: (s: any, d: any, v: any) => void = () => { };
 
 export const sdkStub: any = {
     systemManager: { getDeviceById: () => ({ listen: (o: any, cb: any) => { ctl.listeners++; if (o?.event === 'ObjectDetector') claimCb = cb; else listenCb = cb; return { removeListener: () => { ctl.removed++; } }; } }) },
-    deviceManager: { onMixinEvent: () => { (ctl as any).notified = ((ctl as any).notified || 0) + 1; return Promise.resolve(); } },
+    deviceManager: { onMixinEvent: (_id: any, _m: any, iface: string, data: any) => { if (iface === 'ObjectDetector') { (ctl as any).detections.push(data); return Promise.resolve(); } (ctl as any).notified = ((ctl as any).notified || 0) + 1; return Promise.resolve(); } },
     mediaManager: {},
 };
 
 class Base {
     id = 'cam1';
     name = 'Cam 1';
-    mixinDevice = { get motionDetected() { return ctl.state.motionDetected; } };
+    mixinDevice = { get motionDetected() { return ctl.state.motionDetected; }, getObjectTypes: async () => ({ classes: ctl.cameraClasses ?? ['people', 'vehicle', 'dog_cat', 'package'] }), getDetectionInput: async () => undefined };
     console = {
         log: (...a: any[]) => ctl.logs.push(['log', a.join(' ')]),
         warn: (...a: any[]) => ctl.logs.push(['warn', a.join(' ')]),
@@ -132,7 +136,7 @@ const PRISTINE = JSON.parse(JSON.stringify(DEFAULTS));
 export function make(opts: { settings?: Record<string, any>; initial?: boolean; hangStart?: boolean; client?: any; persistWrites?: boolean; holdReset?: boolean; dup?: string; sensorless?: boolean; interfaces?: string[] } = {}) {
     hook(true);
     (ctl as any).notified = 0;
-    ctl.starts = []; ctl.listeners = 0; ctl.removed = 0; ctl.logs = []; ctl.writes = [];
+    ctl.starts = []; ctl.listeners = 0; ctl.removed = 0; ctl.logs = []; ctl.writes = []; (ctl as any).detections = [];
     ctl.state.motionDetected = !!opts.initial; ctl.hangStart = !!opts.hangStart; ctl.persistWrites = opts.persistWrites !== false;
     const calls = { frame: [] as { a: any[]; d: ReturnType<typeof deferred> }[], reset: [] as { a: any[]; d: ReturnType<typeof deferred> }[], check: 0, episodes: [] as any[] };
     const client = opts.client || {
@@ -153,7 +157,7 @@ export function make(opts: { settings?: Record<string, any>; initial?: boolean; 
     const { GuardMixin } = require('../src/mixin') as typeof import('../src/mixin');
     const mixin = new GuardMixin({ mixinDevice: {}, ...(opts.sensorless ? { mixinDeviceInterfaces: ['VideoCamera', 'Camera'] } : opts.interfaces ? { mixinDeviceInterfaces: opts.interfaces } : {}) } as any, plugin);
     made.push(mixin);
-    return { mixin, plugin, calls, dups, raw: (v: boolean) => listenCb(null, null, v), claim: (...classes: string[]) => claimCb(null, null, { detections: classes.map(className => ({ className, score: 1 })) }), ctl };
+    return { mixin, plugin, calls, dups, raw: (v: boolean) => listenCb(null, null, v), claimRaw: (data: any) => claimCb(null, null, data), claim: (...classes: string[]) => claimCb(null, null, { detections: classes.map(className => ({ className, score: 1 })) }), ctl };
 }
 
 export function loadFrames() {

@@ -50,6 +50,8 @@ export const DEFAULTS = {
     gatePostMinMs: 1000,
     /** log/count one 'person seen but camera did not trigger' per camera per this many ms. */
     unflaggedEveryMs: 60000,
+    /** verified ObjectDetector event repeated this often while a confirmed group is held, ms. */
+    detectionRepeatMs: 10000,
     /** tracker overrides posted to the service; empty object = service defaults, nothing is posted. */
     tracker: {} as { start_thr?: number; cont_thr?: number; hold_s?: number },
 };
