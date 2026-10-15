@@ -133,3 +133,8 @@ Promotion (0.3.6): the reduction is decided AFTER the base pass, from the camera
 ## 0.3.7 notes
 
 Stale episodes: an ongoing episode is closed as `stale` when the CLIENT has not sent `start` / `update` for 2 h. Linked frames no longer count as activity (a camera streams forever; the 0.3.6 behaviour kept episodes alive for as long as frames arrived). A confirmed stale episode is kept (closed, outcome `stale`), an unconfirmed `unflagged` one is removed. The maintenance runs on the journal worker at least every 5 minutes with or without traffic (`defaults.JOURNAL["maintain_idle_s"]`), and stale episodes never count against the ongoing caps (64 in total, 8 per camera): they are closed before the cap is checked.
+
+## 0.3.9 notes
+
+- Person/animal overlap: after the merge and the second look, an animal-group detection whose box has IoU >= 0.8 (`defaults.PERSON_ANIMAL_OVERLAP`) with a person box is the same object (a partly hidden person scored as both). The person detection's score becomes max(person, animal) for the person tracker and in the reply, marked `"boosted_by": "<animal cls>"` with `"first_score"` (its own score, unless a second look already set it); the animal detection stays in the reply marked `"same_object": "person"` and is kept out of the animal tracker for that frame. An animal box overlapping no person box is unchanged; a lone animal box never creates a person.
+- Plugin: per-camera "Animal start threshold" / "Animal keep threshold" (empty = the plugin-wide Animal confirm / Animal detect) are sent as `animal_start_thr` / `animal_cont_thr` in the camera's config; values outside 0.05 <= keep <= start <= 0.95 are ignored with a warning.

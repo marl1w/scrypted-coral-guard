@@ -47,3 +47,19 @@ export function resolveThresholds(raw: Partial<Record<keyof Thresholds, unknown>
 export function serviceThresholds(t: Thresholds) {
     return { start_thr: t.personConfirm, cont_thr: t.personKeep, vehicle_thr: t.vehicleDetect, animal_start_thr: t.animalConfirm, animal_cont_thr: t.animalDetect };
 }
+
+/**
+ * Per-camera animal overrides (camera settings 'Animal start threshold' / 'Animal keep threshold'; empty = the
+ * plugin-wide value). Each must be a number with 0.05 <= keep <= start <= 0.95 (an empty one takes the plugin-wide
+ * value before the check); otherwise both overrides are ignored and `invalid` says why.
+ */
+export function applyAnimalOverride(t: Thresholds, start: unknown, keep: unknown): { t: Thresholds; invalid?: string } {
+    const blank = (v: unknown) => v === undefined || v === null || String(v).trim() === '';
+    if (blank(start) && blank(keep))
+        return { t };
+    const s = blank(start) ? t.animalConfirm : Number(start);
+    const k = blank(keep) ? t.animalDetect : Number(keep);
+    if (!Number.isFinite(s) || !Number.isFinite(k) || k < 0.05 || s > 0.95 || k > s)
+        return { t, invalid: `animal start ${start ?? ''} / keep ${keep ?? ''}: need 0.05 <= keep <= start <= 0.95` };
+    return { t: { ...t, animalConfirm: s, animalDetect: k } };
+}

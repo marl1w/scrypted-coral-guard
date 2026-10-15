@@ -399,7 +399,7 @@ test('Hardware decode: a hwaccel failure restarts once in software and stays in 
 test('settings: Refresh and Status on top, then Mode with a short description (no repeated summary)', async () => {
     const h = make({ settings: { mode: 'Gate' } });
     const st = await h.mixin.getMixinSettings();
-    assert.deepEqual(st.map(x => x.key), ['refresh', 'status', 'mode', 'detect', 'stream', 'zoomOut', 'zoneNames']);
+    assert.deepEqual(st.map(x => x.key), ['refresh', 'status', 'mode', 'detect', 'stream', 'zoomOut', 'animalStart', 'animalKeep', 'zoneNames']);
     assert.equal(st[1].type, 'html');
     assert.equal(st[1].readonly, true);
     assert.ok(!st.some(x => x.group), 'one group only (the mixin default)');
@@ -1082,6 +1082,46 @@ test('thresholds are posted to the service at start; an old service rejecting th
     await h.mixin.release();
 });
 
+test('per-camera animal thresholds: empty = plugin-wide, valid overrides are posted, invalid ones are ignored with a warning', async () => {
+    const posted: any[] = [];
+    const h = make({ settings: { mode: 'Shadow' }, client: {
+        frame: async () => null, reset: async () => ({}), health: async () => ({ ok: true }), check: async () => ({ ok: true }),
+        config: async (_id: string, cfg: any) => { posted.push(cfg); return {}; },
+    } });
+    await eventually(() => posted.length === 1);
+    assert.equal(posted[0].animal_start_thr, 0.6); assert.equal(posted[0].animal_cont_thr, 0.3);
+    const st = await h.mixin.getMixinSettings();
+    assert.ok(st.some(x => x.key === 'animalStart' && x.title === 'Animal start threshold'));
+    assert.ok(st.some(x => x.key === 'animalKeep' && x.title === 'Animal keep threshold'));
+    await h.mixin.putMixinSetting('animalStart', '0.35');
+    await eventually(() => posted.length === 2);
+    assert.equal(posted[1].animal_start_thr, 0.35); assert.equal(posted[1].animal_cont_thr, 0.3);
+    assert.equal(posted[1].start_thr, 0.65);
+    await h.mixin.putMixinSetting('animalKeep', '0.25');
+    await eventually(() => posted.length === 3);
+    assert.equal(posted[2].animal_start_thr, 0.35); assert.equal(posted[2].animal_cont_thr, 0.25);
+    await h.mixin.putMixinSetting('animalKeep', '0.5'); // keep > start: both overrides ignored
+    await eventually(() => posted.length === 4);
+    assert.equal(posted[3].animal_start_thr, 0.6); assert.equal(posted[3].animal_cont_thr, 0.3);
+    assert.ok(ctl.logs.some(l => /need 0.05 <= keep <= start <= 0.95/.test(String(l[1]))));
+    await h.mixin.putMixinSetting('animalKeep', '');
+    await h.mixin.putMixinSetting('animalStart', '');
+    await eventually(() => posted.length === 6);
+    assert.equal(posted[5].animal_start_thr, 0.6); assert.equal(posted[5].animal_cont_thr, 0.3);
+    await h.mixin.release();
+});
+
+test('applyAnimalOverride: bounds 0.05 <= keep <= start <= 0.95', () => {
+    const { applyAnimalOverride, DEFAULT_THRESHOLDS: D } = require('../src/thresholds') as typeof import('../src/thresholds');
+    assert.equal(applyAnimalOverride(D, '', undefined).t, D);
+    assert.equal(applyAnimalOverride(D, '0.4', '').t.animalConfirm, 0.4);
+    assert.ok(applyAnimalOverride(D, '0.96', '0.3').invalid);
+    assert.ok(applyAnimalOverride(D, '0.4', '0.04').invalid);
+    assert.ok(applyAnimalOverride(D, '0.2', '').invalid, 'start below the plugin-wide keep 0.3');
+    assert.ok(applyAnimalOverride(D, 'x', '').invalid);
+    assert.deepEqual(applyAnimalOverride(D, '0.05', '0.05').t.animalDetect, 0.05);
+});
+
 // ---- sensorless cameras (no MotionSensor of their own) ------------------------------------------
 
 test('sensorless: no motion listener, false written once at start, panel and overview say so; normal cameras write nothing at start', async () => {
@@ -1208,7 +1248,7 @@ test('camera settings tabs: Overview (Status only) first, then Setup (Mode, Dete
     assert.deepEqual([...new Set(st.map(x => x.subgroup))], ['Overview', 'Setup', 'Zones'], 'exactly three tabs');
     assert.equal(st.find(x => x.key === 'zone:Street')!.title, 'Edit zone: Street');
     assert.deepEqual(st.map(x => [x.key, x.subgroup]), [
-        ['refresh', 'Overview'], ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'],
+        ['refresh', 'Overview'], ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'], ['animalStart', 'Setup'], ['animalKeep', 'Setup'],
         ['zoneNames', 'Zones'], ['zone:Street', 'Zones'],
     ]);
     await h.mixin.release();

@@ -12,7 +12,7 @@ import { CameraStatus, StatusState } from './status';
 import { backoffMs, Effects, Episode, Group, vehicleView, VEHICLE_HOLD_WINDOW_MS, EpisodeConfig, EpisodeSummary, formatSummary, Mode } from './episode';
 import { isMasked, maskReply, parseZones, Zone } from './zones';
 import type { NowInfo, NowReason, TrackedItem } from './status';
-import { DEFAULT_THRESHOLDS, serviceThresholds, Thresholds } from './thresholds';
+import { applyAnimalOverride, DEFAULT_THRESHOLDS, serviceThresholds, Thresholds } from './thresholds';
 import { fetchSnapshot, FastPathTimer, SNAP_MAX_FAILS } from './fastpath';
 import { FrameStream, HW_FAILED_PREFIX, PROBE_FAILED_PREFIX, startFrames, streamLabels, vaapiAvailable } from './frames';
 import { FrameClock } from './preroll';
@@ -70,6 +70,18 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             description: 'Extra pass for large or close subjects.',
             choices: ZOOM_LABELS.map(z => z[0]),
             defaultValue: '0',
+        },
+        animalStart: {
+            title: 'Animal start threshold',
+            description: 'Score that confirms an animal on this camera (0.05-0.95). Empty = the plugin-wide Animal confirm.',
+            type: 'string',
+            placeholder: 'plugin default',
+        },
+        animalKeep: {
+            title: 'Animal keep threshold',
+            description: 'Score that keeps tracking an animal on this camera (0.05-0.95, at most the start threshold). Empty = the plugin-wide Animal detect.',
+            type: 'string',
+            placeholder: 'plugin default',
         },
     });
     /** label -> stream id of the last rendered Stream choices */
@@ -232,8 +244,15 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         };
     }
 
+    private animalWarned = '';
+    /** plugin-wide thresholds with this camera's animal overrides applied (invalid overrides are ignored, warned once). */
     private get thresholds(): Thresholds {
-        return this.plugin.thresholds ?? DEFAULT_THRESHOLDS;
+        const v = this.storageSettings.values;
+        const r = applyAnimalOverride(this.plugin.thresholds ?? DEFAULT_THRESHOLDS, v.animalStart, v.animalKeep);
+        if (r.invalid && r.invalid !== this.animalWarned)
+            this.console.warn(`${r.invalid}; using the plugin-wide animal thresholds`);
+        this.animalWarned = r.invalid ?? '';
+        return r.t;
     }
 
     private viewThresholds() {

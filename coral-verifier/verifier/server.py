@@ -31,7 +31,7 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.3.8"
+FALLBACK_VERSION = "0.3.9"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
@@ -459,6 +459,7 @@ class Handler(BaseHTTPRequestHandler):
             return out, info
 
         def finish(dets, st):
+            dets = S.person_animal_overlap(dets)                                                        # one object scored as person and animal: boost the person
             live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected"]      # rejected: never; doubtful person/animal: score capped
             sn = app.registry.update(cam, t, live, time.monotonic())
             try:

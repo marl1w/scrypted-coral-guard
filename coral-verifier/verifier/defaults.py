@@ -106,6 +106,10 @@ SECOND_LOOK = {"max": 2, "confirm_min": {"person": 0.40, "animal": 0.40}, "rejec
 # score is below the vehicle threshold. They never reach the vehicle tracker or any session state.
 WEAK_VEHICLE_THR = 0.25
 WEAK_VEHICLE_CLASSES = ("car", "motorcycle", "bus", "truck")
+# Person/animal overlap: an animal-group box with IoU >= this against a person box is the SAME object (a partly hidden person scored as both);
+# the person detection takes max(person, animal) for the person tracker ("boosted_by" = the animal class, "first_score" = its own score) and the
+# animal box is marked "same_object" and kept out of the animal tracker. A lone animal box never creates a person.
+PERSON_ANIMAL_OVERLAP = 0.8
 ANIMAL = {"start_thr": TRACKER["animal_start_thr"], "cont_thr": TRACKER["animal_cont_thr"], "confirm_n": 2, "confirm_m": 3, "hold_s": 6.0, "still_hold_s": 6.0}
 
 

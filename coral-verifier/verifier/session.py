@@ -15,7 +15,7 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 """
 import math, re, threading
 
-from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU
+from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -407,6 +407,31 @@ class AnimalTracker:
                 "tracks": [{"id": tr.id, "cls": tr.cls, "since_ms": int(tr.born_t), "last_seen_ms": int(tr.last), "box": [round(v, 4) for v in tr.box]} for tr in live]}
 
 
+def person_animal_overlap(detections, thr=PERSON_ANIMAL_OVERLAP):
+    """Same object scored as person AND animal (IoU >= thr): the person takes max(person, animal) and is marked `boosted_by` (the animal class)
+    with `first_score` (its own score, unless a second look already set it); the animal box is marked `same_object` = "person" and the animal
+    tracker skips it. Returns a new list (new dicts only where changed); idempotent. An animal box overlapping no person changes nothing."""
+    out = list(detections)
+    persons = [i for i, d in enumerate(out) if d["cls"] == "person"]
+    if not persons:
+        return out
+    for j, a in enumerate(detections):
+        if a["cls"] not in ANIMALS or a.get("same_object"):
+            continue
+        best, bi = 0.0, None
+        for i in persons:
+            v = iou(out[i]["box"], a["box"])
+            if v > best:
+                best, bi = v, i
+        if bi is None or best < thr:
+            continue
+        p = out[bi]
+        if float(a["score"]) > float(p["score"]) and not p.get("boosted_by"):
+            out[bi] = {**p, "score": float(a["score"]), "boosted_by": a["cls"], "first_score": p.get("first_score", p["score"])}
+        out[j] = {**a, "same_object": "person"}
+    return out
+
+
 class Session:
     def __init__(self, cfg, wall_now=0.0):
         self.cfg = cfg
@@ -431,9 +456,10 @@ class Session:
         self.last_t = t
         if wall_now is not None:
             self.wall = wall_now
+        detections = person_animal_overlap(detections)
         pdets = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person"]
         vdets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in VEHICLES and not d.get("weak") and d["score"] >= (DETECT_THR["vehicle"][d["cls"]] if d["cls"] == "bicycle" else self.cfg.vehicle_thr)]
-        adets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in ANIMALS and d["score"] >= self.cfg.animal_cont_thr]
+        adets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in ANIMALS and not d.get("same_object") and d["score"] >= self.cfg.animal_cont_thr]
         pdets = sorted(pdets, key=lambda d: -d[0])[:MAX_TRACK_DETS]          # bound the O(n*m) matching on pathological frames
         vdets = sorted(vdets, key=lambda d: -d[1])[:MAX_TRACK_DETS]
         adets = sorted(adets, key=lambda d: -d[1])[:MAX_TRACK_DETS]

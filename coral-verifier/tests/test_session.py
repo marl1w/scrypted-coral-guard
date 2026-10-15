@@ -335,3 +335,53 @@ def test_snapshot_track_details_and_hold_until():
     an = a.snapshot()["animal"]
     assert an["present"] and an["hold_until_ms"] == T0 + 2000 + 6000
     assert an["tracks"][0]["last_seen_ms"] == T0 + 2000 and an["tracks"][0]["box"] == [0.1, 0.5, 0.3, 0.8]
+
+
+# ---- person/animal overlap (0.3.9): one partly hidden person scored as both dog and person ----
+
+LAUNDRY_P = [0.40, 0.30, 0.55, 0.85]
+LAUNDRY_D = [0.401, 0.302, 0.551, 0.848]      # IoU ~0.97 with LAUNDRY_P
+
+
+def dog(score, box):
+    return {"cls": "dog", "group": "animal", "score": score, "box": list(box)}
+
+
+def test_overlap_laundry_case_confirms_the_person_and_no_animal():
+    # the dog score hovers around the start threshold (0.59 in the labelled frame), the person score stays below it
+    frames = [[dog(ds, LAUNDRY_D), person(ps, LAUNDRY_P)] for ds, ps in ((0.62, 0.54), (0.59, 0.55), (0.64, 0.52))]
+    assert S.iou(LAUNDRY_P, LAUNDRY_D) > 0.95
+    off = S.Session(S.Config().updated({"start_thr": 0.6}))
+    saved, S.person_animal_overlap = S.person_animal_overlap, lambda d, thr=None: list(d)   # rule off: the person never reaches 0.6
+    try:
+        sn_off = run(off, frames)
+    finally:
+        S.person_animal_overlap = saved
+    assert not any(s["person"]["present"] for s in sn_off)
+    sn = run(S.Session(S.Config().updated({"start_thr": 0.6})), frames)
+    assert sn[-1]["person"]["present"]
+    assert not any(s["animal"]["present"] for s in sn), "the dog box is the same object: not an animal"
+
+
+def test_overlap_marks_person_and_animal():
+    out = S.person_animal_overlap([person(0.54, LAUNDRY_P), dog(0.59, LAUNDRY_D)])
+    assert out[0]["score"] == 0.59 and out[0]["boosted_by"] == "dog" and out[0]["first_score"] == 0.54
+    assert out[1]["same_object"] == "person" and out[1]["score"] == 0.59
+    assert S.person_animal_overlap(out) == out, "idempotent"
+    hi = S.person_animal_overlap([person(0.8, LAUNDRY_P), dog(0.59, LAUNDRY_D)])
+    assert hi[0]["score"] == 0.8 and "boosted_by" not in hi[0] and hi[1]["same_object"] == "person"
+
+
+def test_overlap_lone_dog_unchanged():
+    dets = [dog(0.8, [0.1, 0.5, 0.3, 0.8])]
+    assert S.person_animal_overlap(dets) == dets
+    sn = run(new(), [dets] * 3)
+    assert sn[-1]["animal"]["present"] and sn[-1]["person"]["state"] == "idle"
+
+
+def test_overlap_low_iou_pair_unchanged():
+    p, d = person(0.54, [0.40, 0.30, 0.55, 0.85]), dog(0.8, [0.45, 0.50, 0.60, 0.90])
+    assert S.iou(p["box"], d["box"]) < 0.8
+    assert S.person_animal_overlap([p, d]) == [p, d]
+    sn = run(S.Session(S.Config().updated({"start_thr": 0.6})), [[p, d]] * 3)
+    assert not sn[-1]["person"]["present"] and sn[-1]["animal"]["present"]
