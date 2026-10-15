@@ -34,24 +34,24 @@ test('detections: confirm emits one verified event with the mapped class', async
     await sleep(50);
     const v = verified();
     assert.equal(v.length, 1);
-    assert.deepEqual(v[0].detections, [{ className: 'people', score: 1 }]);
+    assert.deepEqual(v[0].detections, [{ className: 'verified_person', score: 1 }]);
     assert.ok(Math.abs(v[0].timestamp - Date.now()) < 5000);
 });
 
-test('detections: the camera\'s own class name is preferred when it lists a different one', async () => {
+test('detections: verified classes have their own names, whatever the camera calls its classes', async () => {
     ctl.cameraClasses = ['person', 'car'];
     const h = gate();
     await sleep(10);
-    assert.equal(h.mixin.publishClass('person'), 'person');
-    assert.equal(h.mixin.publishClass('vehicle'), 'car');
-    assert.equal(h.mixin.publishClass('animal'), 'dog_cat');
+    assert.equal(h.mixin.publishClass('person'), 'verified_person');
+    assert.equal(h.mixin.publishClass('vehicle'), 'verified_vehicle');
+    assert.equal(h.mixin.publishClass('animal'), 'verified_animal');
 });
 
 test('detections: held confirmation repeats at the configured interval', async () => {
     const h = gate({ detectionRepeatMs: 900 });
     await confirm(h);
     await eventually(() => verified().length >= 2, 4000, 'repeat while held');
-    assert.ok(verified().every(d => d.detections[0].className === 'people'));
+    assert.ok(verified().every(d => d.detections[0].className === 'verified_person'));
 });
 
 test('detections: a vetoed episode emits nothing', async () => {
@@ -70,23 +70,24 @@ test('detections: a vetoed episode emits nothing', async () => {
     assert.equal(verified().length, 0);
 });
 
-test('detections: raw camera AI events are suppressed in Gate but still reach the trigger logic', async () => {
+test('detections: raw camera AI events are never re-published (Scrypted delivers them) but reach the trigger logic', async () => {
     const h = gate();
     await sleep(10);
     h.claimRaw({ detections: [{ className: 'people', score: 0.9 }], timestamp: 1 });
-    assert.equal(ctl.detections.length, 0, 'raw person class not re-published');
-    assert.equal((h.mixin as any).claimEvents.length, 1, 'the claim reached onObjectsDetected');
-    h.claimRaw({ detections: [{ className: 'package', score: 0.9 }, { className: 'people', score: 0.9 }], timestamp: 2 });
-    assert.deepEqual(ctl.detections.map(d => d.detections.map((x: any) => x.className)), [['package']], 'unverifiable classes pass through');
-    assert.deepEqual(await h.mixin.getObjectTypes(), { classes: ['people', 'vehicle', 'dog_cat', 'package'] });
+    h.claimRaw({ detections: [{ className: 'package', score: 0.9 }], timestamp: 2 });
+    assert.equal(ctl.detections.length, 0, 'nothing re-published');
+    assert.equal((h.mixin as any).claimEvents.length, 2, 'the claims reached onObjectsDetected');
+    const types = await h.mixin.getObjectTypes();
+    for (const c of ['verified_person', 'verified_vehicle', 'verified_animal'])
+        assert.ok(types.classes!.includes(c), `${c} listed`);
 });
 
-test('detections: Shadow emits no verified events and passes raw ones through', async () => {
+test('detections: Shadow emits no verified events and re-publishes nothing', async () => {
     const h = make({ settings: { mode: 'Shadow' }, interfaces: AI });
     h.plugin.id = 'prov-test';
     const raw = { detections: [{ className: 'people', score: 0.9 }], timestamp: 1 };
     h.claimRaw(raw);
-    assert.deepEqual(ctl.detections, [raw]);
+    assert.deepEqual(ctl.detections, []);
     h.raw(true);
     await eventually(() => ctl.starts.length === 1);
     frame(ctl.starts[0]);
@@ -96,16 +97,16 @@ test('detections: Shadow emits no verified events and passes raw ones through', 
     assert.equal(verified().length, 0);
 });
 
-test('detections: Off passes raw events through untouched, setting off too', async () => {
+test('detections: Off and the setting off publish nothing of their own', async () => {
     const h = make({ settings: { mode: 'Off' }, interfaces: AI });
     const raw = { detections: [{ className: 'vehicle', score: 0.7 }], timestamp: 3 };
     h.claimRaw(raw);
-    assert.equal(ctl.detections[0], raw);
+    assert.equal(ctl.detections.length, 0);
     await h.mixin.release();
     const g = gate();
     g.plugin.publishVerified = false;
     g.claimRaw(raw);
-    assert.equal(ctl.detections[0], raw);
+    assert.equal(ctl.detections.length, 0);
     await confirm(g);
     await sleep(50);
     assert.equal(verified().length, 0);

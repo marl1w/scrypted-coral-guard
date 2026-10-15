@@ -90,7 +90,7 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         publishVerified: {
             group: 'Detection',
             title: 'Publish verified detections',
-            description: "Gate mode: the camera's ObjectDetector events carry Coral-verified person/vehicle/animal classes instead of the camera's raw AI classes. Off: raw events pass through.",
+            description: "Gate mode: publish Coral-verified detections on the camera's ObjectDetector as verified_person / verified_vehicle / verified_animal, next to the camera's own AI classes (Scrypted does not let a mixin hide those). Off: nothing is published.",
             type: 'boolean',
             defaultValue: true,
         },

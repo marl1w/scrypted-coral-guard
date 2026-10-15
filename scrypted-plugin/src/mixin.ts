@@ -43,8 +43,12 @@ const AI_CLAIM_WAIT_MS = 1500;
 const STREAM_DEFAULT_LABEL = 'Default (already open stream)';
 /** a chosen (non-default) stream must deliver its first JPEG within this long, else the default stream is used. */
 const STREAM_FIRST_FRAME_MS = 25000;
-/** the one mapping table: verified group -> class name published on the camera's ObjectDetector (the camera's own names win, see publishClass). */
-export const PUBLISH_CLASS: Record<Group, string> = { person: 'people', vehicle: 'vehicle', animal: 'dog_cat' };
+/**
+ * Class names of the verified detections published on the camera's ObjectDetector. Distinct from any camera AI name on
+ * purpose: Scrypted does not let a mixin mask the camera's own ObjectDetector events (the server disables masking of
+ * property-less events), so consumers always receive both and tell them apart by name.
+ */
+export const PUBLISH_CLASS: Record<Group, string> = { person: 'verified_person', vehicle: 'verified_vehicle', animal: 'verified_animal' };
 
 export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSensor> implements MotionSensor, ObjectDetector {
     storageSettings = new StorageSettings(this, {
@@ -198,9 +202,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             try { this.motionDetected = false; } catch (e) { /* ignore */ }
         }
         // the camera's own AI class (e.g. people / vehicle / dog_cat / package), when the device reports one
-        // (mixinId: the layer below this mixin, so these are the camera's raw events, never our own re-published ones)
+        // (mixinId: the layer below this mixin, so these are the camera's raw events, never our own verified ones)
         this.claimListener = device.listen({ event: ScryptedInterface.ObjectDetector, mixinId: this.id }, (_s, _d, data) => {
-            this.forwardRaw(data);
             this.onObjectsDetected(data);
         });
         if (this.ownsDetector)
@@ -512,42 +515,19 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         return Array.isArray(this.ifaces) && this.ifaces.includes(ScryptedInterface.ObjectDetector);
     }
 
-    /** verified detections replace the camera's raw ones: Gate mode, publishing on, not disabled, service up. */
+    /** verified detections are published next to the camera's raw ones: Gate mode, publishing on, not disabled, service up. */
     private get publishingVerified(): boolean {
         return this.ownsDetector && this.plugin.publishVerified !== false && this.mode === 'gate'
             && !this.plugin.config.killSwitch && !this.episode.degraded && !this.released;
     }
 
-    /** class name published for a verified group: the camera's own name for it when it lists one, else the table's. */
+    /** class name published for a verified group. */
     publishClass(g: Group): string {
-        const def = PUBLISH_CLASS[g];
-        const cam = this.cameraClasses;
-        if (!cam || cam.includes(def)) return def;
-        return cam.find(c => claimGroup(c.toLowerCase()) === g) ?? def;
+        return PUBLISH_CLASS[g];
     }
 
     private emitDetections(data: ObjectsDetected) {
         sdk.deviceManager.onMixinEvent(this.id, this, ScryptedInterface.ObjectDetector, data)?.catch?.(() => { /* best effort */ });
-    }
-
-    /**
-     * The camera's raw ObjectDetector event, re-published unchanged whenever Coral Guard does not publish verified
-     * ones (Off, Shadow, kill switch, service down, setting off). In verified mode only classes the service cannot
-     * verify (e.g. package) still pass through; person/vehicle/animal come only from confirmations.
-     */
-    private forwardRaw(data: any) {
-        if (this.released || !this.ownsDetector || !data)
-            return;
-        if (!this.publishingVerified) {
-            this.emitDetections(data);
-            return;
-        }
-        const keep = (data.detections || []).filter((d: any) => {
-            const c = String(d?.className || '').toLowerCase();
-            return c && c !== 'motion' && !claimGroup(c);
-        });
-        if (keep.length)
-            this.emitDetections({ ...data, detections: keep });
     }
 
     /** confirm transition (new group): one event at once; held: repeat every DEFAULTS.detectionRepeatMs (pulse-style consumers keep seeing it); nothing otherwise. */
@@ -570,11 +550,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         });
     }
 
+    /** the camera's own classes (its raw events always reach consumers) plus the verified ones this mixin publishes. */
     async getObjectTypes(): Promise<ObjectDetectionTypes> {
+        const cam: ObjectDetectionTypes = (await (this.mixinDevice as any).getObjectTypes?.()) ?? {};
         if (!this.publishingVerified)
-            return (this.mixinDevice as any).getObjectTypes();
-        const other = (this.cameraClasses ?? []).filter(c => !claimGroup(c.toLowerCase()) && c.toLowerCase() !== 'motion');
-        return { classes: [...this.detectGroups().map(g => this.publishClass(g)), ...other] };
+            return cam;
+        const verified = this.detectGroups().map(g => this.publishClass(g));
+        return { ...cam, classes: [...(cam.classes ?? []).filter(c => !verified.includes(c)), ...verified] };
     }
 
     async getDetectionInput(detectionId: string, eventId?: any): Promise<MediaObject> {
