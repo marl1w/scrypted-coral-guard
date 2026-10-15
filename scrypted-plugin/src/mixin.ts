@@ -418,7 +418,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (log.kind === 'summary' && this.jId) {
                 const s = log.summary;
                 const outcome = s.outcome === 'maxhold' ? 'released' : s.outcome;
-                this.journal('end', { outcome: outcome as EpisodeEvent['outcome'], groups: s.confirmedBy, ...(s.inconclusive ? { inconclusive: true } : {}), timeline_event: { t_ms: Date.now(), text: `${outcome}${s.inconclusive ? ' (inconclusive: too little evidence)' : ''}${s.note ? ` (${s.note})` : ''}` } });
+                this.journal('end', { outcome: outcome as EpisodeEvent['outcome'], groups: s.confirmedBy, ...(s.inconclusive ? { inconclusive: true } : {}), timeline_event: { t_ms: Date.now(), text: `${outcome}${s.inconclusive ? ' (inconclusive: too little evidence)' : ''}${s.note ? ` (${s.note})` : ''}${s.wouldBAfter !== undefined ? ` | B would confirm +${s.wouldBAfter} ms` : ''}` } });
                 this.jId = undefined;
                 this.jConfirmed = false;
             }

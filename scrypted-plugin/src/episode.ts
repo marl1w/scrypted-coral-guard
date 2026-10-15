@@ -95,6 +95,7 @@ export interface EpisodeSummary {
     /** how the service confirmed the person (service 0.3.12+): 'fast_move' | 'fast_claim' | 'ticks'. */
     confirmPath?: string;
     fastBest?: { n: number; moved: number; strong: number };
+    wouldBAfter?: number;
     /** service replies of the pending phase up to and including the confirming one. */
     confirmFrames?: number;
     /** confirmed after the camera's raw motion had ended (inside the grace window). */
@@ -140,6 +141,8 @@ export class Episode {
     private confirmPath?: string;
     /** best fast-confirm evidence seen while pending (diagnostics for the log line). */
     private fastBest?: { n: number; moved: number; strong: number };
+    /** rule B (logged only): ms after the episode start at which it would have confirmed. */
+    private wouldBAfter?: number;
     private confirmFrames?: number;
     private holdOver = false;
     private degradedReason?: string;
@@ -200,6 +203,7 @@ export class Episode {
         this.pendingReplies = 0;
         this.confirmPath = this.confirmFrames = undefined;
         this.fastBest = undefined;
+        this.wouldBAfter = undefined;
         if (fresh) {
             this.startedAt = now;
             this.origin = 'camera';
@@ -237,6 +241,7 @@ export class Episode {
                 origin: this.origin,
                 confirmPath: confirmed ? this.confirmPath : undefined,
                 fastBest: this.fastBest,
+                wouldBAfter: this.wouldBAfter,
                 confirmFrames: confirmed ? this.confirmFrames : undefined,
                 afterRawEnd: confirmed && this.rawEndedAt !== undefined && this.rawEndedAt >= this.pendingSince && this.confirmedAt! > this.rawEndedAt ? true : undefined,
                 inconclusive: outcome === 'vetoed' && (this.pendingReplies < 2 || this.verdictAt === undefined
@@ -431,6 +436,9 @@ export class Episode {
         const confirmedNow: Record<Group, boolean> = { person: !!r.person?.confirmed, vehicle: vehicleConfirmed, animal: !!r.animal?.confirmed };
         const presentNow = (on('person') && !!r.person?.present) || (on('vehicle') && vehiclePresent) || (on('animal') && !!r.animal?.present);
         if (this.state === 'pending') {
+            // rule B (logged only): first moment it would have confirmed
+            if (this.wouldBAfter === undefined && typeof r.person?.would_b_ms === 'number')
+                this.wouldBAfter = Math.max(0, now - this.pendingSince);
             // diagnostics: the strongest fast-confirm evidence seen before confirmation
             const fd = r.person?.fast;
             if (fd) {
@@ -549,6 +557,8 @@ export function formatSummary(s: EpisodeSummary): string {
         parts.push(`confirmed: ${(s.confirmedDetail?.length ? s.confirmedDetail : s.confirmedBy).join(' + ')}`);
     if (s.skipped)
         parts.push(`${s.skipped} frames skipped`);
+    if (s.wouldBAfter !== undefined)
+        parts.push(`B would confirm +${s.wouldBAfter} ms`);
     if (s.fastBest && !(s.confirmPath ?? '').startsWith('fast'))
         parts.push(`fast: ${s.fastBest.strong} strong frames, best track ${s.fastBest.n} in window, moved ${s.fastBest.moved.toFixed(2)}`);
     if (s.note)

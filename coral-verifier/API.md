@@ -166,3 +166,7 @@ Fast confirm retuned on real walks (0.3.13 diagnostics: strong frames are sparse
 ## 0.3.15 notes
 
 With `claim=person` (the camera's own AI reports a person, which on real walks arrives together with the trigger) one frame with a person at or above `FAST_SINGLE_CLAIM` (0.75) confirms at once (`confirmed_by: fast_claim`); without a claim a single frame never confirms. The plugin's pre-roll hand-over sends the newest 3 ring frames (about the last 1.5 s) instead of 6, so live frames reach the service sooner.
+
+## 0.3.16 notes
+
+Rule B, logged only: with `claim=person`, the first frame that has a person box at or above `FAST_B_THR` (0.45) not overlapping a still person track (IoU > 0.5) is reported as `person.would_b_ms` (frame time). It never confirms; the plugin logs `B would confirm +N ms` on the episode line and in the journal end entry, so B can be checked against labelled episodes before it is switched on.

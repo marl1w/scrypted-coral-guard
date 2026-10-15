@@ -16,7 +16,7 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 """
 import math, re, threading
 
-from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM
+from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_B_THR
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -516,6 +516,7 @@ class Session:
         self.fast = FastConfirm()
         self._force = None            # (tick time, box, how): a fast confirmation re-applied whenever that tick is re-stepped (same-tick merge)
         self.confirmed_by = None      # "fast_move" | "fast_claim" | "ticks" for the current confirmation, None while not confirmed
+        self.would_b = None           # rule B (logged only): frame time at which camera-AI person + one non-still box >= FAST_B_THR would have confirmed
 
     def _apply_force(self):
         """Confirm the tentative tick track under the fast-confirmed box (same tick only). Returns True when a track was confirmed now."""
@@ -567,6 +568,10 @@ class Session:
             if hit and (self._force is None or self._force[0] != self._tick_t):
                 self._force = (self._tick_t, hit[2], hit[0])
             self._apply_force()
+            if claim == "person" and self.would_b is None:
+                stills = [tr.box for tr in self.person.live(self._tick_t) if tr.still]
+                if any(d[0] >= FAST_B_THR and all(iou(d[1], sb) <= 0.5 for sb in stills) for d in raw):
+                    self.would_b = t
         live = bool(self.person.live(self._tick_t))
         if not live:
             self.confirmed_by = None
@@ -602,6 +607,7 @@ class Session:
             "t": t,
             "person": {"state": state, "confirmed": present, "present": present, "confirmed_by": self.confirmed_by if present else None,
                        "fast": self.fast.diag if self.cfg.fast_confirm else None,
+                       "would_b_ms": self.would_b,
                        "since_ms": int(min(tr.born for tr in live)) if live else None,
                        "last_seen_ms": p.last_seen, "tracks": len(live),
                        "tracks_detail": [{"id": tr.id, "box": [round(v, 4) for v in tr.box], "score": round(float(tr.score), 3), "last_seen_ms": int(tr.last),

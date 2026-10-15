@@ -31,6 +31,8 @@ export interface PersonState {
     confirmed_by?: string | null;
     /** fast-confirm diagnostics of this frame: strong person boxes, best track's frames in the window, its shift (box heights). */
     fast?: { hi: number; n: number; moved: number } | null;
+    /** rule B (logged only): frame time at which the camera AI person + one weak Coral box would have confirmed. */
+    would_b_ms?: number | null;
 }
 
 export interface VehicleState {

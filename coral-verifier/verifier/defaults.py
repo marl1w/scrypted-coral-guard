@@ -76,6 +76,8 @@ TRACKER = {
     "fast_window_ms": 1000.0,
     "fast_move": 0.03,
 }
+# 0.3.16 rule B, LOGGED ONLY: claim=person + one person box at or above this, not on a still track, would confirm (reported as person.would_b_ms).
+FAST_B_THR = 0.45
 # 0.3.15: with claim=person (the camera's own AI says person) one frame at or above this confirms at once (two independent sources agree).
 FAST_SINGLE_CLAIM = 0.75
 # 0.3.14: the two qualifying frames must be at least this far apart (frame time), so "seen twice" is two looks, not two copies.

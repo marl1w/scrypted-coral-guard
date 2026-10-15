@@ -160,3 +160,17 @@ def test_camera_ai_person_plus_one_strong_frame_confirms_at_once():
     assert not sn[0]["person"]["present"]
     sn = run(new(), [[person(0.90, box)]])                                           # no camera claim: one frame never confirms
     assert not sn[0]["person"]["present"]
+
+
+def test_rule_b_is_reported_but_never_confirms():
+    box = (0.4, 0.3, 0.55, 0.8)
+    sess = new()
+    sess.update(T0, [person(0.5, box)], claim="person")
+    p = sess.snapshot()["person"]
+    assert p["would_b_ms"] == T0 and not p["present"]                              # logged only
+    sess2 = new()
+    sess2.update(T0, [person(0.5, box)])                                            # no camera claim: no B
+    assert sess2.snapshot()["person"]["would_b_ms"] is None
+    sess3 = new()
+    sess3.update(T0, [person(0.4, box)], claim="person")                             # below 0.45
+    assert sess3.snapshot()["person"]["would_b_ms"] is None
