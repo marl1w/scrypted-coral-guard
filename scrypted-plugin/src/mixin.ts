@@ -206,8 +206,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             try { this.motionDetected = false; } catch (e) { /* ignore */ }
         }
         // the camera's own AI class (e.g. people / vehicle / dog_cat / package), when the device reports one
-        // (mixinId: the layer below this mixin, so these are the camera's raw events, never our own verified ones)
-        this.claimListener = device.listen({ event: ScryptedInterface.ObjectDetector, mixinId: this.id }, (_s, _d, data) => {
+        // A plain listener: the Scrypted server does not mask property-less events behind a mixin (masking is disabled in
+        // notifyInterfaceEventFromMixin), so a `mixinId` listener never receives the camera's detections. Every listener gets
+        // the camera's events and ours; our own verified ones are skipped here (sourceId / verified_* classes).
+        this.claimListener = device.listen({ event: ScryptedInterface.ObjectDetector }, (_s, _d, data) => {
+            if (!data || data.sourceId === (this.plugin.id ?? 'coral-guard')
+                || (data.detections || []).some((d: any) => String(d?.className || '').startsWith('verified_')))
+                return;
             this.onObjectsDetected(data);
         });
         if (this.ownsDetector)

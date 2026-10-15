@@ -119,3 +119,13 @@ test('detections: a camera without ObjectDetector gets nothing published', async
     await sleep(50);
     assert.equal(ctl.detections.length, 0);
 });
+
+test('detections: our own verified events are not taken as camera claims', async () => {
+    const h = gate();
+    await sleep(10);
+    h.claimRaw({ detections: [{ className: 'verified_person', score: 1 }], sourceId: 'prov-test', timestamp: 1 });
+    h.claimRaw({ detections: [{ className: 'verified_person', score: 1 }], timestamp: 2 });
+    assert.equal((h.mixin as any).claimEvents.length, 0);
+    h.claimRaw({ detections: [{ className: 'people', score: 0.9 }], sourceId: 'camera-plugin', timestamp: 3 });
+    assert.equal((h.mixin as any).claimEvents.length, 1);
+});

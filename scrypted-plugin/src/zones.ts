@@ -73,8 +73,19 @@ export function visibleFraction(box: number[], zones: Zone[], grid = 64): number
     return outside / (grid * grid);
 }
 
+/**
+ * A detection is excluded when the point it STANDS on, the bottom centre of its box (feet, wheels), lies in a zone, or when the box
+ * lies almost entirely inside the zones (visible share below 1 - minVisible). Judging by the standing point keeps a person walking on
+ * a path whose head and shoulders overlap a background zone (fence, street behind) valid; the old area-share rule masked them.
+ */
 export function isMasked(box: number[], zones: Zone[], minVisible: number): boolean {
-    return Array.isArray(box) && box.length === 4 && visibleFraction(box, zones) < minVisible;
+    if (!Array.isArray(box) || box.length !== 4) return false;
+    const polys = zones.map(z => z.points).filter(p => p.length >= 3);
+    if (!polys.length) return false;
+    const x0 = Math.min(box[0], box[2]), x1 = Math.max(box[0], box[2]), y0 = Math.min(box[1], box[3]), y1 = Math.max(box[1], box[3]);
+    const fx = (x0 + x1) / 2, fy = y1 - 0.02 * (y1 - y0);
+    if (polys.some(p => pointInPolygon(fx, fy, p))) return true;
+    return visibleFraction(box, zones) < 1 - minVisible;
 }
 
 /**

@@ -14,11 +14,17 @@ test('polygon area and point sampling', () => {
     assert.equal(visibleFraction([0.1, 0.1, 0.4, 0.4], []), 1, 'no zones');
 });
 
-test('60 % rule: inside and half-covered boxes are masked, mostly-outside ones are valid; unconfigured zones never mask', () => {
-    assert.equal(isMasked([0.1, 0.1, 0.4, 0.4], [left], 0.6), true);
-    assert.equal(isMasked([0.3, 0.1, 0.7, 0.4], [left], 0.6), true, '50 % outside < 60 %');
-    assert.equal(isMasked([0.4, 0.1, 0.9, 0.4], [left], 0.6), false, '80 % outside');
+test('standing point rule: excluded when the bottom centre is in a zone or the box lies almost entirely inside', () => {
+    assert.equal(isMasked([0.1, 0.1, 0.4, 0.4], [left], 0.6), true, 'inside');
+    assert.equal(isMasked([0.3, 0.1, 0.6, 0.4], [left], 0.6), true, 'feet at x 0.45 inside the zone');
+    assert.equal(isMasked([0.4, 0.1, 0.9, 0.4], [left], 0.6), false, 'feet at x 0.65 outside');
     assert.equal(isMasked([0.1, 0.1, 0.4, 0.4], [{ name: 'x', points: [[0, 0], [1, 1]] }], 0.6), false);
+});
+
+test('a person whose head and shoulders overlap a background zone but who stands outside it is valid', () => {
+    const top = { name: 'top', points: [[0, 0], [1, 0], [1, 0.6], [0, 0.6]] as [number, number][] };   // background: upper 60 %
+    assert.equal(isMasked([0.25, 0.32, 0.42, 1.0], [top], 0.6), false, 'feet on the path');
+    assert.equal(isMasked([0.25, 0.1, 0.42, 0.5], [top], 0.6), true, 'standing inside the background zone');
 });
 
 test('storage: parse round-trip, legacy 0..100 paths, malformed entries ignored with warnings', () => {
