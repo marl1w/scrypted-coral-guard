@@ -316,10 +316,12 @@ class FastConfirm:
     between the first and the last >= fast_move x the box height: "fast_move") or the frame carries claim=person ("fast_claim"); otherwise None."""
     def __init__(self):
         self.tracks = []
+        self.diag = None                                          # last frame: {"hi": strong person boxes, "n": best track's frames in the window, "moved": its shift}
 
     def step(self, t, dets, cfg, claim=None):
         win = cfg.fast_window_ms
         hi = [d for d in dets if d[0] >= cfg.start_thr]
+        self.diag = {"hi": len(hi), "n": 1 if hi else 0, "moved": 0.0}
         trks = self.tracks = [tr for tr in self.tracks if t - tr.last <= win]
         used, best = set(), None
         for i, j in greedy_iou([tr.box for tr in trks], [d[1] for d in hi], FAST_IOU):
@@ -329,11 +331,13 @@ class FastConfirm:
                 tr.hist.append((t, d[0], d[1]))
             tr.last = t
             tr.hist = [h for h in tr.hist if t - h[0] <= win]
-            if len(tr.hist) < cfg.fast_n:
-                continue
             b0, b1 = tr.hist[0][2], tr.hist[-1][2]
             h = max(b0[3] - b0[1], b1[3] - b1[1], 1e-3)
             moved = math.hypot((b1[0] + b1[2] - b0[0] - b0[2]) / 2.0, (b1[1] + b1[3] - b0[1] - b0[3]) / 2.0) / h
+            if len(tr.hist) > self.diag["n"] or (len(tr.hist) == self.diag["n"] and moved > self.diag["moved"]):
+                self.diag["n"], self.diag["moved"] = len(tr.hist), round(moved, 3)
+            if len(tr.hist) < cfg.fast_n:
+                continue
             how = "fast_move" if moved >= cfg.fast_move else ("fast_claim" if claim == "person" else None)
             if how and (best is None or len(tr.hist) > best[1]):
                 best = (how, len(tr.hist), tr.box)
@@ -585,6 +589,7 @@ class Session:
         return {
             "t": t,
             "person": {"state": state, "confirmed": present, "present": present, "confirmed_by": self.confirmed_by if present else None,
+                       "fast": self.fast.diag if self.cfg.fast_confirm else None,
                        "since_ms": int(min(tr.born for tr in live)) if live else None,
                        "last_seen_ms": p.last_seen, "tracks": len(live),
                        "tracks_detail": [{"id": tr.id, "box": [round(v, 4) for v in tr.box], "score": round(float(tr.score), 3), "last_seen_ms": int(tr.last),

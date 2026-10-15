@@ -94,6 +94,7 @@ export interface EpisodeSummary {
     origin?: 'camera' | 'synth';
     /** how the service confirmed the person (service 0.3.12+): 'fast_move' | 'fast_claim' | 'ticks'. */
     confirmPath?: string;
+    fastBest?: { n: number; moved: number; strong: number };
     /** service replies of the pending phase up to and including the confirming one. */
     confirmFrames?: number;
     /** confirmed after the camera's raw motion had ended (inside the grace window). */
@@ -137,6 +138,8 @@ export class Episode {
     private skipped = 0;
     private pendingReplies = 0;
     private confirmPath?: string;
+    /** best fast-confirm evidence seen while pending (diagnostics for the log line). */
+    private fastBest?: { n: number; moved: number; strong: number };
     private confirmFrames?: number;
     private holdOver = false;
     private degradedReason?: string;
@@ -196,6 +199,7 @@ export class Episode {
         this.skipped = 0;
         this.pendingReplies = 0;
         this.confirmPath = this.confirmFrames = undefined;
+        this.fastBest = undefined;
         if (fresh) {
             this.startedAt = now;
             this.origin = 'camera';
@@ -232,6 +236,7 @@ export class Episode {
                 confirmedDetail: confirmed && this.confirmedDetail.length ? this.confirmedDetail.slice() : undefined,
                 origin: this.origin,
                 confirmPath: confirmed ? this.confirmPath : undefined,
+                fastBest: this.fastBest,
                 confirmFrames: confirmed ? this.confirmFrames : undefined,
                 afterRawEnd: confirmed && this.rawEndedAt !== undefined && this.rawEndedAt >= this.pendingSince && this.confirmedAt! > this.rawEndedAt ? true : undefined,
                 inconclusive: outcome === 'vetoed' && (this.pendingReplies < 2 || this.verdictAt === undefined
@@ -426,6 +431,12 @@ export class Episode {
         const confirmedNow: Record<Group, boolean> = { person: !!r.person?.confirmed, vehicle: vehicleConfirmed, animal: !!r.animal?.confirmed };
         const presentNow = (on('person') && !!r.person?.present) || (on('vehicle') && vehiclePresent) || (on('animal') && !!r.animal?.present);
         if (this.state === 'pending') {
+            // diagnostics: the strongest fast-confirm evidence seen before confirmation
+            const fd = r.person?.fast;
+            if (fd) {
+                const b = this.fastBest ?? { n: 0, moved: 0, strong: 0 };
+                this.fastBest = { n: Math.max(b.n, fd.n), moved: Math.max(b.moved, fd.moved), strong: b.strong + (fd.hi > 0 ? 1 : 0) };
+            }
             // the camera's claimed class is only a hint (see acceptUnverified): any enabled group may confirm
             const by = GROUPS.filter(g => on(g) && confirmedNow[g]);
             if (by.length) {
@@ -538,6 +549,8 @@ export function formatSummary(s: EpisodeSummary): string {
         parts.push(`confirmed: ${(s.confirmedDetail?.length ? s.confirmedDetail : s.confirmedBy).join(' + ')}`);
     if (s.skipped)
         parts.push(`${s.skipped} frames skipped`);
+    if (s.fastBest && !(s.confirmPath ?? '').startsWith('fast'))
+        parts.push(`fast: ${s.fastBest.strong} strong frames, best track ${s.fastBest.n} in window, moved ${s.fastBest.moved.toFixed(2)}`);
     if (s.note)
         parts.push(s.note);
     return parts.join(' | ');

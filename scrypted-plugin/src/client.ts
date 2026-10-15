@@ -29,6 +29,8 @@ export interface PersonState {
     hold_until_ms?: number | null;
     /** service 0.3.12+: how the current confirmation was reached ('fast_move' | 'fast_claim' | 'ticks'), null while not confirmed */
     confirmed_by?: string | null;
+    /** fast-confirm diagnostics of this frame: strong person boxes, best track's frames in the window, its shift (box heights). */
+    fast?: { hi: number; n: number; moved: number } | null;
 }
 
 export interface VehicleState {
