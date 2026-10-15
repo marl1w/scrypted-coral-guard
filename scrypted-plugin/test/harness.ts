@@ -13,8 +13,9 @@ export interface Ctl {
     removed: number;
     logs: [string, string][];
     writes: [number, boolean][];
+    occWrites?: [number, boolean][];
     /** the "shared persisted state" the mixin reads back through mixinDevice.motionDetected */
-    state: { motionDetected: boolean };
+    state: { motionDetected: boolean; occupied?: boolean };
     /** when false, writes by the mixin do not change `state` (simulates not being outermost) */
     persistWrites: boolean;
     hangStart: boolean;
@@ -48,6 +49,11 @@ class Base {
         ctl.writes.push([Date.now(), v]);
         if (ctl.persistWrites)
             ctl.state.motionDetected = v;
+    }
+    get occupied() { return !!ctl.state.occupied; }
+    set occupied(v: boolean) {
+        (ctl.occWrites ??= []).push([Date.now(), v]);
+        ctl.state.occupied = v;
     }
     async release() { }
 }
@@ -99,7 +105,7 @@ function hook(stubFrames: boolean) {
         if (req === '@scrypted/sdk')
             return {
                 __esModule: true, default: sdkStub,
-                ScryptedInterface: { MotionSensor: 'MotionSensor', Settings: 'Settings', VideoCamera: 'VideoCamera', MixinProvider: 'MixinProvider', ObjectDetector: 'ObjectDetector' },
+                ScryptedInterface: { MotionSensor: 'MotionSensor', OccupancySensor: 'OccupancySensor', Settings: 'Settings', VideoCamera: 'VideoCamera', MixinProvider: 'MixinProvider', ObjectDetector: 'ObjectDetector' },
                 ScryptedDeviceType: { Camera: 'Camera', Doorbell: 'Doorbell', Light: 'Light' },
                 ScryptedDeviceBase: class { id = 'prov1'; nativeId = 'n'; storage = { getItem: () => null, setItem: () => { } }; log = { i() { } }; console = console; onDeviceEvent() { } constructor(_n?: string) { } },
                 ScryptedMimeTypes: { FFmpegInput: 'x-scrypted/x-ffmpeg-input' },
@@ -137,7 +143,7 @@ const PRISTINE = JSON.parse(JSON.stringify(DEFAULTS));
 export function make(opts: { settings?: Record<string, any>; initial?: boolean; hangStart?: boolean; client?: any; persistWrites?: boolean; holdReset?: boolean; dup?: string; sensorless?: boolean; interfaces?: string[]; fast?: boolean; graceMs?: number } = {}) {
     hook(true);
     (ctl as any).notified = 0;
-    ctl.starts = []; ctl.listeners = 0; ctl.removed = 0; ctl.logs = []; ctl.writes = []; (ctl as any).detections = [];
+    ctl.starts = []; ctl.listeners = 0; ctl.removed = 0; ctl.logs = []; ctl.writes = []; ctl.occWrites = []; (ctl.state as any).occupied = undefined; (ctl as any).detections = [];
     ctl.state.motionDetected = !!opts.initial; ctl.hangStart = !!opts.hangStart; ctl.persistWrites = opts.persistWrites !== false;
     const calls = { frame: [] as { a: any[]; d: ReturnType<typeof deferred> }[], reset: [] as { a: any[]; d: ReturnType<typeof deferred> }[], check: 0, episodes: [] as any[] };
     const client = opts.client || {

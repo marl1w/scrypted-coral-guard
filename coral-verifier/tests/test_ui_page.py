@@ -100,3 +100,21 @@ def test_old_selects_and_chip_row_are_gone():
     html = open(UI).read()
     for gone in ('id="fCam"', 'id="vCam"', 'id="rCam"', 'id="suCam"', 'id="fGo"', 'id="suPer"', 'class="chips"></span>'):
         assert gone not in html
+
+
+def test_motion_helpers_occupied_vs_motion_and_still_timeline_rows():
+    """0.3.19: the review page's occupancy/motion line and the still release / re-raise timeline highlight (older episodes: no line)."""
+    src = open(UI).read()
+    fns = "\n".join(re.search(r"^function %s\(.*$" % n, src, re.M).group(0) + ("\n" + re.search(r"^function motionText\(.*\n(.*)$", src, re.M).group(1) if n == "motionText" else "")
+                    for n in ("fmtS", "motionText", "isMotionEv"))
+    js = fns + """
+console.log(JSON.stringify([motionText({motion:{occupied_s:300,motion_s:170,still_releases:2,reraises:1}}), motionText({}), motionText({motion:{occupied_s:42,motion_s:42,still_releases:0,reraises:0}}),
+  isMotionEv("motion released (still) +61 s, occupancy stays on"), isMotionEv("motion re-raised (moving) +90 s"), isMotionEv("confirmed person")]))"""
+    p = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
+    assert p.returncode == 0, p.stderr
+    out = json.loads(p.stdout)
+    assert out[0] == "occupied 5 min · motion 2 min 50 s · 2 still releases · 1 re-raise"
+    assert out[1] is None
+    assert out[2] == "occupied 42 s · motion 42 s"
+    assert out[3:] == [True, True, False]
+    assert 'r.className="mot"' in src and 'kpi("Still releases"' in src

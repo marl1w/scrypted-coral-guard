@@ -10,7 +10,7 @@ test('canMixin: camera and doorbell with VideoCamera + MotionSensor get MotionSe
     const p: any = new P('n');
     for (const type of ['Camera', 'Doorbell']) {
         const r = await p.canMixin(type, camIfaces);
-        assert.deepEqual(r, ['MotionSensor', 'Settings', `${MARKER}:prov1`]);
+        assert.deepEqual(r, ['MotionSensor', 'OccupancySensor', 'Settings', `${MARKER}:prov1`]);
     }
     clearInterval((p as any).healthTimer);
 });
@@ -21,6 +21,7 @@ test('M25: other device types and cameras without MotionSensor or VideoCamera ar
     assert.equal(await p.canMixin('Light', camIfaces), undefined);
     assert.ok(await p.canMixin('Camera', ['VideoCamera']), 'a camera without a MotionSensor is accepted (sensorless)');
     assert.ok((await p.canMixin('Camera', ['VideoCamera']) as string[]).includes('MotionSensor'));
+    assert.ok((await p.canMixin('Camera', ['VideoCamera']) as string[]).includes('OccupancySensor'), 'sensorless cameras gain OccupancySensor too');
     assert.equal(await p.canMixin('Camera', ['MotionSensor']), undefined);
     clearInterval(p.healthTimer);
 });
@@ -169,4 +170,17 @@ test('one live mixin per device: a re-created chain replaces (and fully releases
     await p.releaseMixin('cam1', b);
     assert.equal(p.active.size, 0);
     await b.release(); // idempotent
+});
+
+test('Release motion after still: default 170 s, clamped 0..180', async () => {
+    const P = loadProvider();
+    const p: any = new P('n');
+    assert.equal(p.stillReleaseS, 170);
+    const real = p.storageSettings;
+    for (const [v, want] of [[0, 0], [60, 60], [500, 180], [-5, 0], ['', 170]] as const) {
+        p.storageSettings = { values: { stillReleaseS: v } };
+        assert.equal(p.stillReleaseS, want, String(v));
+    }
+    p.storageSettings = real;
+    clearInterval(p.healthTimer);
 });

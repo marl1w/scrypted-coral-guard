@@ -2,7 +2,7 @@
 // lets the pure Episode state machine decide what to publish. All network I/O is async and
 // bounded by AbortController timeouts in client.ts; nothing here ever blocks the plugin.
 
-import sdk, { EventListenerRegister, MediaObject, MotionSensor, ObjectDetectionTypes, ObjectDetector, ObjectsDetected, ScryptedInterface, Setting, SettingValue, VideoCamera } from '@scrypted/sdk';
+import sdk, { EventListenerRegister, MediaObject, MotionSensor, ObjectDetectionTypes, OccupancySensor, ObjectDetector, ObjectsDetected, ScryptedInterface, Setting, SettingValue, VideoCamera } from '@scrypted/sdk';
 import { SettingsMixinDeviceBase, SettingsMixinDeviceOptions } from '@scrypted/sdk/settings-mixin';
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
 import { randomUUID } from 'crypto';
@@ -50,7 +50,7 @@ const STREAM_FIRST_FRAME_MS = 25000;
  */
 export const PUBLISH_CLASS: Record<Group, string> = { person: 'verified_person', vehicle: 'verified_vehicle', animal: 'verified_animal' };
 
-export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSensor> implements MotionSensor, ObjectDetector {
+export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSensor> implements MotionSensor, OccupancySensor, ObjectDetector {
     storageSettings = new StorageSettings(this, {
         mode: {
             title: 'Mode',
@@ -205,6 +205,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             // no prior value exists for a sensor we add: write false once (normal cameras stay fully transparent at start)
             try { this.motionDetected = false; } catch (e) { /* ignore */ }
         }
+        // OccupancySensor is ours on every camera: no prior value, start false (a write of false is harmless for consumers)
+        try { this.occupied = false; } catch (e) { /* ignore */ }
         // the camera's own AI class (e.g. people / vehicle / dog_cat / package), when the device reports one
         // A plain listener: the Scrypted server does not mask property-less events behind a mixin (masking is disabled in
         // notifyInterfaceEventFromMixin), so a `mixinId` listener never receives the camera's detections. Every listener gets
@@ -269,6 +271,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             killSwitch: g.killSwitch,
             vehicleConfirm: this.thresholds.vehicleConfirm,
             graceMs: this.plugin.graceMs ?? 3000,
+            stillReleaseMs: (this.plugin.stillReleaseS ?? 170) * 1000,
         };
     }
 
@@ -341,7 +344,16 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     : this.episode.pending ? { text: 'Verifying' }
                         : this.lastTrack ? { text: `${this.lastTrack.groups.join('+')} tracked · unconfirmed` }
                             : { text: 'Nothing tracked' };
-        return { published, coral, mode: modeLabel, reason };
+        const shadow = this.mode === 'shadow';
+        const occOn = shadow ? this.episode.wouldOccupied : this.mode === 'gate' ? this.episode.occupied : this.cameraRaw;
+        const still = this.episode.stillForMs(monoNow());
+        const occupancy: NowInfo['occupancy'] = {
+            on: occOn,
+            ...(groups?.length ? { groups } : {}),
+            ...(occOn && still !== undefined ? { stillS: still / 1000 } : {}),
+            ...(this.episode.stillReleased ? { releasedAfterS: (this.plugin.stillReleaseS ?? 170) } : {}),
+        };
+        return { published, coral, mode: modeLabel, reason, occupancy };
     }
 
     // ---- exclusion zones (plugin-side; storage key 'zones', see DEVELOPMENT.md) ----
@@ -420,10 +432,15 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private jOpen = new Set<string>();
     private journalStep(fx: Effects) {
         for (const log of fx.logs)
-            if (log.kind === 'summary' && this.jId) {
+            if (log.kind === 'still' && this.jId)
+                this.journal('update', { timeline_event: { t_ms: Date.now(), text: log.event === 'release'
+                    ? `motion released (still) +${log.afterS} s, occupancy stays on`
+                    : `motion re-raised (${log.reason ?? 'moving'}) +${log.afterS} s` } });
+            else if (log.kind === 'summary' && this.jId) {
                 const s = log.summary;
                 const outcome = s.outcome === 'maxhold' ? 'released' : s.outcome;
-                this.journal('end', { outcome: outcome as EpisodeEvent['outcome'], groups: s.confirmedBy, ...(s.inconclusive ? { inconclusive: true } : {}), timeline_event: { t_ms: Date.now(), text: `${outcome}${s.inconclusive ? ' (inconclusive: too little evidence)' : ''}${s.note ? ` (${s.note})` : ''}${s.wouldBAfter !== undefined ? ` | B would confirm +${s.wouldBAfter} ms` : ''}` } });
+                const motion = s.occupiedS !== undefined ? { motion: { occupied_s: s.occupiedS, motion_s: s.motionS ?? s.occupiedS, still_releases: s.stillReleases ?? 0, reraises: s.reraises ?? 0 } } : {};
+                this.journal('end', { outcome: outcome as EpisodeEvent['outcome'], groups: s.confirmedBy, ...motion, ...(s.inconclusive ? { inconclusive: true } : {}), timeline_event: { t_ms: Date.now(), text: `${outcome}${s.inconclusive ? ' (inconclusive: too little evidence)' : ''}${s.note ? ` (${s.note})` : ''}${s.wouldBAfter !== undefined ? ` | B would confirm +${s.wouldBAfter} ms` : ''}` } });
                 this.jId = undefined;
                 this.jConfirmed = false;
             }
@@ -464,6 +481,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
     }
     private jReconfirm = false;
+    private lastOccupied = false;
     private jUnflaggedAt: number | undefined;
 
     private apply(fx: Effects) {
@@ -473,6 +491,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         // never write before a genuine camera event, except a confirmation (true) or the release of our own true
         if ((this.touched || fx.motion || this.lastPublished) && this.motionDetected !== fx.motion)
             this.publish(fx.motion);
+        if ((this.touched || fx.occupied || this.lastOccupied) && !!this.occupied !== fx.occupied) {
+            this.lastOccupied = fx.occupied;
+            this.occupied = fx.occupied;
+        }
         if (this.fast.armed && this.episode.confirmedGroups) {
             const line = this.fast.verdict(`confirmed ${this.episode.confirmedGroups.join('+')}`, monoNow());
             if (line) this.console.log(line);
@@ -491,6 +513,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     this.console.log('episode:', formatSummary(log.summary));
                     this.feedEpisode(log.summary, synth);
                 }
+            }
+            else if (log.kind === 'still') {
+                const would = this.mode === 'gate' ? '' : ' (would)';
+                this.console.log(log.event === 'release'
+                    ? `motion released (still) +${log.afterS} s${would}: occupancy stays on`
+                    : `motion re-raised (${log.reason ?? 'moving'}) +${log.afterS} s${would}`);
+                this.status.onStill(log.event);
             }
             else if (log.kind === 'degraded') {
                 this.console.warn(`verifier unavailable (${maskUrls(log.reason)}); passing raw motion through, retrying with backoff.`);
@@ -587,6 +616,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             vetoed: e.outcome === 'vetoed',
             aborted: e.outcome === 'aborted',
             note: e.note,
+            stillReleaseAfterS: e.stillReleaseAfterS,
+            reraises: e.reraises,
+            occupiedS: e.occupiedS,
+            motionS: e.motionS,
         });
     }
 
@@ -1517,6 +1550,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         // Best effort only: once removed, a write from this mixin is an event, not persisted state.
         // The next motion write from the camera re-establishes the real state.
         try { if ((this.touched || this.lastPublished) && this.motionDetected !== this.episode.isRaw) this.motionDetected = this.episode.isRaw; } catch (e) { /* ignore */ }
+        try { if (this.lastOccupied) this.occupied = false; } catch (e) { /* ignore */ }
         await super.release();
     }
 }

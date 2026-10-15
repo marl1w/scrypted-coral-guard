@@ -23,7 +23,12 @@ export interface EpisodeConfig {
     vehicleConfirm?: number;
     /** an unconfirmed episode whose raw motion ended keeps verifying this long after the raw end before a veto (0 = off). */
     graceMs?: number;
+    /** Gate: motion goes false (occupancy stays) once every held subject has been stationary this long; 0 = motion held while anyone is present. */
+    stillReleaseMs?: number;
 }
+
+/** a still-released motion is raised again no sooner than this after it went false, so HomeKit sees a real off->on edge. */
+export const MIN_MOTION_OFF_MS = 2000;
 
 /** Detection groups the service confirms; the camera may claim one (see setClaim). Parked vehicles never confirm. */
 export type Group = 'person' | 'vehicle' | 'animal';
@@ -102,15 +107,27 @@ export interface EpisodeSummary {
     afterRawEnd?: boolean;
     /** a veto resting on too little evidence (fewer than 2 analysed frames, or no verdict before the raw end). */
     inconclusive?: boolean;
+    /** still release: s from the episode start to the first time motion was released while occupancy stayed on. */
+    stillReleaseAfterS?: number;
+    /** how often motion was released for stillness / raised again (new subject or movement) in this episode. */
+    stillReleases?: number;
+    reraises?: number;
+    /** confirmed episodes: s the occupancy (any held subject) and the motion (a moving one) were on. */
+    occupiedS?: number;
+    motionS?: number;
 }
 
 export type LogEvent =
     | { kind: 'summary'; summary: EpisodeSummary }
     | { kind: 'degraded'; reason: string }
-    | { kind: 'recovered' };
+    | { kind: 'recovered' }
+    /** motion released because every held subject is still (occupancy stays on), or raised again by a new or moving subject. */
+    | { kind: 'still'; event: 'release' | 'reraise'; afterS: number; reason?: 'new subject' | 'moving' };
 
 export interface Effects {
     motion: boolean;
+    /** OccupancySensor: someone/something confirmed is there (also when still). Mirrors raw outside Gate and when failing open. */
+    occupied: boolean;
     /** whether frames should currently be pulled and sent to the service. */
     scanning: boolean;
     /** the caller should POST /reset now (fresh episode). */
@@ -154,6 +171,19 @@ export class Episode {
     /** vehicle ticks of the last 3 replies and when a vehicle was last seen (hold). */
     private vehTicks: boolean[] = [];
     private vehSeenAt = 0;
+    /** still release: last time a held subject moved (or appeared), motion released for stillness, a re-raise waiting for the off gap. */
+    private movingAt = 0;
+    private stillOff = false;
+    private stillOffAt = 0;
+    private raisePending?: 'new subject' | 'moving';
+    private seenIds = new Set<string>();
+    private stillReleases = 0;
+    private reraises = 0;
+    private stillReleaseAfter?: number;
+    private motionOnMs = 0;
+    private motionOnSince?: number;
+    private lastOccupied = false;
+    private lastWouldOccupied = false;
 
     constructor(private cfg: EpisodeConfig, initialRaw = false) {
         this.camRaw = initialRaw;
@@ -163,6 +193,14 @@ export class Episode {
     get motion() { return this.lastMotion; }
     /** the Gate value of motion (published in Gate; in Shadow only reported) */
     get wouldPublish() { return this.lastWould; }
+    /** published occupancy, and its Gate value (in Shadow only reported) */
+    get occupied() { return this.lastOccupied; }
+    get wouldOccupied() { return this.lastWouldOccupied; }
+    /** motion is currently released for stillness while the subject is still held. */
+    get stillReleased() { return this.stillOff && this.state === 'active'; }
+    /** ms every held subject has been still (active, verified episodes only). */
+    stillForMs(now: number): number | undefined { return this.state === 'active' && !this.unverified && !this.passthrough ? Math.max(0, now - this.movingAt) : undefined; }
+    get stillReleasedAt() { return this.stillReleased ? this.stillOffAt : undefined; }
     private lastWould = false;
     get scanning() { return this.lastScanning; }
     get degraded() { return this.degradedReason; }
@@ -181,15 +219,78 @@ export class Episode {
 
     private out(logs: LogEvent[], reset = false): Effects {
         // one state machine for Shadow and Gate: wouldPublish is the Gate value; only Gate publishes it
-        const would = this.passthrough
+        const occ = this.passthrough
             ? this.camRaw
             : this.state === 'active' || (this.state === 'pending' && this.holdOver);
+        const would = occ && !(this.stillOff && !this.passthrough);
         this.lastWould = would;
-        const motion = this.cfg.mode === 'gate' ? would : this.camRaw;
+        this.lastWouldOccupied = occ;
+        const gate = this.cfg.mode === 'gate';
+        const motion = gate ? would : this.camRaw;
+        const occupied = gate ? occ : this.camRaw;
         const scanning = !this.passthrough && (this.state === 'pending' || this.state === 'active');
         this.lastMotion = motion;
+        this.lastOccupied = occupied;
         this.lastScanning = scanning;
-        return { motion, scanning, reset, logs };
+        return { motion, occupied, scanning, reset, logs };
+    }
+
+    /** ids of the held subjects in this reply and whether any of them moves (person: tracks_detail.stationary; vehicle: only moving ones hold; animal: no stillness data, counts as moving). */
+    private movement(r: FrameReply, on: (g: Group) => boolean, vehHold: boolean): { moving: boolean; ids: string[] } {
+        const ids: string[] = [];
+        let moving = false;
+        if (on('person') && r.person?.present) {
+            const td = r.person.tracks_detail;
+            if (Array.isArray(td) && td.length) {
+                for (const t of td) {
+                    ids.push(`p${t.id}`);
+                    if (!t.stationary) moving = true;
+                }
+            }
+            else moving = true; // older service: no per-track stillness, keep motion held
+        }
+        if (on('vehicle') && vehHold) {
+            moving = true; // a vehicle holds only while a non-parked, moving detection arrives
+            for (const t of r.vehicle?.tracks || [])
+                if ((t.state ?? (t.parked ? 'parked' : 'moving')) === 'moving') ids.push(`v${t.id}`);
+        }
+        if (on('animal') && r.animal?.present) {
+            moving = true;
+            for (const t of r.animal.tracks || []) ids.push(`a${t.id}`);
+        }
+        return { moving, ids };
+    }
+
+    /** still release / re-raise of the motion while the episode is active (occupancy unaffected). */
+    private stillStep(now: number, logs: LogEvent[], mv?: { moving: boolean; ids: string[] }) {
+        if (this.state !== 'active' || this.unverified)
+            return;
+        if (mv) {
+            const fresh = mv.ids.some(id => !this.seenIds.has(id));
+            for (const id of mv.ids) this.seenIds.add(id);
+            if (fresh || mv.moving) {
+                this.movingAt = now;
+                if (this.stillOff && !this.raisePending) this.raisePending = fresh ? 'new subject' : 'moving';
+            }
+        }
+        const limit = this.cfg.stillReleaseMs ?? 0;
+        if (this.stillOff && this.raisePending && now - this.stillOffAt >= MIN_MOTION_OFF_MS) {
+            const reason = this.raisePending;
+            this.stillOff = false;
+            this.raisePending = undefined;
+            this.reraises++;
+            this.motionOnSince = now;
+            logs.push({ kind: 'still', event: 'reraise', afterS: Math.round((now - this.startedAt) / 1000), reason });
+        }
+        else if (!this.stillOff && limit > 0 && now - this.movingAt >= limit) {
+            this.stillOff = true;
+            this.stillOffAt = now;
+            this.stillReleases++;
+            this.stillReleaseAfter ??= Math.round((now - this.startedAt) / 1000);
+            if (this.motionOnSince !== undefined) this.motionOnMs += now - this.motionOnSince;
+            this.motionOnSince = undefined;
+            logs.push({ kind: 'still', event: 'release', afterS: Math.round((now - this.startedAt) / 1000) });
+        }
     }
 
     private startPending(now: number, fresh: boolean) {
@@ -217,6 +318,8 @@ export class Episode {
 
     private close(outcome: Outcome, now: number, logs: LogEvent[], note?: string) {
         const confirmed = this.confirmedAt !== undefined;
+        if (this.motionOnSince !== undefined) this.motionOnMs += Math.max(0, now - this.motionOnSince);
+        const tracked = confirmed && !this.unverified && this.activeSince !== undefined;
         const held = outcome !== 'vetoed' && confirmed && this.rawEndedAt !== undefined
             ? Math.max(0, now - this.rawEndedAt) / 1000
             : 0;
@@ -246,13 +349,28 @@ export class Episode {
                 afterRawEnd: confirmed && this.rawEndedAt !== undefined && this.rawEndedAt >= this.pendingSince && this.confirmedAt! > this.rawEndedAt ? true : undefined,
                 inconclusive: outcome === 'vetoed' && (this.pendingReplies < 2 || this.verdictAt === undefined
                     || (this.rawEndedAt !== undefined && this.rawEndedAt >= this.pendingSince && this.verdictAt > this.rawEndedAt)) ? true : undefined,
+                ...(this.stillReleases ? { stillReleaseAfterS: this.stillReleaseAfter, stillReleases: this.stillReleases, reraises: this.reraises } : {}),
+                ...(tracked ? { occupiedS: Math.round((now - this.activeSince!) / 1000), motionS: Math.round(this.motionOnMs / 1000) } : {}),
             },
         });
+        this.clearStill();
         this.holdOver = false;
         this.unverified = false;
         this.confirmedAt = undefined;
         this.synthRaw = false; // whatever opened it: a closed episode keeps no synthetic raw input
         this.state = this.rawTrue ? 'closed' : 'idle';
+    }
+
+    private activeSince?: number;
+    private clearStill() {
+        this.stillOff = false;
+        this.raisePending = undefined;
+        this.seenIds.clear();
+        this.stillReleases = this.reraises = 0;
+        this.stillReleaseAfter = undefined;
+        this.motionOnMs = 0;
+        this.motionOnSince = undefined;
+        this.activeSince = undefined;
     }
 
     /** Leave scanning states (entering pass-through). */
@@ -435,6 +553,7 @@ export class Episode {
         const vehiclePresent = veh.hold || (this.vehSeenAt > 0 && now - this.vehSeenAt <= VEHICLE_HOLD_MS);
         const confirmedNow: Record<Group, boolean> = { person: !!r.person?.confirmed, vehicle: vehicleConfirmed, animal: !!r.animal?.confirmed };
         const presentNow = (on('person') && !!r.person?.present) || (on('vehicle') && vehiclePresent) || (on('animal') && !!r.animal?.present);
+        const mv = this.movement(r, on, veh.hold);
         if (this.state === 'pending') {
             // rule B (logged only): first moment it would have confirmed
             if (this.wouldBAfter === undefined && typeof r.person?.would_b_ms === 'number')
@@ -457,13 +576,24 @@ export class Episode {
                 this.confirmPath = by.includes('person') && typeof r.person?.confirmed_by === 'string' ? r.person.confirmed_by : undefined;
                 this.confirmedDetail = by.map(g => g === 'vehicle' && veh.best ? `vehicle (${veh.best.cls} ${veh.best.score.toFixed(2)})` : g === 'animal' ? animalDetail(r) : g);
                 this.holdOver = false;
+                // a re-confirmation after the max hold keeps a still release (same subjects, no new edge)
+                this.activeSince ??= now;
+                this.movingAt = now;
+                if (!this.stillOff) {
+                    this.seenIds = new Set(mv.ids);
+                    this.motionOnSince = now;
+                }
+                else for (const id of mv.ids) this.seenIds.add(id);
             }
         }
         else if (!presentNow) {
             // Released while the camera's raw motion is still on: the state is 'closed' and stays so until raw
             // goes false and rises again (no immediate re-episode that would only be vetoed). Motion stays false in Gate.
+            // Nothing detected any more: occupancy and motion end at once, whatever the still timer says.
             this.close('released', now, logs);
         }
+        else
+            this.stillStep(now, logs, mv);
         return this.out(logs, reset);
     }
 
@@ -487,8 +617,10 @@ export class Episode {
                 this.close('vetoed', now, logs);
             }
             else if (this.state === 'active' && this.confirmedAt !== undefined && now - this.confirmedAt >= this.cfg.maxHoldMs) {
+                const carry = { off: this.stillOff, at: this.stillOffAt, ids: new Set(this.seenIds) };
                 this.close('maxhold', now, logs);
                 if (this.rawTrue) {
+                    if (carry.off) { this.stillOff = true; this.stillOffAt = carry.at; this.seenIds = carry.ids; }
                     // safety ceiling while raw is still on: start a fresh confirmation instead of closing for good;
                     // motion stays as it is until the first verdict (a still-present subject re-confirms at once)
                     this.startedAt = now;
@@ -497,6 +629,8 @@ export class Episode {
                     this.holdOver = true;
                 }
             }
+            else
+                this.stillStep(now, logs);
         }
         return this.out(logs);
     }
@@ -561,6 +695,12 @@ export function formatSummary(s: EpisodeSummary): string {
         parts.push(`B would confirm +${s.wouldBAfter} ms`);
     if (s.fastBest && !(s.confirmPath ?? '').startsWith('fast'))
         parts.push(`fast: ${s.fastBest.strong} strong frames, best track ${s.fastBest.n} in window, moved ${s.fastBest.moved.toFixed(2)}`);
+    if (s.stillReleases) {
+        parts.push(`motion released (still) +${s.stillReleaseAfterS ?? 0} s${s.stillReleases > 1 ? ` (${s.stillReleases}x)` : ''}`);
+        if (s.reraises) parts.push(`motion re-raised ${s.reraises}x`);
+    }
+    if (s.occupiedS !== undefined && s.motionS !== undefined && s.motionS !== s.occupiedS)
+        parts.push(`occupied ${s.occupiedS} s, motion ${s.motionS} s`);
     if (s.note)
         parts.push(s.note);
     return parts.join(' | ');

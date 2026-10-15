@@ -17,7 +17,7 @@ export function renderOverview(cameras: OverviewCamera[]): string {
     const td = (v: string) => `<td style="padding:2px 10px 2px 0;white-space:nowrap">${v}</td>`;
     const rows = cameras.map(c => `<tr>${td(esc(c.name))}${td(c.mode)}${td(c.state)}${td(c.today)}${td(c.p50)}${td(c.decode)}${td(c.lastDetection)}</tr>`).join('');
     const table = cameras.length
-        ? `<div style="overflow-x:auto"><table style="border-collapse:collapse;color:currentColor;font-size:95%"><tr>${th('Camera')}${th('Mode')}${th('State')}${th('Today ep / conf / veto / unfl')}${th('Confirm p50')}${th('Decode')}${th('Last detection')}</tr>${rows}</table></div>`
+        ? `<div style="overflow-x:auto"><table style="border-collapse:collapse;color:currentColor;font-size:95%"><tr>${th('Camera')}${th('Mode')}${th('State')}${th('Today ep / conf / veto / unfl / still / re-raise')}${th('Confirm p50')}${th('Decode')}${th('Last detection')}</tr>${rows}</table></div>`
         : `<div style="opacity:.7">No camera has Coral Guard enabled ${dash} enable it per camera under Extensions.</div>`;
     return `<div style="color:currentColor;line-height:1.5">${table}</div>`;
 }

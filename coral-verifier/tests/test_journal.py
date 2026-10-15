@@ -674,3 +674,25 @@ def test_inconclusive_veto_asks_a_neutral_yes_no_question(tmp_path):
     assert j.get("cam-ep-03")["question"]["key"] == "empty"                           # a well-founded veto keeps the old question
     assert ep(j, "cam1", "cam-ep-04", "start", 30_000, inconclusive="yes")[0] == 400
     assert ep(j, "cam1", "cam-ep-05", "start", 30_000, detect=["car"])[0] == 400
+
+
+def test_motion_fields_on_end_and_summary_counts_older_episodes_render_without(tmp_path):
+    """0.3.19: the end carries occupancy vs motion time and still releases; timeline entries for still release / re-raise are kept as sent."""
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    assert ep(j, "cam1", "ep-000101", "start", 1000, mode="gate", kind="camera")[0] == 200
+    assert ep(j, "cam1", "ep-000101", "update", 2000, timeline_event={"t_ms": 2000, "text": "motion released (still) +61 s, occupancy stays on"})[0] == 200
+    assert ep(j, "cam1", "ep-000101", "update", 3000, timeline_event={"t_ms": 3000, "text": "motion re-raised (new subject) +90 s"})[0] == 200
+    mo = {"occupied_s": 300, "motion_s": 170, "still_releases": 2, "reraises": 1}
+    assert ep(j, "cam1", "ep-000101", "end", 4000, outcome="released", groups=["person"], motion=mo)[0] == 200
+    assert ep(j, "cam1", "ep-000102", "start", 5000, mode="gate", kind="camera")[0] == 200
+    assert ep(j, "cam1", "ep-000102", "end", 6000, outcome="released", groups=["person"])[0] == 200
+    m = j.get("ep-000101")
+    m = m.get("meta", m) if isinstance(m, dict) else m
+    assert m["motion"] == mo
+    assert [e["text"].split(" ")[1] for e in m["timeline"]] == ["released", "re-raised"]
+    old = next(x for x in j.list()["items"] if x["id"] == "ep-000102")
+    assert "motion" not in old
+    t = j.summary()["totals"]
+    assert t["still_releases"] == 2 and t["reraises"] == 1
+    for bad in ({"occupied_s": "x"}, [1], {"motion_s": -1}):
+        assert ep(j, "cam1", "ep-000103", "start", 7000, mode="gate", kind="camera", motion=bad)[0] == 400

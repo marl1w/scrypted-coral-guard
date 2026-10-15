@@ -46,6 +46,7 @@ main{padding:0 16px 24px;max-width:1400px;margin:0 auto}
 .mut{color:var(--mut);font-size:12px}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
 .chip{background:var(--chip);border-radius:16px;padding:2px 10px;font-size:12px;line-height:20px}
+.chip.motion{color:var(--accent-color)}tr.mot td{color:var(--accent-color);font-weight:500}
 .chip.confirmed,.chip.correct{color:var(--ok)}.chip.vetoed,.chip.false_alarm{color:var(--bad)}.chip.aborted,.chip.stale,.chip.wrong_class,.chip.missed{color:var(--warn)}
 .thumbs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
 .th{position:relative;background:#0003;border-radius:8px;overflow:hidden;align-self:start}
@@ -175,11 +176,16 @@ function frameBox(id,f,cls,label,focus){
   const w=E("div",cls);const img=E("img");img.loading="lazy";img.src=`${API}/${eid(id)}/${f.name}.jpg`;img.alt=f.name;w.appendChild(img);
   if(label)w.appendChild(E("b","",label));
   j(`${API}/${eid(id)}/${f.name}.json`).then(s=>w.appendChild(boxLayer(s.detections,focus))).catch(()=>{});return w}
+/* 0.3.19: occupancy vs motion time and still releases (absent on older episodes) */
+function fmtS(s){s=Math.max(0,Math.round(Number(s)||0));return s<60?s+" s":Math.floor(s/60)+" min"+(s%60?" "+(s%60)+" s":"")}
+function motionText(m){const o=m&&m.motion;if(!o)return null;const n=(v,w)=>v?` \u00b7 ${v} ${w}${v>1?"s":""}`:"";
+  return `occupied ${fmtS(o.occupied_s)} \u00b7 motion ${fmtS(o.motion_s)}`+n(o.still_releases,"still release")+n(o.reraises,"re-raise")}
+function isMotionEv(t){return /^motion (released|re-raised)/.test(t||"")}
 function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.outcome||""),m.outcome||m.status));
-  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));return c}
+  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));return c}
 function card(m){
   const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",dn(m)));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
-  c.appendChild(E("div","mut",fmtT(m.start_ms)));c.appendChild(chips(m));
+  c.appendChild(E("div","mut",fmtT(m.start_ms)));if(m.motion&&m.motion.motion_s!==m.motion.occupied_s)c.appendChild(E("div","mut",motionText(m)));c.appendChild(chips(m));
   const t=E("div","thumbs");for(const role of["first","best","last"]){const f=m.frames.find(x=>x.role===role);if(f)t.appendChild(frameBox(m.id,f,"th",role))}
   c.appendChild(t);c.onclick=()=>openDetail(m.id);return c}
 function framesOf(m){const order=["first","best","last"];return[...order.map(r=>m.frames.find(f=>f.role===r)).filter(Boolean),...m.frames.filter(f=>f.role==="snapshot")]}
@@ -197,7 +203,7 @@ async function cams(){try{const s=await j(`${API}/summary`);CAMS=s.cameras.slice
 async function openDetail(id){
   const m=await j(`${API}/${eid(id)}`);const d=$("#detail");d.replaceChildren();d.classList.add("on");
   const back=E("button","","Back");back.onclick=()=>{d.classList.remove("on");refresh()};d.appendChild(back);
-  d.appendChild(E("h2","",dn(m)+" - "+fmtT(m.start_ms)));d.appendChild(E("div","mut",`${fmtD(m.start_ms,m.end_ms)}  id ${m.id}`+(m.note?"  note: "+m.note:"")));d.appendChild(chips(m));
+  d.appendChild(E("h2","",dn(m)+" - "+fmtT(m.start_ms)));d.appendChild(E("div","mut",`${fmtD(m.start_ms,m.end_ms)}  id ${m.id}`+(m.note?"  note: "+m.note:"")));if(motionText(m))d.appendChild(E("div","mut",motionText(m)));d.appendChild(chips(m));
   const fr=E("div","frames");const fs=framesOf(m);
   for(const f of fs){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null));col.appendChild(E("div","mut",f.role+"  "+fmtT(f.t_ms)));fr.appendChild(col)}
   d.appendChild(fr);
@@ -205,7 +211,7 @@ async function openDetail(id){
   const lb=E("div","lbl");for(const l of["correct","false_alarm","missed","wrong_class"]){const b=E("button",l===m.label?"on":"",l.replace("_"," "));b.onclick=async()=>{
     await post(`${API}/${eid(id)}/label`,{label:l,note:note.value||null});openDetail(id)};lb.appendChild(b)}
   d.appendChild(E("h3","","Label"));d.appendChild(lb);d.appendChild(note);
-  d.appendChild(E("h3","","Timeline"));const tl=E("table");for(const e of m.timeline||[]){const r=tl.insertRow();r.insertCell().textContent=fmtT(e.t_ms);r.insertCell().textContent=e.text}d.appendChild(tl);
+  d.appendChild(E("h3","","Timeline"));const tl=E("table");for(const e of m.timeline||[]){const r=tl.insertRow();if(isMotionEv(e.text))r.className="mot";r.insertCell().textContent=fmtT(e.t_ms);r.insertCell().textContent=e.text}d.appendChild(tl);
   d.appendChild(E("h3","","Detections"));const dt=E("div","scroll");d.appendChild(dt);
   const tb=E("table");const hr=tb.insertRow();["frame","class","group","score","flags"].forEach(x=>{const c=document.createElement("th");c.textContent=x;hr.appendChild(c)});dt.appendChild(tb);
   for(const f of fs){j(`${API}/${eid(id)}/${f.name}.json`).then(s=>{for(const x of s.detections){const r=tb.insertRow();
@@ -284,7 +290,7 @@ async function suLoad(){
   const s=await j(`${API}/summary?${p}`),b=$("#suBody"),T=s.totals;b.replaceChildren();
   if(!T.events){b.appendChild(E("div","empty","No events in this period"));return}
   const k=E("div","kpis");k.appendChild(kpi("Events",T.events));k.appendChild(kpi("Reviewed",pct(T.closed?T.reviewed/T.closed:null)));
-  k.appendChild(kpi("Precision",T.reviewed?pct(T.precision):"-"));k.appendChild(kpi("False alarms",T.false_alarm));k.appendChild(kpi("Missed",T.missed));b.appendChild(k);
+  k.appendChild(kpi("Precision",T.reviewed?pct(T.precision):"-"));k.appendChild(kpi("False alarms",T.false_alarm));k.appendChild(kpi("Missed",T.missed));if(T.still_releases!=null)k.appendChild(kpi("Still releases",T.still_releases+(T.reraises?" / "+T.reraises+" re-raised":"")));b.appendChild(k);
   if(!T.reviewed)b.appendChild(E("div","empty","Review events to see accuracy"));
   b.appendChild(E("h2","","Cameras"));
   const cols=[["camera","Camera"],["events","Events"],["reviewed","Reviewed"],["precision","Precision"],["false_alarm","False alarms"],["missed","Missed"],["confirmed","Confirmed"],["vetoed","Vetoed"],["unflagged","Unflagged"]];

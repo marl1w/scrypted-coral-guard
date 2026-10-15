@@ -94,6 +94,14 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
             defaultValue: 3000,
             onPut: () => { for (const m of this.active) m.applyConfig(); },
         },
+        stillReleaseS: {
+            group: 'Detection',
+            title: 'Release motion after still (s)',
+            description: 'Gate mode: once every held subject has been still this long, motion goes off while occupancy stays on; a new or moving subject raises motion again. Default 170 (just under the 180 s HomeKit recording cap, so a still subject is covered by one full clip); 0 = motion held while anyone is present; at most 180.',
+            type: 'number',
+            defaultValue: 170,
+            onPut: () => { for (const m of this.active) m.applyConfig(); },
+        },
         secondLook: {
             group: 'Detection',
             title: 'Second look',
@@ -147,6 +155,13 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     get graceMs(): number {
         const n = Number((this.storageSettings.values as any).graceMs);
         return Number.isFinite(n) && (this.storageSettings.values as any).graceMs !== '' ? Math.min(10000, Math.max(0, n)) : 3000;
+    }
+
+    /** 'Release motion after still' in s (default 170, clamped 0..180; 0 = off). */
+    get stillReleaseS(): number {
+        const raw = (this.storageSettings.values as any).stillReleaseS;
+        const n = Number(raw);
+        return Number.isFinite(n) && raw !== '' && raw !== null && raw !== undefined ? Math.min(180, Math.max(0, n)) : 170;
     }
 
     /** 'Second look' (Detection group, default on): sent to the service as second_look. */
@@ -366,7 +381,7 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
             return;
         // ObjectDetector only where the camera has one: owning it hides the camera's raw events from other listeners,
         // the mixin re-publishes them (or the verified classes) itself
-        return [ScryptedInterface.MotionSensor, ScryptedInterface.Settings, ...(interfaces.includes(ScryptedInterface.ObjectDetector) ? [ScryptedInterface.ObjectDetector] : []), thisMarker];
+        return [ScryptedInterface.MotionSensor, ScryptedInterface.OccupancySensor, ScryptedInterface.Settings, ...(interfaces.includes(ScryptedInterface.ObjectDetector) ? [ScryptedInterface.ObjectDetector] : []), thisMarker];
     }
 
     async getMixin(mixinDevice: any, mixinDeviceInterfaces: ScryptedInterface[], mixinDeviceState: WritableDeviceState): Promise<any> {

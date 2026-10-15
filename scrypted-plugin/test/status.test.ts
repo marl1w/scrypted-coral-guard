@@ -71,12 +71,12 @@ test('counters and midnight rollover', () => {
     s.onEpisode(ep({ kind: 'unflagged' }));
     s.onEpisode(ep({ aborted: true }));
     s.onFrameSkipped(); s.onFailure('boom');
-    assert.deepEqual(s.today(), { episodes: 4, confirmed: 1, vetoed: 1, unflagged: 1, skippedFrames: 1, failures: 1 });
+    assert.deepEqual(s.today(), { episodes: 4, confirmed: 1, vetoed: 1, unflagged: 1, skippedFrames: 1, failures: 1, stillReleases: 0, reraises: 0 });
     c.t = new Date(2026, 9, 14, 0, 0, 5).getTime();
     assert.equal(s.today().episodes, 0);
     assert.match(s.render(c.t), /0 episodes &middot; 0 confirmed/);
     s.onEpisode(ep());
-    assert.deepEqual(s.today(), { episodes: 1, confirmed: 1, vetoed: 0, unflagged: 0, skippedFrames: 0, failures: 0 });
+    assert.deepEqual(s.today(), { episodes: 1, confirmed: 1, vetoed: 0, unflagged: 0, skippedFrames: 0, failures: 0, stillReleases: 0, reraises: 0 });
 });
 
 test('history ring limited to 10, newest first', () => {

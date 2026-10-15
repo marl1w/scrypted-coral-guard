@@ -1692,3 +1692,82 @@ test('journal pairing: mode change mid-episode, instance release mid-episode and
     await sleep(50);
     assert.ok(assertPaired(h.calls.episodes, 'mode change + release') >= 1);
 });
+
+// ---- occupancy and still release (0.3.19) -----------------------------------------------------------
+
+const stillPerson = (...ids: [number, boolean][]) => ({ person: { state: 'confirmed', confirmed: true, present: true, tracks_detail: ids.map(([id, stationary]) => ({ id, stationary })) } });
+
+test('occupancy: Gate holds occupied for a still person, releases motion (journal + panel), re-raises on a new subject, ends together', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    h.plugin.stillReleaseS = 0.2;
+    h.mixin.applyConfig();
+    h.raw(true);
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    frame(s);
+    await eventually(() => h.calls.frame.length === 1);
+    h.calls.frame[0].d.res(stillPerson([1, true]));
+    await eventually(() => motion() === true && ctl.state.occupied === true, 3000, 'motion + occupancy on');
+    await eventually(() => motion() === false, 3000, 'still release');
+    assert.equal(ctl.state.occupied, true, 'occupancy stays on');
+    assert.ok(ctl.logs.some(l => /motion released \(still\)/.test(String(l[1]))));
+    await eventually(() => h.calls.episodes.some((e: any) => /motion released \(still\)/.test(e.timeline_event?.text ?? '')), 3000, 'journal still entry');
+    const html = String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
+    assert.match(html, /Occupancy: on \(person[^)]*\) · Motion: off \(released after 0 s still\)/);
+    const offAt = Date.now();
+    frame(s, Date.now() + 5);
+    await eventually(() => h.calls.frame.length === 2);
+    h.calls.frame[1].d.res(stillPerson([1, true], [2, false]));
+    await eventually(() => motion() === true, 4000, 're-raise');
+    const lastOff = ctl.writes.filter(w => w[1] === false).pop()!;
+    assert.ok(Date.now() - lastOff[0] >= 1900 || Date.now() - offAt >= 1900, 'off gap before the re-raise');
+    await eventually(() => h.calls.episodes.some((e: any) => /motion re-raised \(new subject\)/.test(e.timeline_event?.text ?? '')), 3000, 'journal re-raise');
+    h.raw(false);
+    frame(s, Date.now() + 10);
+    await eventually(() => h.calls.frame.length === 3, 3000);
+    h.calls.frame[2].d.res(idleReply);
+    await eventually(() => motion() === false && ctl.state.occupied === false, 3000, 'both off at once');
+    await eventually(() => h.calls.episodes.some((e: any) => e.action === 'end'));
+    const end = h.calls.episodes.find((e: any) => e.action === 'end');
+    assert.ok(end.motion, 'end carries the occupancy/motion fields');
+    assert.ok(end.motion.still_releases >= 1);
+    assert.ok(end.motion.reraises >= 1);
+    assert.ok(end.motion.occupied_s >= end.motion.motion_s);
+    await h.mixin.release();
+});
+
+test('occupancy: Shadow mirrors raw motion; fail open follows raw; Off passes raw', async () => {
+    for (const mode of ['Shadow', 'Off']) {
+        const h = make({ settings: { mode } });
+        h.raw(true);
+        await sleep(20);
+        assert.equal(ctl.state.occupied, true, mode);
+        h.raw(false);
+        await sleep(20);
+        assert.equal(ctl.state.occupied, false, mode);
+        await h.mixin.release();
+    }
+    const g = make({ settings: { mode: 'Gate' } });
+    g.raw(true);
+    await sleep(20);
+    assert.notEqual(ctl.state.occupied, true, 'Gate: not occupied before a confirmation');
+    g.mixin.onHealth(false, 'down');
+    await eventually(() => ctl.state.occupied === true && motion() === true, 3000, 'fail open');
+    g.raw(false);
+    await eventually(() => ctl.state.occupied === false && motion() === false, 3000);
+    await g.mixin.release();
+});
+
+test('occupancy: sensorless camera writes occupied false at start and raises it with a verified heartbeat person', async () => {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', heartbeatMs: 1 }, sensorless: true });
+    assert.deepEqual(ctl.occWrites!.map(w => w[1]), [false]);
+    await eventually(() => ctl.starts.length === 1);
+    frame(ctl.starts[0]);
+    await eventually(() => h.calls.frame.length === 1);
+    h.calls.frame[0].d.res(personHold);
+    await eventually(() => h.calls.frame.length === 2, 3000);
+    h.calls.frame[1].d.res(personHold);
+    await eventually(() => ctl.state.occupied === true && motion() === true);
+    await h.mixin.release();
+    assert.equal(ctl.state.occupied, false, 'released mixin clears its occupancy');
+});

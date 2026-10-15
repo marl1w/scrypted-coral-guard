@@ -79,6 +79,8 @@ export interface EpisodeEvent {
     inconclusive?: boolean;
     /** service 0.3.12+: the camera's enabled detection groups (the review question of an inconclusive veto names them) */
     detect?: string[];
+    /** service 0.3.19+ (older services ignore it): end only, confirmed episodes; occupancy vs motion time and still releases */
+    motion?: { occupied_s: number; motion_s: number; still_releases: number; reraises: number };
 }
 
 export interface TrackerConfig {

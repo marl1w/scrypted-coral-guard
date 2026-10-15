@@ -293,6 +293,13 @@ class Journal:
             inconclusive = body.get("inconclusive")
             if inconclusive is not None and not isinstance(inconclusive, bool):
                 raise ValueError("inconclusive must be true or false")
+            motion = body.get("motion")                                                 # 0.3.19: occupancy vs motion time and still releases (end of a confirmed episode)
+            if motion is not None:
+                if not isinstance(motion, dict):
+                    raise ValueError("motion must be an object")
+                motion = {k: int(_num(motion.get(k, 0), "motion." + k)) for k in ("occupied_s", "motion_s", "still_releases", "reraises")}
+                if any(v < 0 for v in motion.values()):
+                    raise ValueError("motion values must be >= 0")
             detect = body.get("detect")
             if detect is not None and (not isinstance(detect, list) or any(g not in GROUPS for g in detect)):
                 raise ValueError("detect must be a list of person|vehicle|animal")
@@ -361,6 +368,8 @@ class Journal:
                     m.pop("inconclusive", None)
             if detect is not None:
                 m["detect"] = detect
+            if motion is not None:
+                m["motion"] = motion
             if ev:
                 ev["t_ms"] = self._clamp(ev["t_ms"], now)
                 m["timeline"] = (m["timeline"] + [ev])[-200:]
@@ -621,10 +630,14 @@ class Journal:
         cat = self.category
 
         def acc():
-            return {"events": 0, "closed": 0, "ongoing": 0, "reviewable": 0, "reviewed": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0}
+            return {"events": 0, "closed": 0, "ongoing": 0, "reviewable": 0, "reviewed": 0, "correct": 0, "false_alarm": 0, "missed": 0, "wrong_class": 0, "confirmed": 0, "vetoed": 0, "unflagged": 0, "other": 0,
+                    "still_releases": 0, "reraises": 0}
 
         def add(row, m):
             row["events"] += 1
+            mo = m.get("motion") or {}                                   # 0.3.19: motion released for stillness / raised again (older episodes: 0)
+            row["still_releases"] += int(mo.get("still_releases") or 0)
+            row["reraises"] += int(mo.get("reraises") or 0)
             row[cat(m)] += 1
             # ONE definition everywhere (lists, chips, Validate, dashboard): reviewable = closed and unlabelled; ongoing episodes are counted apart
             if m["status"] == "ongoing":

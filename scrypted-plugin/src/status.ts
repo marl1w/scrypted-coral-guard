@@ -41,6 +41,11 @@ export interface EpisodeEvent {
     vetoed: boolean;
     aborted: boolean;
     note?: string;
+    /** still release (0.3.19): s from the start to the first release, re-raises, occupancy and motion time of a confirmed episode */
+    stillReleaseAfterS?: number;
+    reraises?: number;
+    occupiedS?: number;
+    motionS?: number;
 }
 
 export interface ServiceHealth { ok: boolean; coralMs?: number; text: string }
@@ -52,7 +57,7 @@ export interface LastFrame {
     boxes: Box[];
 }
 
-export interface Counters { episodes: number; confirmed: number; vetoed: number; unflagged: number; skippedFrames: number; failures: number }
+export interface Counters { episodes: number; confirmed: number; vetoed: number; unflagged: number; skippedFrames: number; failures: number; /** motion released for stillness / raised again (0.3.19) */ stillReleases: number; reraises: number }
 
 export interface Pct { p50?: number; p95?: number }
 export interface Percentiles { n: number; posted: Pct; verdict: Pct; confirmed: Pct }
@@ -105,7 +110,7 @@ export function relTime(thenMs: number | undefined, nowMs: number): string {
 
 const dayKey = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`; };
 const clock = (ms: number) => { const d = new Date(ms); const p = (n: number) => String(n).padStart(2, '0'); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
-const zero = (): Counters => ({ episodes: 0, confirmed: 0, vetoed: 0, unflagged: 0, skippedFrames: 0, failures: 0 });
+const zero = (): Counters => ({ episodes: 0, confirmed: 0, vetoed: 0, unflagged: 0, skippedFrames: 0, failures: 0, stillReleases: 0, reraises: 0 });
 const clamp01 = (n: number) => Math.min(1, Math.max(0, Number.isFinite(n) ? n : 0));
 
 function outcomeOf(e: EpisodeEvent): string {
@@ -224,7 +229,8 @@ export class CameraStatus {
         const body = n.mode === 'Shadow'
             ? big(n.published) + line(`Would publish ${n.coral ? 'ON' : 'OFF'} \u00b7 ${reason(n.reason)}`, n.coral ? C.green : undefined)
             : big(n.published) + line(reason(n.reason));
-        return `<div style="border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:8px 12px;margin-top:8px"><div style="opacity:.7;font-size:85%">Now</div>${body}</div>`;
+        const occ = n.occupancy ? line(sensorLine(n.occupancy, n.mode === 'Shadow' ? n.coral : n.published, n.mode === 'Shadow'), n.occupancy.on ? C.green : undefined) : '';
+        return `<div style="border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:8px 12px;margin-top:8px"><div style="opacity:.7;font-size:85%">Now</div>${body}${occ}</div>`;
     }
 
     private nowLists(nowMs: number): string {
@@ -308,6 +314,13 @@ export class CameraStatus {
         this.failure = { msg, atMs: at };
     }
 
+    /** a still release or re-raise of the motion (counted per day). */
+    onStill(event: 'release' | 'reraise') {
+        this.roll(this.now());
+        if (event === 'release') this.counters.stillReleases++;
+        else this.counters.reraises++;
+    }
+
     onEpisode(e: EpisodeEvent) {
         this.roll(this.now());
         const c = this.counters;
@@ -350,6 +363,8 @@ export class CameraStatus {
         const bits = [`${clock(e.rawStartMs)} (${relTime(e.rawStartMs, nowMs)})`, outcomeOf(e)];
         if (e.confirmedAfterMs !== undefined) bits.push(`confirmed after ${fmtMs(e.confirmedAfterMs)}${e.confirmedByPreroll ? ' via pre-roll' : ''}`);
         if (e.heldBeyondRawS > 0) bits.push(`held ${Math.round(e.heldBeyondRawS)} s beyond raw`);
+        if (e.stillReleaseAfterS !== undefined) bits.push(`motion released (still) +${e.stillReleaseAfterS} s${e.reraises ? `, re-raised ${e.reraises}x` : ''}`);
+        if (e.occupiedS !== undefined && e.motionS !== undefined && e.motionS !== e.occupiedS) bits.push(`occupied ${e.occupiedS} s, motion ${e.motionS} s`);
         if (e.note) bits.push(e.note);
         return bits.join(', ');
     }
@@ -358,7 +373,8 @@ export class CameraStatus {
         const t = this.today(nowMs);
         const p = this.percentiles();
         const lat = p.n ? `, confirm p50/p95 ${p.confirmed.p50 === undefined ? 'n/a' : fmtMs(p.confirmed.p50)}/${p.confirmed.p95 === undefined ? 'n/a' : fmtMs(p.confirmed.p95)}` : '';
-        return `${this.state}; today ${t.episodes} episodes (${t.confirmed} confirmed, ${t.vetoed} vetoed)${lat}`;
+        const still = t.stillReleases || t.reraises ? `, ${t.stillReleases} still releases, ${t.reraises} re-raises` : '';
+        return `${this.state}; today ${t.episodes} episodes (${t.confirmed} confirmed, ${t.vetoed} vetoed)${still}${lat}`;
     }
 
     toJSON() {
@@ -462,7 +478,7 @@ export class CameraStatus {
         return {
             mode: esc(this.mode ?? ""),
             state: this.stateChip(),
-            today: esc(`${t.episodes} / ${t.confirmed} / ${t.vetoed} / ${t.unflagged}`),
+            today: esc(`${t.episodes} / ${t.confirmed} / ${t.vetoed} / ${t.unflagged} / ${t.stillReleases} / ${t.reraises}`),
             p50: p === undefined ? '\u2014' : esc(fmtMs(p)),
             decode: !this.stream?.connected ? '\u2014' : this.stream.decode === 'gpu' ? 'GPU' : this.stream.decode === 'cpu' ? (this.stream.gpuFailed ? 'CPU (GPU failed)' : 'CPU') : '?',
             lastDetection: this.detection ? esc(relTime(this.detection.frame.atMs, nowMs)) : '\u2014',
@@ -487,7 +503,7 @@ export class CameraStatus {
         const grid = (k: string, v: string) => `<div style="opacity:.7">${esc(k)}</div><div>${v}</div>`;
         const grp = Object.entries(this.byGroup).filter(([, n]) => n > 0).map(([g, n]) => `${g} ${n}`).join(', ');
         const today = [`${t.episodes} episodes`, `${t.confirmed} confirmed${grp ? ` (${esc(grp)})` : ''}`, `${t.vetoed} vetoed`, `${t.unflagged} unflagged`]
-            .concat(t.skippedFrames ? [`${t.skippedFrames} skipped`] : [], t.failures ? [`${t.failures} failures`] : []).join(' &middot; ');
+            .concat(t.stillReleases || t.reraises ? [`${t.stillReleases} still releases`, `${t.reraises} re-raises`] : [], t.skippedFrames ? [`${t.skippedFrames} skipped`] : [], t.failures ? [`${t.failures} failures`] : []).join(' &middot; ');
         const lat = two(p.confirmed) ? esc(two(p.confirmed)!) : dash;
         const video = !this.stream ? dash
             : this.stream.connected ? esc(`${this.stream.decode === 'gpu' ? 'GPU' : this.stream.decode === 'cpu' ? 'CPU' : '?'}${this.stream.gpuFailed ? ` (GPU failed${this.stream.gpuFallbacks ? ` \u00d7${this.stream.gpuFallbacks}` : ''})` : ''}${this.stream.name ? ` \u00b7 ${this.stream.name}` : ''}`) : `<span style="color:${C.red}">not connected</span>`;
@@ -498,9 +514,9 @@ export class CameraStatus {
                 : e.vetoed ? this.chip('Vetoed', C.amber, false) : this.chip(e.groups?.length ? `Confirmed \u00b7 ${e.groups.join('+')}` : 'Confirmed', C.green, false);
         const cellStyle = 'style="padding:2px 8px 2px 0;text-align:left;vertical-align:middle"';
         const rows = this.history.slice(-8).reverse().map(e =>
-            `<tr><td ${cellStyle}>${esc(clock(e.rawStartMs))}</td><td ${cellStyle}>${result(e)}</td><td ${cellStyle}>${e.heldBeyondRawS > 0 ? esc(`${Math.round(e.heldBeyondRawS)} s`) : dash}</td><td ${cellStyle}>${e.confirmedAfterMs !== undefined ? esc(fmtMs(e.confirmedAfterMs)) : e.verdictAfterMs !== undefined && e.vetoed ? esc(fmtMs(e.verdictAfterMs)) : dash}</td></tr>`).join('');
+            `<tr><td ${cellStyle}>${esc(clock(e.rawStartMs))}</td><td ${cellStyle}>${result(e)}</td><td ${cellStyle}>${e.heldBeyondRawS > 0 ? esc(`${Math.round(e.heldBeyondRawS)} s`) : dash}</td><td ${cellStyle}>${e.occupiedS !== undefined ? esc(occMotion(e)) : dash}</td><td ${cellStyle}>${e.confirmedAfterMs !== undefined ? esc(fmtMs(e.confirmedAfterMs)) : e.verdictAfterMs !== undefined && e.vetoed ? esc(fmtMs(e.verdictAfterMs)) : dash}</td></tr>`).join('');
         const episodes = rows
-            ? `<table style="border-collapse:collapse;margin-top:4px"><tr style="opacity:.7">${['Time', 'Result', 'Held', 'Latency'].map(h => `<th ${cellStyle}>${h}</th>`).join('')}</tr>${rows}</table>`
+            ? `<table style="border-collapse:collapse;margin-top:4px"><tr style="opacity:.7">${['Time', 'Result', 'Held', 'Occupied / motion', 'Latency'].map(h => `<th ${cellStyle}>${h}</th>`).join('')}</tr>${rows}</table>`
             : `<div style="opacity:.7;margin-top:4px">none</div>`;
         const showFailure = !!this.failure && this.okAt <= this.failure.atMs && nowMs - this.failure.atMs <= FAILURE_SHOW_MS;
         const failure = this.failure && showFailure ? `<div style="margin-top:8px;color:${C.red}">Failure: ${esc(this.failure.msg)} \u00b7 ${esc(ago(nowMs - this.failure.atMs))}</div>` : '';
@@ -521,7 +537,22 @@ export class CameraStatus {
 export interface ActivityEntry { t: number; groups: string[]; published: boolean; would: boolean }
 const ACTIVITY_MS = 10 * 60 * 1000, ACTIVITY_BUCKETS = 60, ACTIVITY_MAX = 1200;
 export type NowReason = { text: string } | { groups: string[]; sinceMs?: number; lastSeenMs?: number };
-export interface NowInfo { published: boolean; coral: boolean; mode: string; reason: NowReason }
+export interface NowInfo { published: boolean; coral: boolean; mode: string; reason: NowReason; /** Occupancy (0.3.19): in Shadow the would-publish values */ occupancy?: OccupancyInfo }
+/** on: occupied; groups held; stillS: every held subject still this long; releasedAfterS: motion released for stillness after this still time. */
+export interface OccupancyInfo { on: boolean; groups?: string[]; stillS?: number; releasedAfterS?: number }
+
+/** 'Occupancy: on (person, still 42 s) · Motion: off (released after 170 s still)' (Shadow: 'Would: ...'). */
+export function sensorLine(o: OccupancyInfo, motion: boolean, would = false): string {
+    const occBits = o.on ? [...(o.groups?.length ? [o.groups.join('+')] : []), ...(o.stillS !== undefined && o.stillS >= 3 ? [`still ${Math.round(o.stillS)} s`] : [])] : [];
+    const occ = `Occupancy: ${o.on ? 'on' : 'off'}${occBits.length ? ` (${occBits.join(', ')})` : ''}`;
+    const mot = `Motion: ${motion ? 'on' : 'off'}${!motion && o.on && o.releasedAfterS !== undefined ? ` (released after ${Math.round(o.releasedAfterS)} s still)` : ''}`;
+    return `${would ? 'Would: ' : ''}${occ} \u00b7 ${mot}`;
+}
+
+/** 'occupied 300 s / motion 170 s' of an episode row. */
+export function occMotion(e: EpisodeEvent): string {
+    return `${e.occupiedS} s / ${e.motionS ?? e.occupiedS} s`;
+}
 export interface TrackedItem { group: string; cls: string; state: string; sinceMs?: number; lastSeenMs?: number; box?: number[]; detected: boolean; /** hold remaining at analysis time (service 0.3.0+) */ holdLeftMs?: number }
 const cap = (t: string) => t ? t[0].toUpperCase() + t.slice(1) : t;
 function boxLabel(b: Box): string {
