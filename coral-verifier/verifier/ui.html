@@ -111,22 +111,20 @@ svg.chart{width:100%;height:auto}
 svg.chart text{fill:var(--mut);font-size:9px}
 @media (max-width:520px){.vbtns button{font-size:17px}.vq{font-size:23px}.appbar{height:52px}}
 .chip.auto{color:var(--acc)}
-.vswipe{display:none}
-/* phones: question, one frame at a time (swipe for the others) and the answer buttons fixed at the bottom, all on one screen */
+/* phones: question, all three frames and Yes / No on one screen. Best full width on top, first and last side by side
+   below; Skip, Previous and the note are desktop-only (the keyboard shortcuts stay) */
 @media (max-width:600px){
   #vaView .bar{padding:6px 12px}
-  #vBody{padding:0 12px 150px}
+  #vBody{padding:0 12px 92px}
   .vq{font-size:21px;margin:8px 0 2px}
-  #vaView .frames{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:8px;-webkit-overflow-scrolling:touch;margin-top:8px}
-  #vaView .frames>div{flex:0 0 100%;scroll-snap-align:center}
-  .vswipe{display:block;text-align:center;margin-top:4px}
+  #vaView .frames{grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+  #vaView .frames>div:nth-child(2){grid-column:1/3;order:-1}
+  #vaView .frames .mut{font-size:11px}
   .vbar{position:fixed;left:0;right:0;bottom:0;z-index:7;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -2px 6px rgba(0,0,0,.15);
     padding:8px 12px calc(8px + env(safe-area-inset-bottom))}
   .vbar .vbtns{margin:0;gap:10px}
   .vbar .vbtns button{padding:10px;min-height:54px;font-size:18px}
-  .vbar .vsub{margin:6px 0 0;justify-content:center}
-  .vbar .vsub button{min-height:32px;padding:4px 12px;font-size:13px}
-  #vNote{min-height:40px}
+  .vbar .vsub,#vNote{display:none}
 }
 </style>
 </head>
@@ -255,8 +253,7 @@ function vRender(){
   const row=E("div","vbtns");row.appendChild(btn("good","Yes (Y)","check",()=>vAnswer(true)));row.appendChild(btn("wrong","No (N)","close",()=>vAnswer(false)));bar.appendChild(row);
   const sub=E("div","vsub");sub.appendChild(btn("","Skip (S)","next",vSkip));sub.appendChild(btn("","Previous","prev",vBack));bar.appendChild(sub);b.appendChild(bar);
   const shown=framesOf(m).slice(0,3);
-  const fr=E("div","frames");for(const [i,f] of shown.entries()){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,q.group||"none"));col.appendChild(E("div","mut",f.role+(shown.length>1?` (${i+1}/${shown.length})`:"")));fr.appendChild(col)}b.appendChild(fr);
-  if(shown.length>1)b.appendChild(E("div","mut vswipe","swipe for the other frames"));
+  const fr=E("div","frames");for(const f of shown){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,q.group||"none"));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
   const note=E("textarea");note.id="vNote";note.placeholder="Note (optional)";note.value=m.label_note||"";b.appendChild(note)}
 async function vAnswer(yes){
   const m=V.cur;if(!m)return;const q=m.question,n=$("#vNote");const label=yes?q.yes:q.no;
