@@ -35,8 +35,8 @@ FALLBACK_VERSION = "0.3.12"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
-RATE_PER_S = 4
-RATE_BURST = 10
+RATE_PER_S = 8      # sustained frames/s per camera: a 6 fps confirm burst (0.3.12) plus the normal pacing fits
+RATE_BURST = 20     # pre-roll (up to 6 frames) plus a 1.5 s burst at 6 fps, with margin
 REPLY_MIN_SCORE = 0.2          # detections below this are omitted from replies unless verbose=1
 JOB_WAIT_S = 10.0
 IDLE_S = 15.0                  # keep-alive connection idle limit
@@ -98,7 +98,7 @@ def parse_options(opts):
 
 
 class RateLimiter:
-    """Token bucket per camera: sustained `per_s` frames/s, bursts up to `burst` (a pre-roll burst of up to 10 frames within 1 s is accepted)."""
+    """Token bucket per camera: sustained `per_s` frames/s, bursts up to `burst` (a pre-roll plus a confirm burst, up to 20 frames, is accepted)."""
 
     def __init__(self, per_s=RATE_PER_S, burst=RATE_BURST):
         self.per_s, self.burst = per_s, burst; self.b = {}; self.lock = threading.Lock(); self.next_sweep = 0.0

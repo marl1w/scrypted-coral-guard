@@ -111,8 +111,8 @@ def test_bad_requests_map_to_400_without_leaks(box):
 
 
 def test_rate_limit_429_per_camera(box):
-    codes = [box.frame("fast", T0 + i)[0] for i in range(14)]
-    assert codes[:10] == [200] * 10 and 429 in codes[10:]
+    codes = [box.frame("fast", T0 + i)[0] for i in range(26)]
+    assert codes[:20] == [200] * 20 and 429 in codes[20:]
     st, body = box.frame("fast")
     assert st == 429 and 0 < body["retry_after_ms"] <= 1001
     assert box.frame("other")[0] == 200
