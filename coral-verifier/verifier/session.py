@@ -440,7 +440,8 @@ class VehicleTracker:
         st = lambda tr: "parked" if tr.parked else ("moving" if tr.moving else "still")
         hold = max((tr.last + (self.cfg.max_hold_s if tr.parked else self.cfg.hold_s) * 1000.0 for tr in live), default=None)
         return {"moving": any(st(tr) == "moving" for tr in live), "hold_until_ms": None if hold is None else int(hold),
-                "tracks": [{"id": tr.id, "cls": tr.cls, "state": st(tr), "parked": tr.parked, "since_ms": int(tr.born_t)} for tr in live]}
+                "tracks": [{"id": tr.id, "cls": tr.cls, "state": st(tr), "parked": tr.parked, "since_ms": int(tr.born_t),
+                            "box": [round(v, 4) for v in tr.box]} for tr in live]}
 
 
 class AnimalTracker:

@@ -54,3 +54,33 @@ test('maskReply: a masked confirming person cannot confirm; a valid one needs 2 
     const raw = r([0.1, 0.1, 0.3, 0.6]);
     assert.equal(maskReply(raw, [], 0.6, th, [], groupOf), raw);
 });
+
+test('maskReply with track boxes: the service verdict stands for subjects outside the zones (fast confirm, holds through empty frames)', () => {
+    const th = { personConfirm: 0.65, personKeep: 0.2, animalDetect: 0.3 };
+    const out = [0.6, 0.1, 0.8, 0.6], inz = [0.1, 0.1, 0.3, 0.6];
+    const r = (box: number[], dets: any[]) => ({ person: { state: 'confirmed', confirmed: true, present: true, confirmed_by: 'fast_b', tracks: 1, tracks_detail: [{ id: 1, box, stationary: false }] }, detections: dets }) as any;
+    const m1 = maskReply(r(out, [{ cls: 'person', score: 0.49, box: out }]), [left], 0.6, th, [], groupOf);
+    assert.equal(m1.person!.confirmed, true, 'one reply, a 0.49 box below Person confirm: rule B stands');
+    const held = { ...r(out, []), person: { ...r(out, []).person, state: 'holding' } };
+    const m2 = maskReply(held, [left], 0.6, th, [], groupOf);
+    assert.equal(m2.person!.present, true, 'held by the service through a frame without a box');
+    const m3 = maskReply(r(inz, [{ cls: 'person', score: 0.9, box: inz }]), [left], 0.6, th, [], groupOf);
+    assert.deepEqual([m3.person!.confirmed, m3.person!.present], [false, false], 'the held track stands in a zone');
+    const two = r(out, []); two.person.tracks_detail = [{ id: 1, box: inz }, { id: 2, box: out }];
+    assert.equal(maskReply(two, [left], 0.6, th, [], groupOf).person!.present, true, 'one of two tracks outside');
+});
+
+test('maskReply: animal and vehicle verdicts follow their track boxes; tracks without boxes keep the frame rule', () => {
+    const th = { personConfirm: 0.65, personKeep: 0.2, animalDetect: 0.3 };
+    const out = [0.6, 0.1, 0.8, 0.6], inz = [0.1, 0.1, 0.3, 0.6];
+    const an = (box: number[], dets: any[]) => ({ animal: { confirmed: true, present: true, tracks: [{ id: 0, cls: 'dog', box }] }, detections: dets }) as any;
+    assert.equal(maskReply(an(out, []), [left], 0.6, th, [], groupOf).animal!.present, true);
+    assert.equal(maskReply(an(inz, [{ cls: 'dog', score: 0.8, box: inz }]), [left], 0.6, th, [], groupOf).animal!.present, false);
+    const veh = (tracks: any[], dets: any[]) => ({ vehicle: { moving: true, tracks }, detections: dets }) as any;
+    assert.equal(maskReply(veh([{ id: 1, cls: 'car', state: 'moving', parked: false, since_ms: 0, box: out }], []), [left], 0.6, th, [], groupOf).vehicle!.moving, true);
+    assert.equal(maskReply(veh([{ id: 1, cls: 'car', state: 'moving', parked: false, since_ms: 0, box: inz }, { id: 2, cls: 'car', state: 'parked', parked: true, since_ms: 0, box: out }], []), [left], 0.6, th, [], groupOf).vehicle!.moving, false, 'only the moving track counts');
+    const old = veh([{ id: 1, cls: 'car', state: 'moving', parked: false, since_ms: 0 }], []);
+    assert.equal(maskReply(old, [left], 0.6, th, [], groupOf).vehicle!.moving, false, 'no box: needs a valid vehicle detection');
+    old.detections = [{ cls: 'car', score: 0.9, box: out }];
+    assert.equal(maskReply(old, [left], 0.6, th, [], groupOf).vehicle!.moving, true);
+});

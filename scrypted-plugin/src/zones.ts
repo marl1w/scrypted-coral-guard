@@ -89,10 +89,13 @@ export function isMasked(box: number[], zones: Zone[], minVisible: number): bool
 }
 
 /**
- * The reply as the plugin's decisions see it with exclusion zones: masked detections removed; person.confirmed requires a valid
- * person box at or above `personConfirm` in 2 of the last 3 replies (`ticks`, updated here) and a valid one at or above
- * `personKeep` now; person.present needs a valid one at or above `personKeep`; animal confirmed/present and vehicle.moving need a
- * valid box of their group. Without zones the reply is returned unchanged.
+ * The reply as the plugin's decisions see it with exclusion zones: masked detections removed, and the service's verdict per group kept
+ * only for subjects outside the zones. When the service reports its tracks with boxes (person `tracks_detail`, animal and vehicle
+ * `tracks`), a group is confirmed / present / moving when the service says so AND one of its held tracks stands outside the zones:
+ * the service's own rules (fast confirm, rule B, holds through missed frames) apply unchanged. Without track boxes (old service) the
+ * old frame rule applies: person.confirmed needs a valid person box at or above `personConfirm` in 2 of the last 3 replies (`ticks`,
+ * updated here) and a valid one at or above `personKeep` now; present, animal and vehicle need a valid box of their group in this reply.
+ * Without zones the reply is returned unchanged.
  */
 export function maskReply(r: FrameReply, zones: Zone[], minVisible: number, th: { personConfirm: number; personKeep: number; animalDetect: number }, ticks: boolean[], groupOf: (d: any) => string | undefined): FrameReply {
     if (!zones.some(z => z.points.length >= 3)) return r;
@@ -101,12 +104,26 @@ export function maskReply(r: FrameReply, zones: Zone[], minVisible: number, th: 
     const tick = valid.some(d => g(d) === 'person' && d.score >= th.personConfirm);
     ticks.push(tick);
     while (ticks.length > 3) ticks.shift();
+    // undefined = the service sent no track boxes for this group: fall back to this reply's detections
+    const outside = (tracks: { box?: number[] }[] | undefined, moving = false): boolean | undefined => {
+        const boxed = (tracks || []).filter(t => Array.isArray(t.box) && t.box.length === 4 && (!moving || (t as any).state === 'moving'));
+        if (!tracks?.length || boxed.length < tracks.filter(t => !moving || (t as any).state === 'moving').length) return undefined;
+        return boxed.some(t => !isMasked(t.box!, zones, minVisible));
+    };
     const keep = valid.some(d => g(d) === 'person' && d.score >= th.personKeep);
     const animal = valid.some(d => g(d) === 'animal' && d.score >= th.animalDetect);
     const vehicle = valid.some(d => g(d) === 'vehicle');
     const out: any = { ...r, detections: valid };
-    if (r.person) out.person = { ...r.person, confirmed: !!r.person.confirmed && keep && ticks.filter(Boolean).length >= 2, present: !!r.person.present && keep };
-    if ((r as any).animal) out.animal = { ...(r as any).animal, confirmed: !!(r as any).animal.confirmed && animal, present: !!(r as any).animal.present && animal };
-    if (r.vehicle) out.vehicle = { ...r.vehicle, moving: !!r.vehicle.moving && vehicle };
+    if (r.person) {
+        const p = outside(r.person.tracks_detail);
+        out.person = p === undefined
+            ? { ...r.person, confirmed: !!r.person.confirmed && keep && ticks.filter(Boolean).length >= 2, present: !!r.person.present && keep }
+            : { ...r.person, confirmed: !!r.person.confirmed && p, present: !!r.person.present && p };
+    }
+    if (r.animal) {
+        const a = outside(r.animal.tracks) ?? animal;
+        out.animal = { ...r.animal, confirmed: !!r.animal.confirmed && a, present: !!r.animal.present && a };
+    }
+    if (r.vehicle) out.vehicle = { ...r.vehicle, moving: !!r.vehicle.moving && (outside(r.vehicle.tracks, true) ?? vehicle) };
     return out as FrameReply;
 }

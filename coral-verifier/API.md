@@ -189,3 +189,9 @@ Minimum size per group: `POST /v1/cameras/{camera}/config` accepts `min_area_per
 
 Plugin: a camera's per-class presence sensors exist only for its enabled Detect groups; a sensor left from an earlier setting is removed (it no longer lingers in HomeKit or Home Assistant).
 
+
+## 0.3.24 notes
+
+`vehicle.tracks[]` carry `box` (normalised, like the person and animal tracks). Clients match each vehicle detection to its track by box to learn whether it is `moving`, `still` or `parked`; without the box the plugin found no match, treated every vehicle as still, and no vehicle ever confirmed.
+
+Plugin: with exclusion zones, the service's person, animal and vehicle verdicts are kept when one of the held tracks (`person.tracks_detail`, `animal.tracks`, the moving `vehicle.tracks`) stands outside the zones. The plugin no longer re-counts person boxes (2 of the last 3 replies at or above Person confirm), which had cancelled the fast rules (camera AI person + one frame, rule B) on every zoned camera, and `present` no longer needs a box in every reply, so the service's hold carries an episode through frames where the subject is not detected instead of releasing it. Replies without track boxes (older services) keep the old frame rule. A service that sends vehicle track states without boxes is read from the states alone.

@@ -119,6 +119,14 @@ def test_parked_car_after_120s():
     assert sn[121]["vehicle"]["tracks"][0]["since_ms"] == T0 and sn[121]["vehicle"]["tracks"][0]["cls"] == "car"
 
 
+def test_vehicle_tracks_carry_their_box():
+    # the plugin matches each vehicle detection to a track by box to learn moving / still / parked (0.3.24: without a box
+    # every vehicle looked still and none ever confirmed)
+    sn = run(new(), [[car()]] * 3)
+    tr = sn[-1]["vehicle"]["tracks"][0]
+    assert len(tr["box"]) == 4 and all(isinstance(v, float) for v in tr["box"])
+
+
 def test_parked_car_survives_jitter_and_gaps():
     seq = [[car()]] * 130 + [[car(box=(0.11, 0.51, 0.41, 0.81))]] + [[]] * 100 + [[car()]]
     sn = run(new(), seq)

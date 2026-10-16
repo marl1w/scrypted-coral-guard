@@ -618,3 +618,15 @@ test('Shadow = Gate decisions: the same inputs give the same summaries and would
     assert.equal(s.filter(Array.isArray)[3][1], true, 'Shadow: wouldPublish held by the tracker after raw ended');
     assert.equal(s.filter(Array.isArray)[8][1], false, 'Shadow: a raw-only trigger is vetoed, wouldPublish false while published stays raw');
 });
+
+test('vehicle guard on the service reply shape: tracks with boxes (0.3.24) and states without boxes (up to 0.3.23)', () => {
+    const { vehicleView } = require('../src/episode') as typeof import('../src/episode');
+    const box = [0.1, 0.1, 0.5, 0.5];
+    // exactly what VehicleTracker.snapshot sends (session.py)
+    const r = (state: string, withBox: boolean) => ({ person: { state: 'idle', confirmed: false, present: false }, vehicle: { moving: state === 'moving', hold_until_ms: 9000, tracks: [{ id: 0, cls: 'car', state, parked: state === 'parked', since_ms: 0, ...(withBox ? { box } : {}) }] }, detections: [{ cls: 'car', group: 'vehicle', score: 0.9, box }] }) as any;
+    for (const withBox of [true, false]) {
+        assert.equal(vehicleView(r('moving', withBox)).tick, true, `moving, box ${withBox}`);
+        assert.equal(vehicleView(r('still', withBox)).tick, false, `still, box ${withBox}`);
+        assert.equal(vehicleView(r('parked', withBox)).tick, false, `parked, box ${withBox}`);
+    }
+});

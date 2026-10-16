@@ -20,10 +20,14 @@ const iou = (a: number[], b: number[]): number => {
 /**
  * Track state of a vehicle detection when the service reports track states: the state of the best overlapping track,
  * 'still' when none overlaps (only a matching 'moving' track makes it eligible). undefined = old service (no state).
+ * Services up to 0.3.23 sent states without boxes, so no detection ever matched and every vehicle looked still: without any track
+ * box the answer comes from the states alone ('moving' when a track moves, else the shared state of the others).
  */
 export function vehicleState(d: { box: number[] }, tracks: NonNullable<FrameReply['vehicle']>['tracks']): string | undefined {
     if (!tracks || !tracks.some(t => typeof t.state === 'string'))
         return undefined;
+    if (!tracks.some(t => Array.isArray(t.box) && t.box.length === 4))
+        return tracks.some(t => t.state === 'moving') ? 'moving' : tracks.every(t => t.state === 'parked') ? 'parked' : 'still';
     let best: { v: number; state: string } | undefined;
     for (const t of tracks) {
         if (!Array.isArray(t.box) || t.box.length !== 4 || !Array.isArray(d.box) || d.box.length !== 4) continue;
