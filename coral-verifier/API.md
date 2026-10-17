@@ -195,3 +195,11 @@ Plugin: a camera's per-class presence sensors exist only for its enabled Detect 
 `vehicle.tracks[]` carry `box` (normalised, like the person and animal tracks). Clients match each vehicle detection to its track by box to learn whether it is `moving`, `still` or `parked`; without the box the plugin found no match, treated every vehicle as still, and no vehicle ever confirmed.
 
 Plugin: with exclusion zones, the service's person, animal and vehicle verdicts are kept when one of the held tracks (`person.tracks_detail`, `animal.tracks`, the moving `vehicle.tracks`) stands outside the zones. The plugin no longer re-counts person boxes (2 of the last 3 replies at or above Person confirm), which had cancelled the fast rules (camera AI person + one frame, rule B) on every zoned camera, and `present` no longer needs a box in every reply, so the service's hold carries an episode through frames where the subject is not detected instead of releasing it. Replies without track boxes (older services) keep the old frame rule. A service that sends vehicle track states without boxes is read from the states alone.
+
+## 0.3.25 notes
+
+Second look: a person box covering at least 3 % of the frame (`SECOND_LOOK['person_skip_area']`) is never a candidate, so it is neither re-checked nor capped as doubtful. Its window (box plus 0.6 of its size on each side) is larger than the frame, so the re-check shrank the person instead of looking closer: on labelled episodes it doubted 5 % of real people at that size and caught 1 false box in 12. Smaller person boxes and every animal and vehicle are unchanged.
+
+Person in a vehicle: a person box lying at least 80 % inside the box of a moving vehicle track (`PERSON_IN_VEHICLE`), or of a non-parked track whose movement is not known yet (its first `MOVE_REF_S` + 1 s), is the driver or a passenger. It is marked `in_vehicle: true` in the journal, left out of replies (except `verbose=1`) and never reaches the person tracker, so it cannot start, confirm or hold a person. Inside a car that turns out still, the person counts from then on: a delay of at most about 3 s, never a loss. Someone next to a moving car, or walking past a parked one, counts as before.
+
+Plugin: version aligned, no code change.

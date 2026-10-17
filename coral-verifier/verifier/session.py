@@ -16,7 +16,7 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 """
 import math, re, threading
 
-from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_B_THR
+from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_B_THR
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -173,6 +173,13 @@ def iou(a, b):
     i = ix * iy
     u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i
     return i / u if u > 0 else 0.0
+
+
+def _inside(a, b):
+    """Share of box a lying inside box b."""
+    iw, ih = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+    aa = (a[2] - a[0]) * (a[3] - a[1])
+    return iw * ih / aa if iw > 0 and ih > 0 and aa > 0 else 0.0
 
 
 def _cd(tb, db):
@@ -565,6 +572,23 @@ class Session:
         p.last_seen = self.last_t
         return True
 
+    def _drop_in_vehicle(self, t, detections):
+        """Person boxes (almost) inside a moving vehicle track are its driver or passengers: marked in_vehicle and kept from the person tracker.
+        A vehicle whose movement is not known yet (a young non-parked track, the first MOVE_REF_S + 1 s) counts too, so an arriving car's driver
+        cannot confirm before the car is seen moving; inside a car that turns out still, the person counts from then on (a delay, never a loss)."""
+        pending_ms = (MOVE_REF_S + 1.0) * 1000.0
+        movers = [tr.box for tr in self.vehicle.tracks if self.vehicle._alive(tr, t) and not tr.parked
+                  and (tr.moving or t - tr.born_t < pending_ms)]
+        out = []
+        for d in detections:
+            if d["cls"] == "person":
+                if movers and any(_inside(d["box"], vb) >= PERSON_IN_VEHICLE for vb in movers):
+                    d["in_vehicle"] = True
+                    continue
+                d.pop("in_vehicle", None)
+            out.append(d)
+        return out
+
     def update(self, t_ms, detections, wall_now=None, claim=None):
         """detections: [{"cls": str, "score": float, "box": [x0,y0,x1,y1]}]. Returns the effective (clamped) t."""
         t = int(t_ms)
@@ -576,6 +600,7 @@ class Session:
         if wall_now is not None:
             self.wall = wall_now
         detections = person_animal_overlap(detections)
+        detections = self._drop_in_vehicle(t, detections)
         pdets = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person"]
         vdets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in VEHICLES and not d.get("weak") and d["score"] >= (DETECT_THR["vehicle"][d["cls"]] if d["cls"] == "bicycle" else self.cfg.vehicle_thr)]
         adets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in ANIMALS and not d.get("same_object") and d["score"] >= self.cfg.animal_cont_thr]

@@ -31,7 +31,7 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.3.24"
+FALLBACK_VERSION = "0.3.25"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
@@ -472,7 +472,7 @@ class Handler(BaseHTTPRequestHandler):
                 app.journal.record_frame_async(cam, sn["t"], body, dets)
             except Exception:
                 log.exception("journal record failed")
-            shown = dets if verbose else [d for d in live if d["score"] >= REPLY_MIN_SCORE]
+            shown = dets if verbose else [d for d in live if d["score"] >= REPLY_MIN_SCORE and not d.get("in_vehicle")]
             return {"camera": cam, "t": sn["t"], "coral_ms": round(st["infer_ms"], 1), "queue_ms": round(st["queue_ms"], 1),
                     "decode_ms": round(st["decode_ms"], 2), "preprocess_ms": round(st["preprocess_ms"], 2), "infer_ms": round(st["infer_ms"], 2),
                     "post_ms": round(st["post_ms"], 2), "second_look_ms": round(st.get("second_look_ms", 0.0), 2), "reduced": bool(st.get("reduced")), "total_ms": round(st["total_ms"], 2), "detections": shown,

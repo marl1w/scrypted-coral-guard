@@ -2,6 +2,13 @@
 import json, threading, time
 import pytest
 from boxlib import Box, BASE as T0, person_item
+import secondlook as SL
+
+
+@pytest.fixture(autouse=True)
+def _recheck_any_size(monkeypatch):
+    """Shedding is checked on placeholder 4 % person boxes: the large-person exemption of the second look (0.3.25) is off here."""
+    monkeypatch.setitem(SL._SL, "person_skip_area", 1.0)
 
 JS = {"Content-Type": "application/json"}
 

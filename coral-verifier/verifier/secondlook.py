@@ -22,6 +22,10 @@ def iou(a, b):
     return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i)
 
 
+def area(b):
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
 def confirm_thr(g, cfg):
     return cfg.start_thr if g == "person" else (_SL["vehicle_confirm"] if g == "vehicle" else cfg.animal_start_thr)
 
@@ -90,10 +94,13 @@ def promote_reason(dets, cfg, promo, t_ms, tracks, release_s=2.0):
 
 
 def select(dets, cfg, tracks):
-    """-> candidate indices: mandatory (would start/confirm a person/animal track) first, then the most uncertain (closest to the confirm threshold)."""
+    """-> candidate indices: mandatory (would start/confirm a person/animal track) first, then the most uncertain (closest to the confirm threshold).
+    Person boxes of at least person_skip_area of the frame are never candidates (no re-check, no doubt)."""
     out = []
     for i, d in enumerate(dets):
         g = group_of(d)
+        if g == "person" and area(d["box"]) >= _SL["person_skip_area"]:
+            continue                                                     # large person: the window would shrink it, never re-checked
         m = mandatory(d, cfg, tracks)
         if m or in_band(d, cfg) or (d["score"] < _SL["new_track_max"] and not has_track(d, tracks.get(g, []))):
             out.append((0 if m else 1, abs(d["score"] - confirm_thr(g, cfg)), -d["score"], i))

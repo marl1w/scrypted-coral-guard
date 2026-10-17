@@ -123,7 +123,9 @@ BUSY_DEPTH = 1
 # Second look (internal constants): `confirm_min` = the score the re-check must find the SAME group at for a person/animal detection to count toward starting or
 # confirming a track (otherwise it is doubtful: fed to the tracker capped at cont_thr + 0.05); at most `max` re-checks per frame, ttl of a re-check result per object, crop margin (fraction of the box size on each side), minimum crop side in
 # pixels, `reject_factor` (a re-check that finds the group again below reject_factor x its keep floor, with a first score below the confirm threshold, rejects), a NEW track is re-checked when its score is below `new_track_max`, and the vehicle confirm threshold used for the borderline band and priority.
-SECOND_LOOK = {"max": 2, "confirm_min": {"person": 0.40, "animal": 0.40}, "reject_factor": 0.5, "ttl_s": 10.0, "margin": 0.6, "min_crop_px": 96, "new_track_max": 0.8, "vehicle_confirm": 0.6}
+SECOND_LOOK = {"max": 2, "confirm_min": {"person": 0.40, "animal": 0.40}, "reject_factor": 0.5, "ttl_s": 10.0, "margin": 0.6, "min_crop_px": 96, "new_track_max": 0.8, "vehicle_confirm": 0.6, "person_skip_area": 0.03}
+# 0.3.24 labels: a person box covering >= person_skip_area of the frame is never re-checked. Its window (box + 0.6 margin each side) is larger than
+# the frame, so the re-check SHRINKS the person; it put 5 % of real people in doubt and caught 1 false box in 12.
 
 # Display-only weak vehicles: car/truck/bus/motorcycle (not bicycle) are decoded down to WEAK_VEHICLE_THR and reported with "weak": true when the
 # score is below the vehicle threshold. They never reach the vehicle tracker or any session state.
@@ -133,6 +135,10 @@ WEAK_VEHICLE_CLASSES = ("car", "motorcycle", "bus", "truck")
 # the person detection takes max(person, animal) for the person tracker ("boosted_by" = the animal class, "first_score" = its own score) and the
 # animal box is marked "same_object" and kept out of the animal tracker. A lone animal box never creates a person.
 PERSON_ANIMAL_OVERLAP = 0.8
+# A person box lying at least this share inside the box of a MOVING vehicle track (or one whose movement is not known yet, its first MOVE_REF_S + 1 s)
+# is the driver or a passenger: it never reaches the person tracker (marked "in_vehicle" in the journal, left out of replies). Parked and still
+# vehicles are not used, so someone walking past a parked car counts.
+PERSON_IN_VEHICLE = 0.8
 ANIMAL = {"start_thr": TRACKER["animal_start_thr"], "cont_thr": TRACKER["animal_cont_thr"], "confirm_n": 2, "confirm_m": 3, "hold_s": 6.0, "still_hold_s": 6.0}
 
 

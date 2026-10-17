@@ -393,3 +393,42 @@ def test_overlap_low_iou_pair_unchanged():
     assert S.person_animal_overlap([p, d]) == [p, d]
     sn = run(S.Session(S.Config().updated({"start_thr": 0.6})), [[p, d]] * 3)
     assert not sn[-1]["person"]["present"] and sn[-1]["animal"]["present"]
+
+
+def moving_car(i):
+    x = 0.1 + 0.05 * i                                            # 5 % of the width per second: moving
+    return car(box=(x, 0.4, x + 0.35, 0.8))
+
+
+def driver(i):
+    x = 0.1 + 0.05 * i
+    return person(0.9, box=(x + 0.1, 0.45, x + 0.18, 0.6))      # inside the car box
+
+
+def test_person_inside_a_moving_car_never_confirms():
+    sn = run(new(), [[moving_car(i), driver(i)] for i in range(8)])
+    assert any(s["vehicle"]["moving"] for s in sn)
+    assert not any(s["person"]["present"] for s in sn[3:])
+    assert states(sn)[-1] == "idle"
+
+
+def test_person_inside_a_still_car_box_waits_until_the_car_is_known_still_then_counts():
+    sn = run(new(), [[car(box=(0.1, 0.4, 0.45, 0.8)), person(0.9, box=(0.2, 0.45, 0.28, 0.6))] for _ in range(7)])
+    assert not any(s["person"]["present"] for s in sn[:3])         # movement unknown for the first 3 s: no person yet
+    assert not sn[-1]["vehicle"]["moving"]
+    assert sn[-1]["person"]["present"]
+
+
+def test_person_next_to_a_moving_car_counts():
+    sn = run(new(), [[moving_car(i), person(0.9, box=(0.8, 0.2, 0.9, 0.7))] for i in range(4)])
+    assert sn[-1]["person"]["present"]
+
+
+def test_in_vehicle_flag_is_cleared_once_the_car_is_gone():
+    d = driver(3)
+    s = new()
+    for i in range(4):
+        s.update(T0 + i * 1000, [moving_car(i), d if i == 3 else driver(i)])
+    assert d.get("in_vehicle") is True
+    s.update(T0 + 15000, [d])                                     # the car track has expired
+    assert "in_vehicle" not in d

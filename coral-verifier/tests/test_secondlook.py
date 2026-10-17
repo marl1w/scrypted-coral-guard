@@ -11,6 +11,13 @@ from test_server import Box, T0
 
 IMG = np.full((480, 640, 3), 90, np.uint8)
 CFG = S.Config()
+SKIP_AREA = SL._SL["person_skip_area"]
+
+
+@pytest.fixture(autouse=True)
+def _recheck_any_size(monkeypatch):
+    """These tests check the re-check mechanics on a placeholder 4 % person box: the large-person exemption (0.3.25) is off here."""
+    monkeypatch.setitem(SL._SL, "person_skip_area", 1.0)
 
 
 def it(name, logit, gx=16, gy=16, ltrb=(2, 2, 2, 2)):
@@ -154,7 +161,7 @@ def test_version_comes_from_config_yaml():
         pytest.skip("config.yaml not available")
     want = re.search(r'^version:\s*"?([^"\n]+)', open(p).read(), re.M).group(1)
     if "VERIFIER_VERSION" not in os.environ:
-        assert SV.VERSION == want == "0.3.24"
+        assert SV.VERSION == want == "0.3.25"
 
 
 def test_http_second_look_on_and_off_and_metrics():
@@ -293,3 +300,15 @@ def test_cap_prevents_check_so_it_cannot_confirm_in_this_frame():
     assert len(skipped) == 1 and skipped[0]["second_look_doubt"] is True and skipped[0]["score"] == 0.9      # the one farthest above the confirm threshold is checked last
     assert "second_look" not in out[3]
     assert SL.tracker_view(skipped[0], CFG)["score"] == pytest.approx(0.25)
+
+
+def test_large_person_is_never_rechecked_nor_doubted(monkeypatch):
+    # 0.3.25: a person box of >= 3 % of the frame gets a window larger than the frame, so the re-check would shrink it (labels: 5 % of real
+    # people doubted, 1 false box in 12 caught). It is neither a candidate nor capped, and a smaller one still is.
+    monkeypatch.setitem(SL._SL, "person_skip_area", SKIP_AREA)
+    assert SKIP_AREA == 0.03
+    big = det("person", 0.7, box=(0.4, 0.2, 0.6, 0.5))           # 6 % of the frame
+    small = det("person", 0.7, box=(0.45, 0.3, 0.5, 0.5))        # 1 %
+    assert SL.select([big], CFG, {}) == []
+    assert SL.select([small], CFG, {}) == [0]
+    assert SL.tracker_view(big, CFG)["score"] == 0.7
