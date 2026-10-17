@@ -383,6 +383,10 @@ class Journal:
                     self._close(st, outcome or "released", self._clamp(t_ms, now))
                     if self._discard_if_unconfirmed_unflagged(st):                  # noise: an unflagged episode that never confirmed is not kept
                         return 200, {"id": reply_id, "status": "discarded", "outcome": outcome or "released"}
+                    tgt = self._continue_target(st)
+                    if tgt is not None:                                              # the same scene continued: one item to review
+                        self._fold(tgt, st)
+                        return 200, {"id": reply_id, "status": "closed", "outcome": tgt["meta"]["outcome"], "merged_into": tgt["meta"]["id"]}
                 else:
                     if outcome:
                         m["outcome"] = outcome
@@ -406,6 +410,75 @@ class Journal:
                     and m.get("end_ms") is not None and -2000 <= t_ms - m["end_ms"] <= win and (best is None or m["end_ms"] > best["meta"]["end_ms"])):
                 best = st
         return best
+
+    def _continue_target(self, st):
+        """For a CONFIRMED episode that just ended: the newest closed, confirmed, unlabelled episode of the same camera that started before it and
+        ended at most continue_after_s before it started (or overlaps it: the 10-minute ceiling restarts at once). None when there is none."""
+        win = self.lim.get("continue_after_s", 30.0) * 1000.0
+        m = st["meta"]
+        if win <= 0 or m.get("outcome") in ("vetoed", "stale") or not self.confirmed(m) or m.get("label") is not None:
+            return None
+        best = None
+        for o in self.eps.values():
+            a = o["meta"]
+            if (o is st or a["camera"] != m["camera"] or a.get("status") != "closed" or a.get("label") is not None or a.get("end_ms") is None
+                    or a.get("outcome") in ("vetoed", "stale") or not self.confirmed(a)):
+                continue
+            if a["start_ms"] <= m["start_ms"] and m["start_ms"] - a["end_ms"] <= win and (best is None or a["end_ms"] > best["meta"]["end_ms"]):
+                best = o
+        return best
+
+    def _fold(self, a_st, b_st):
+        """Folds episode B (just closed) into A: one review item for the same scene. A keeps its first frame and gets B's last, the better of the two
+        best frames, B's first frame and snapshots as snapshots (within snapshot_max), both timelines with a `continued` row between, the union of
+        the groups and B's end and outcome. B is deleted; its id (and the ids merged into it) become aliases of A."""
+        a, b = a_st["meta"], b_st["meta"]
+        groups = a["groups"] + [g for g in b["groups"] if g not in a["groups"]]
+
+        def sidecar(st, name):
+            try:
+                with open(os.path.join(st["dir"], name + ".json")) as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                return None
+
+        def copy(name, to, role):
+            t = next((f["t_ms"] for f in b["frames"] if f["name"] == name), None)
+            try:
+                with open(os.path.join(b_st["dir"], name + ".jpg"), "rb") as f:
+                    jpeg = f.read()
+            except OSError:
+                return False
+            side = sidecar(b_st, name) or {"t_ms": t, "detections": []}
+            self._put_frame(a_st, to, role, side.get("t_ms", t), jpeg, side.get("detections", []))
+            return True
+
+        sa, sb = sidecar(a_st, "best"), sidecar(b_st, "best")
+        if sb is not None and (sa is None or self._relevance(sb["detections"], groups) > self._relevance(sa["detections"], groups)):
+            copy("best", "best", "best")
+        copy("last", "last", "last")
+        snaps = sum(1 for f in a["frames"] if f["role"] == "snapshot")
+        for f in [x for x in b["frames"] if x["name"] == "first"] + sorted((x for x in b["frames"] if x["role"] == "snapshot"), key=lambda x: x["t_ms"]):
+            if snaps >= self.lim["snapshot_max"]:
+                break
+            if copy(f["name"], "s%02d" % (snaps + 1), "snapshot"):
+                snaps += 1
+        gap_s = (b["start_ms"] - a["end_ms"]) / 1000.0
+        row = {"t_ms": b["start_ms"], "text": "continued: no gap" if gap_s < 1 else "continued: back after %.0f s" % gap_s}
+        a["timeline"] = (a["timeline"] + [row] + b["timeline"])[-200:]
+        a["groups"], a["end_ms"], a["outcome"] = groups, max(a["end_ms"], b["end_ms"] or a["end_ms"]), b["outcome"]
+        if a.get("motion") or b.get("motion"):
+            a["motion"] = {k: int((a.get("motion") or {}).get(k, 0)) + int((b.get("motion") or {}).get(k, 0)) for k in ("occupied_s", "motion_s", "still_releases", "reraises")}
+        ids = [b["id"]] + list(b.get("merged_ids") or [])
+        a["merged_ids"] = (a.get("merged_ids") or []) + ids
+        for k, v in list(self.alias.items()):
+            if v == b["id"]:
+                self.alias[k] = a["id"]
+        for i in ids:
+            self.alias[i] = a["id"]
+        a["last_activity_ms"] = self.clock()
+        self._save_meta(a_st)
+        self._delete(b["id"])
 
     def _create(self, camera, eid, t_ms, mode, kind, groups, note, now):
         d = os.path.join(self.root, eid)

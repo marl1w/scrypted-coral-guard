@@ -9,6 +9,13 @@ from test_server import T0
 H = 3600_000
 
 
+@pytest.fixture(autouse=True)
+def _no_continuation(monkeypatch):
+    """Most tests here build several confirmed episodes on one camera seconds apart: the continuation fold (0.3.26) is off unless a test turns it on."""
+    import defaults
+    monkeypatch.setitem(defaults.JOURNAL, "continue_after_s", 0.0)
+
+
 class Clock:
     def __init__(self, t=10_000.0):          # small epoch: test episode times (a few seconds) are never older than the retention cut
         self.t = t
@@ -696,3 +703,66 @@ def test_motion_fields_on_end_and_summary_counts_older_episodes_render_without(t
     assert t["still_releases"] == 2 and t["reraises"] == 1
     for bad in ({"occupied_s": "x"}, [1], {"motion_s": -1}):
         assert ep(j, "cam1", "ep-000103", "start", 7000, mode="gate", kind="camera", motion=bad)[0] == 400
+
+
+# ---------------- continuation: the same scene is one review item (0.3.26) ----------------
+
+def cont(tmp_path, **k):
+    clk = Clock(100_000.0)
+    return Journal(str(tmp_path), clock=clk, continue_after_s=30.0, **k), clk
+
+
+def run_ep(j, clk, cam, eid, start, end, outcome="released", groups=("person",), kind="camera", score=0.9, frames=2, text=None):
+    clk.t = start
+    ep(j, cam, eid, "start", start, kind=kind, groups=list(groups), timeline_event={"t_ms": start, "text": text or kind})
+    for i in range(frames):
+        clk.t = start + 100 + i * 100
+        j.record_frame(cam, clk.t, b"J-%s-%d" % (eid.encode(), i), [det("person", score)] if score else [])
+    clk.t = end
+    return ep(j, cam, eid, "end", end, outcome=outcome, groups=list(groups))
+
+
+def test_return_within_30s_is_folded_into_the_previous_event(tmp_path):
+    j, clk = cont(tmp_path)
+    run_ep(j, clk, "cam1", "ep-a00001", 100_000, 110_000, score=0.6)
+    st, r = run_ep(j, clk, "cam1", "ep-b00001", 122_000, 130_000, kind="unflagged", score=0.95, text="unflagged (camera AI people)")
+    assert st == 200 and r["merged_into"] == "ep-a00001" and r["id"] == "ep-b00001"
+    items = j.list()["items"]
+    assert [m["id"] for m in items] == ["ep-a00001"]
+    m = items[0]
+    assert m["end_ms"] == 130_000 and m["outcome"] == "released" and m["merged_ids"] == ["ep-b00001"]
+    assert [e["text"] for e in m["timeline"]] == ["camera", "continued: back after 12 s", "unflagged (camera AI people)"]
+    d = tmp_path / "ep-a00001"
+    assert (d / "first.jpg").read_bytes() == b"J-ep-a00001-0" and (d / "last.jpg").read_bytes() == b"J-ep-b00001-1"
+    assert (d / "best.jpg").read_bytes().startswith(b"J-ep-b00001")                      # B's 0.95 beats A's 0.6
+    assert (d / "s01.jpg").read_bytes() == b"J-ep-b00001-0"                               # B's first frame: the return
+    assert not (tmp_path / "ep-b00001").exists()
+    assert ep(j, "cam1", "ep-b00001", "update", 131_000)[0] == 409                        # late calls with B's id reach A (closed)
+
+
+def test_ten_minute_ceiling_restart_is_one_event(tmp_path):
+    j, clk = cont(tmp_path)
+    run_ep(j, clk, "cam1", "ep-a00002", 100_000, 700_000)
+    assert run_ep(j, clk, "cam1", "ep-b00002", 700_000, 760_000)[1]["merged_into"] == "ep-a00002"
+    assert run_ep(j, clk, "cam1", "ep-c00002", 765_000, 800_000)[1]["merged_into"] == "ep-a00002"     # chains keep growing
+    m = j.list()["items"][0]
+    assert j.list()["total"] == 1 and m["merged_ids"] == ["ep-b00002", "ep-c00002"] and m["end_ms"] == 800_000
+    assert "continued: no gap" in [e["text"] for e in m["timeline"]]
+
+
+def test_no_fold_for_vetoes_labels_other_cameras_or_longer_gaps(tmp_path):
+    j, clk = cont(tmp_path)
+    run_ep(j, clk, "cam1", "ep-a00003", 100_000, 110_000)
+    assert "merged_into" not in run_ep(j, clk, "cam1", "ep-v00003", 115_000, 120_000, outcome="vetoed", groups=(), score=0)[1]   # still asked about
+    assert "merged_into" not in run_ep(j, clk, "cam2", "ep-o00003", 121_000, 125_000)[1]
+    assert "merged_into" not in run_ep(j, clk, "cam1", "ep-l00003", 141_000, 150_000)[1]       # 31 s after A, 21 s after the veto (not a target)
+    j.set_label("ep-l00003", "correct", None)
+    assert "merged_into" not in run_ep(j, clk, "cam1", "ep-n00003", 155_000, 160_000)[1]       # the previous one is labelled: never changed under the user
+    assert j.list()["total"] == 5
+
+
+def test_fold_is_off_with_zero(tmp_path):
+    j, clk = cont(tmp_path)
+    j.lim["continue_after_s"] = 0.0
+    run_ep(j, clk, "cam1", "ep-a00004", 100_000, 110_000)
+    assert "merged_into" not in run_ep(j, clk, "cam1", "ep-b00004", 112_000, 120_000)[1]
