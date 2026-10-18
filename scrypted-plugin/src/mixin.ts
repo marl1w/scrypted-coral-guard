@@ -44,6 +44,10 @@ const AI_CLAIM_WAIT_MS = 1500;
 const STREAM_DEFAULT_LABEL = 'Default (already open stream)';
 /** a chosen (non-default) stream must deliver its first JPEG within this long, else the default stream is used. */
 const STREAM_FIRST_FRAME_MS = 25000;
+/** while a camera analyses the default stream because its chosen one failed, the chosen one is retried after these delays (the last repeats). */
+const STREAM_RETRY_MS = [60_000, 120_000, 300_000];
+/** a retry due during an episode waits this long instead (a retry may leave the camera without frames for up to STREAM_FIRST_FRAME_MS). */
+const STREAM_RETRY_BUSY_MS = 30_000;
 /**
  * Class names of the verified detections published on the camera's ObjectDetector. Distinct from any camera AI name on
  * purpose: Scrypted does not let a mixin mask the camera's own ObjectDetector events (the server disables masking of
@@ -113,6 +117,11 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private streamLabels = new Map<string, string>([[STREAM_DEFAULT_LABEL, 'default']]);
     /** the chosen stream failed (or is unknown): the default stream for the rest of the plugin's life */
     private streamFallback = false;
+    /** fallback retries (0.3.27): the chosen stream is tried again while the default one is used; back on it as soon as it delivers */
+    private streamRetryTimer: NodeJS.Timeout | undefined;
+    private streamRetries = 0;
+    private streamRetrying = false;
+    private streamRetryDelays = STREAM_RETRY_MS;
     private streamName = '';
     private streamFirstTimer: NodeJS.Timeout | undefined;
 
@@ -865,8 +874,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const streamFailed = (): boolean => {
             if (!explicitStream || gotFirst || this.streamFallback || gen !== this.srcGen || this.released)
                 return false;
-            this.streamFallback = true;
-            this.console.warn(`stream ${this.streamName || explicitStream} failed, using the default stream`);
+            this.enterFallback(`stream ${this.streamName || explicitStream} failed, using the default stream`);
             this.stopSource();
             this.startSource();
             return true;
@@ -889,10 +897,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             onStream: st => {
                 if (gen !== this.srcGen) return;
                 this.streamName = st.name;
-                if (st.unknown && !this.streamFallback) {
-                    this.streamFallback = true;
-                    this.console.warn(`stream ${this.storageSettings.values.stream} is not among the camera's streams, using the default stream`);
-                }
+                if (st.unknown && !this.streamFallback)
+                    this.enterFallback(`stream ${this.storageSettings.values.stream} is not among the camera's streams, using the default stream`);
             },
             destination: DEFAULTS.analysisDestination,
             longProbe: this.probeFallback,
@@ -910,6 +916,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     return;
                 clearTimeout(this.streamFirstTimer);
                 gotFirst = true;
+                if (this.streamRetrying && explicitStream) {
+                    this.streamRetrying = false;
+                    this.streamRetries = 0;
+                    this.console.log(`stream ${this.streamName || explicitStream} is back, using it again`);
+                    this.viewChanged();
+                }
                 this.lastFrameAt = arrivedAt;
                 this.status.setLiveFrame(jpeg, Date.now()); // reference only: the panel shows it until a frame is analysed
                 this.warmAttempt = 0;
@@ -1545,6 +1557,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             await this.storageSettings.putSetting(key, id);
             this.console.log(`Stream: ${value}`);
             this.streamFallback = false; // a new choice gets a new chance
+            this.clearStreamRetry();
             this.streamName = '';
             if (this.frames || this.warmRetry) {
                 clearTimeout(this.warmRetry);
@@ -1581,6 +1594,56 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     }
 
     /** the stream id to request, undefined = the default stream */
+    /** the chosen stream failed: analyse the default stream for now and retry the chosen one later (never for good). */
+    private enterFallback(msg: string) {
+        this.streamFallback = true;
+        this.streamRetrying = false;
+        const d = this.streamRetryDelays[Math.min(this.streamRetries, this.streamRetryDelays.length - 1)];
+        this.console.warn(`${msg}; retrying it in ${Math.round(d / 1000)} s`);
+        this.status.onFailure(`stream ${this.storageSettings.values.stream} unavailable, analysing the default stream`);
+        this.viewChanged();
+        clearTimeout(this.streamRetryTimer);
+        this.streamRetries++;
+        this.streamRetryTimer = setTimeout(() => this.retryStream(), d);
+        this.streamRetryTimer.unref?.();
+    }
+
+    private retryStream() {
+        this.streamRetryTimer = undefined;
+        if (this.released || !this.streamFallback)
+            return;
+        if (this.scanActive) {
+            // never during an episode: a chosen stream that is still down would leave it without frames
+            this.streamRetryTimer = setTimeout(() => this.retryStream(), STREAM_RETRY_BUSY_MS);
+            this.streamRetryTimer.unref?.();
+            return;
+        }
+        this.streamFallback = false;
+        this.streamRetrying = true;
+        this.console.log(`retrying stream ${this.storageSettings.values.stream}`);
+        if (this.frames || this.warmRetry) {
+            clearTimeout(this.warmRetry);
+            this.warmRetry = undefined;
+            this.stopSource();
+            this.syncSource(this.scanActive);
+        }
+    }
+
+    private clearStreamRetry() {
+        clearTimeout(this.streamRetryTimer);
+        this.streamRetryTimer = undefined;
+        this.streamRetries = 0;
+        this.streamRetrying = false;
+    }
+
+    /** the analysed view changed (to the default stream or back): what the service tracked in the other view must not linger (parked cars of a
+     * neighbouring crop held for minutes). An episode in progress keeps its session. */
+    private viewChanged() {
+        if (this.scanActive || this.released)
+            return;
+        this.plugin.client.reset(this.verifierId).catch(() => undefined);
+    }
+
     private chosenStream(): string | undefined {
         const v = String(this.storageSettings.values.stream || 'default');
         return v === 'default' || this.streamFallback ? undefined : v;
@@ -1600,6 +1663,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
         this.released = true;
         clearTimeout(this.streamFirstTimer);
+        this.clearStreamRetry();
         this.stopSource();
         clearTimeout(this.warmRetry);
         clearInterval(this.tickTimer);

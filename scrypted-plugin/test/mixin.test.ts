@@ -1037,7 +1037,7 @@ test('a codec-probe failure switches the camera to the long-probe default stream
     await h.mixin.release();
 });
 
-test('Stream setting: default unchanged; choosing a stream restarts the source on it; no first frame falls back to the default for good', async () => {
+test('Stream setting: default unchanged; choosing a stream restarts the source on it; no first frame falls back to the default (retried later)', async () => {
     const h = hb('Shadow');
     await eventually(() => ctl.starts.length === 1);
     assert.equal(ctl.starts[0].o.streamId, undefined, 'default: no id');
@@ -1053,8 +1053,57 @@ test('Stream setting: default unchanged; choosing a stream restarts the source o
     ctl.starts[1].exit('codec probe failed: ffmpeg exited 183');
     await eventually(() => ctl.starts.length === 3);
     assert.equal(ctl.starts[2].o.streamId, undefined);
-    assert.ok(ctl.logs.some(l => /stream sub failed, using the default stream/.test(String(l[1]))));
+    assert.ok(ctl.logs.some(l => /stream sub failed, using the default stream; retrying it in 60 s/.test(String(l[1]))));
     await h.mixin.release();
+});
+
+test('fallback is temporary: the chosen stream is retried, used again as soon as it delivers, and every switch clears the service session', async () => {
+    const h = hb('Shadow');
+    await eventually(() => ctl.starts.length === 1);
+    (h.mixin as any).mixinDevice.getVideoStreamOptions = async () => [{ id: 'view', name: 'View' }];
+    (h.mixin as any).streamRetryDelays = [30, 60, 90];
+    await h.mixin.getMixinSettings();                                               // builds the label -> id map
+    await h.mixin.putMixinSetting('stream', 'View');
+    await eventually(() => ctl.starts.length === 2);
+    assert.equal(ctl.starts[1].o.streamId, 'view');
+    const resets = h.calls.reset.length;
+    ctl.starts[1].exit('codec probe failed: ffmpeg exited 183');                     // the View stream is down (a restart)
+    await eventually(() => ctl.starts.length === 3);
+    assert.equal(ctl.starts[2].o.streamId, undefined, 'default stream meanwhile');
+    assert.equal(h.calls.reset.length, resets + 1, 'switching view clears what the other view tracked');
+    frame(ctl.starts[2]);
+    await eventually(() => ctl.starts.length === 4, 2000, 'retried');
+    assert.equal(ctl.starts[2].stopped, true);
+    assert.equal(ctl.starts[3].o.streamId, 'view');
+    ctl.starts[3].exit('codec probe failed: ffmpeg exited 183');                     // still down: back to the default, next retry later
+    await eventually(() => ctl.starts.length === 5);
+    assert.equal(ctl.starts[4].o.streamId, undefined);
+    assert.ok(ctl.logs.some(l => /retrying it in 0 s/.test(String(l[1]))), 'second delay');
+    await eventually(() => ctl.starts.length === 6, 2000, 'retried again');
+    assert.equal(ctl.starts[5].o.streamId, 'view');
+    const before = h.calls.reset.length;
+    frame(ctl.starts[5]);                                                           // it delivers: used again, for good
+    assert.ok(ctl.logs.some(l => /stream view.* is back, using it again/i.test(String(l[1]))));
+    assert.equal(h.calls.reset.length, before + 1);
+    assert.equal((h.mixin as any).streamRetries, 0);
+    assert.equal((h.mixin as any).streamRetryTimer, undefined);
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(ctl.starts.length, 6, 'no more retries');
+    await h.mixin.release();
+});
+
+test('a fallback retry never interrupts an episode: it waits until the camera is idle', async () => {
+    const h = hb('Shadow');
+    await eventually(() => ctl.starts.length === 1);
+    (h.mixin as any).streamRetryDelays = [20];
+    (h.mixin as any).streamFallback = true;
+    (h.mixin as any).scanActive = true;
+    (h.mixin as any).retryStream();
+    assert.equal((h.mixin as any).streamFallback, true, 'still on the default stream');
+    assert.ok((h.mixin as any).streamRetryTimer, 'postponed');
+    (h.mixin as any).scanActive = false;
+    await h.mixin.release();
+    assert.equal((h.mixin as any).streamRetryTimer, undefined, 'release clears it');
 });
 
 test('Stream setting: an unknown stored id uses the default with a one-time warning', async () => {
