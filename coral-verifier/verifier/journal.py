@@ -77,6 +77,7 @@ class Journal:
         self.dropped = 0
         self._q = queue.Queue(maxsize=self.lim["queue_max"])
         self._worker = None
+        self.on_label = None                                                  # callable(meta) after a user label (server: known look-alikes)
         self.auto = None
         try:
             os.makedirs(root, exist_ok=True)
@@ -721,6 +722,11 @@ class Journal:
                 return 500, {"error": "journal write failed"}
             if self.auto is not None and autovalidate.eligible(m):
                 self.auto.submit("ref", eid)                                  # a new (or withdrawn) reference scene
+            if self.on_label is not None:
+                try:
+                    self.on_label(dict(m))                                    # known look-alikes (the server only queues it)
+                except Exception:
+                    log.exception("on_label failed")
             return 200, {"id": eid, "label": label, "label_note": note}
 
     def summary(self, t_from=None, t_to=None, camera=None, tz_offset_min=0, group=None):

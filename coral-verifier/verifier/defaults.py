@@ -20,6 +20,8 @@ SERVICE = {
     "max_queue_age_ms": 400,        # a queued frame older than this is dropped instead of answered late
     "max_queue_depth": 8,
     "journal_root": "/data/journal",
+    "spots_root": "/data/spots",    # known parking spots, one JSON per camera (overridable for tests/dev only)
+    "lookalikes_root": "/data/lookalikes",    # known look-alikes, one JSON per camera (overridable for tests/dev only)
     "jpeg_reduce": False,           # JPEG reduced-size decode changes pixels on duo frames: off
     "max_cameras": 64,
     "max_image_pixels": 16 * 1024 * 1024,    # 16 MP decompression-bomb guard
@@ -91,6 +93,27 @@ TRACKER = {
     "shape_thr": 0.6,
     "shape_cover": 0.1,
     "occlusion_hold_s": 60.0,
+    # Known parking spots (0.3.31, see spots.py): learnt from parked vehicles, kept per camera across sessions and restarts.
+    "parking_spots": True,
+    # Known look-alikes (0.3.31, see lookalikes.py): person/animal boxes learnt from the user's false_alarm labels are ignored where they stand.
+    "lookalikes": True,
+}
+# Known look-alikes (0.3.31): matching constants (lookalikes.py).
+LOOKALIKE = {
+    "iou": 0.5,               # a detection is at a look-alike's place when it overlaps its box this much
+    "thr": 0.85,              # look match that makes it the same object (stricter than the vehicle shape hold)
+    "max": 64,                # per camera; the oldest go first
+}
+# Known parking spots (0.3.31): spot matching and learning constants (spots.py).
+SPOTS = {
+    "iou": 0.5,               # a box is in a spot when it overlaps it this much
+    "trusted_after": 2,       # separate parked occasions before a spot is trusted
+    "occasion_gap_s": 600,    # a parked track starting this long after the spot's last one is a new occasion
+    "max_spots": 16,          # per camera
+    "max_looks": 4,           # vehicle looks kept per spot
+    "new_look": 0.95,         # a look this similar to a kept one is not added
+    "box_alpha": 0.2,         # the spot box follows its parked vehicles slowly
+    "weak_iou": 0.7,          # a weak vehicle box keeps a vehicle parked in a trusted spot only when it overlaps the track this much
 }
 # Rule B (logged in 0.3.16, live since 0.3.18): claim=person + one person box at or above this, not on a still track, confirms (confirmed_by fast_b).
 FAST_B_THR = 0.45

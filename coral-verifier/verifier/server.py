@@ -1,7 +1,9 @@
 """Coral verifier HTTP service (API.md v1). stdlib ThreadingHTTPServer: one thread per connection (capped), all inference through ONE Coral worker
 process (see coral.py). Hardened for a LAN service: authenticate before reading any body, JPEG-only bounded bodies, per-request deadlines against
 slow clients, a connection cap, decode concurrency cap, bounded number of cameras."""
-import collections, hmac, json, logging, math, os, re, signal, socket, sys, threading, time
+import collections, hmac, json, logging, math, os, queue, re, signal, socket, sys, threading, time
+import cv2
+import numpy as np
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -91,6 +93,8 @@ def parse_options(opts):
     jr = merged.get("jpeg_reduce", D_["jpeg_reduce"])
     st["jpeg_reduce"] = bool(jr)
     st["journal_root"] = str(merged.get("journal_root", D_["journal_root"]))
+    st["spots_root"] = str(merged.get("spots_root", D_["spots_root"]))
+    st["lookalikes_root"] = str(merged.get("lookalikes_root", D_["lookalikes_root"]))
     try:
         st["defaults"] = S.Config().updated({k: merged[k] for k in TRACKER_KEYS if k in merged})
     except ValueError as e:
@@ -121,6 +125,132 @@ class RateLimiter:
 
 
 class App:
+    # ---- per-camera stores kept across restarts: known parking spots and known look-alikes (one JSON per camera) ----
+    def _load_store(self, root, restore, what):
+        try:
+            names = os.listdir(root)
+        except OSError:
+            return
+        for n in names:
+            cam = n[:-5]
+            if not n.endswith(".json") or not CAM_RE.match(cam):
+                continue
+            try:
+                with open(os.path.join(root, n), "rb") as f:
+                    restore(cam, json.loads(f.read()))
+            except (OSError, ValueError):
+                log.warning("%s of %s not loaded", what, cam)
+
+    def _save_store(self, root, dirty, what):
+        for cam, data in dirty.items():
+            path = os.path.join(root, cam + ".json")
+            try:
+                if not data:
+                    if os.path.exists(path):
+                        os.remove(path)
+                    continue
+                os.makedirs(root, exist_ok=True)
+                tmp = path + ".tmp"
+                with open(tmp, "wb") as f:
+                    f.write(json.dumps(data, separators=(",", ":")).encode())
+                os.replace(tmp, path)
+            except OSError:
+                log.exception("%s of %s not saved", what, cam)
+
+    def load_spots(self):
+        self._load_store(self.spots_dir, self.registry.spots_restore, "parking spots")
+
+    def save_spots(self):
+        """Writes the cameras whose spots changed (atomic per file; an emptied camera's file is removed)."""
+        self._save_store(self.spots_dir, self.registry.spots_dirty(), "parking spots")
+
+    def load_lookalikes(self):
+        self._load_store(self.looks_dir, self.registry.lookalikes_restore, "look-alikes")
+
+    def save_lookalikes(self):
+        self._save_store(self.looks_dir, self.registry.lookalikes_dirty(), "look-alikes")
+
+    def learn_lookalike(self, meta):
+        """A user label: `false_alarm` on a person/animal episode keeps the box that raised it (best frame, strongest box of the episode's
+        group) as a known look-alike; any other label removes the episode's entry. Reads the journal's files, never the live frames."""
+        eid, cam = meta.get("id"), meta.get("camera")
+        if not eid or not cam:
+            return False
+        groups = [g for g in (meta.get("groups") or []) if g in ("person", "animal")]
+        if meta.get("label") != "false_alarm" or not groups:
+            if self.registry.lookalike_remove(cam, eid):
+                log.info("look-alike of episode %s removed (relabelled)", eid)
+            return False
+        pj, pi = self.journal.file(eid, "best", "json"), self.journal.file(eid, "best", "jpg")
+        if pj is None or pi is None:
+            return False
+        try:
+            with open(pj, "rb") as f:
+                dets = json.loads(f.read()).get("detections") or []
+            with open(pi, "rb") as f:
+                img = cv2.imdecode(np.frombuffer(f.read(), np.uint8), cv2.IMREAD_GRAYSCALE)
+        except (OSError, ValueError):
+            return False
+        if img is None:
+            return False
+        cand = [d for d in dets if d.get("group") in groups and d.get("second_look") != "rejected" and not d.get("too_small")
+                and isinstance(d.get("box"), list) and len(d["box"]) == 4]
+        if not cand:
+            return False
+        d = max(cand, key=lambda x: float(x.get("score", 0)))
+        ok = self.registry.lookalike_add(cam, eid, d["group"], d["box"], SH.signature(SH.gray_small(img), d["box"]))
+        if ok:
+            log.info("look-alike learnt from episode %s (%s)", eid, d["group"])
+        return ok
+
+    def backfill_lookalikes(self):
+        """Learns the false alarms the user labelled before (once per start; already known episodes are skipped)."""
+        off, n = 0, 0
+        while True:
+            page = self.journal.list(label="false_alarm", limit=200, offset=off)
+            items = page.get("items") or []
+            for m in items:
+                if not self.registry.lookalike_known(m.get("camera"), m.get("id")):
+                    n += bool(self.learn_lookalike(m))
+            off += len(items)
+            if not items or off >= page.get("total", 0):
+                return n
+
+    def start_background(self, every_s=30.0):
+        """Saver of the per-camera stores and the look-alike learner (started by main(); tests call the methods themselves)."""
+        def saver():
+            while not self._stores_stop.wait(every_s):
+                self.save_spots()
+                self.save_lookalikes()
+
+        def learner():
+            try:
+                log.info("look-alikes learnt from earlier labels: %d", self.backfill_lookalikes())
+            except Exception:
+                log.exception("look-alike backfill failed")
+            while not self._stores_stop.is_set():
+                try:
+                    meta = self._learn_q.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                try:
+                    self.learn_lookalike(meta)
+                except Exception:
+                    log.exception("look-alike learning failed")
+        threading.Thread(target=saver, name="stores-saver", daemon=True).start()
+        threading.Thread(target=learner, name="lookalike-learner", daemon=True).start()
+
+    def stop_background(self):
+        self._stores_stop.set()
+        self.save_spots()
+        self.save_lookalikes()
+
+    def _on_label(self, meta):
+        try:
+            self._learn_q.put_nowait(meta)
+        except queue.Full:
+            log.warning("look-alike learning queue full: label of %s not learnt", meta.get("id"))
+
     def __init__(self, opts, spec, on_fatal=None):
         self.cfg = parse_options(opts)
         c = self.cfg
@@ -135,6 +265,13 @@ class App:
         self.sampler = M.Sampler(self.coral.child_pid)         # started by main() (tests call sample() themselves)
         self.now_ms = lambda: time.time() * 1000.0            # test seam
         self.journal = Journal(c["journal_root"], clock=lambda: self.now_ms())
+        self.spots_dir = c["spots_root"]
+        self.looks_dir = c["lookalikes_root"]
+        self._stores_stop = threading.Event()
+        self._learn_q = queue.Queue(maxsize=256)
+        self.load_spots()
+        self.load_lookalikes()
+        self.journal.on_label = self._on_label
         self.ingress_ips = set(DF.JOURNAL["ingress_ips"])
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html"), "rb") as f:
             self.ui_html = f.read().replace(b"__VERSION__", VERSION.encode())       # the served page names its version (never a stale page after an update)
@@ -331,6 +468,26 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(body, bytes):
                         return
                     return self._frame(app, cam, q, body)
+                if sub == "spots":
+                    if method == "GET":
+                        return self._send(200, {"camera": cam, "spots": app.registry.spots_describe(cam)})
+                    if method == "POST":                                     # forget this camera's spots (the plugin's "Forget parking spots")
+                        if not isinstance(self._read_body(MAX_JSON_BYTES, False), bytes):     # drained (any body is ignored)
+                            return
+                        forgot = app.registry.spots_forget(cam)
+                        app.save_spots()
+                        return self._send(200, {"camera": cam, "forgotten": forgot})
+                    return self._reject(405, {"error": "method not allowed"})
+                if sub == "lookalikes":
+                    if method == "GET":
+                        return self._send(200, {"camera": cam, "lookalikes": app.registry.lookalikes_describe(cam)})
+                    if method == "POST":                                     # forget this camera's look-alikes (the plugin's "Forget look-alikes")
+                        if not isinstance(self._read_body(MAX_JSON_BYTES, False), bytes):
+                            return
+                        forgot = app.registry.lookalikes_forget(cam)
+                        app.save_lookalikes()
+                        return self._send(200, {"camera": cam, "forgotten": forgot})
+                    return self._reject(405, {"error": "method not allowed"})
                 if sub == "config":
                     if method == "GET":
                         if not app.registry.known(cam, time.monotonic()):
@@ -700,6 +857,7 @@ def main():
     holder["app"] = app
     app.coral.start()
     app.sampler.start()
+    app.start_background()
     log.info("coral_verifier %s listening on :%s (model %s, auth %s)", VERSION, httpd.server_address[1], app.size, "token" if app.token else "NONE (allow_no_token, dev only)")
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=httpd.shutdown, daemon=True).start())
     try:
@@ -709,6 +867,7 @@ def main():
     app.sampler.stop()
     app.coral.stop()                                    # kills the Coral child first
     app.journal.stop()
+    app.stop_background()
     httpd.server_close()
 
 

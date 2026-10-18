@@ -1,0 +1,133 @@
+"""Known look-alikes (0.3.31): a person/animal box the user labelled false_alarm is ignored where it stands, as long as it looks the same."""
+import json
+
+import cv2
+import numpy as np
+
+import lookalikes as LA
+import session as S
+import shape as SH
+from boxlib import Box, BASE as T0
+from test_shape import W, H
+
+BOX = (0.4, 0.3, 0.55, 0.8)
+
+
+def scene(person_in_front=False, seed=0):
+    """Gray frame with a statue-like shape at BOX; optionally a person-sized blob in front of it; fresh noise every call."""
+    rng = np.random.default_rng(seed)
+    img = np.full((H, W), 100, np.float32)
+    x0, y0, x1, y1 = int(BOX[0] * W), int(BOX[1] * H), int(BOX[2] * W), int(BOX[3] * H)
+    cv2.rectangle(img, (x0 + 20, y0 + 60), (x1 - 20, y1 - 5), 170, -1)          # pedestal
+    cv2.circle(img, ((x0 + x1) // 2, y0 + 35), 22, 210, -1)                      # head
+    cv2.line(img, (x0 + 5, y0 + 70), (x1 - 5, y0 + 70), 60, 6)                   # arms
+    if person_in_front:
+        cv2.ellipse(img, ((x0 + x1) // 2 + 10, (y0 + y1) // 2 + 20), (28, 70), 0, 0, 360, 40, -1)
+    img = img + rng.normal(0, 4, img.shape)
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def person(box=BOX, score=0.9):
+    return {"cls": "person", "score": score, "box": list(box)}
+
+
+def known():
+    la = LA.Lookalikes()
+    la.add("ep1", "person", BOX, SH.signature(scene(seed=99), BOX))
+    return la
+
+
+def session(la=None, **kw):
+    s = S.Session(S.Config().updated(kw))
+    s.lookalikes = la if la is not None else known()
+    return s
+
+
+def run(s, n, **kw):
+    for i in range(n):
+        s.update(T0 + i * 1000, [person()], gray=scene(seed=i, **kw))
+    return s.snapshot()
+
+
+def test_the_known_look_alike_never_confirms():
+    sn = run(session(), 6)
+    assert sn["person"]["state"] == "idle" and sn["session"]["lookalikes"] == 6
+
+
+def test_the_detection_is_marked_for_the_journal():
+    d = person()
+    session().update(T0, [d], gray=scene(seed=3))
+    assert d["lookalike"] >= 0.85
+
+
+def test_a_person_in_front_of_it_counts():
+    sn = run(session(), 4, person_in_front=True)
+    assert sn["person"]["present"] and sn["session"]["lookalikes"] == 0
+
+
+def test_elsewhere_or_other_group_counts():
+    s = session()
+    other = (0.05, 0.3, 0.2, 0.8)
+    for i in range(4):
+        s.update(T0 + i * 1000, [person(other)], gray=scene(seed=i))
+    assert s.snapshot()["person"]["present"]
+    assert known().match("animal", BOX, scene()) is None
+
+
+def test_switched_off_or_no_frame_changes_nothing():
+    assert run(session(lookalikes=False), 4)["person"]["present"]
+    s = session()
+    for i in range(4):
+        s.update(T0 + i * 1000, [person()])
+    assert s.snapshot()["person"]["present"]
+
+
+def test_relabel_removes_and_export_restores():
+    la = known()
+    back = LA.Lookalikes.restore(json.loads(json.dumps(la.export())))
+    assert back.match("person", BOX, scene(seed=5)) is not None
+    assert la.remove("ep1") and not la.items and not la.remove("ep1")
+    assert not la.add("ep2", "vehicle", BOX, SH.signature(scene(), BOX))        # vehicles are never learnt
+
+
+def textured_jpeg():
+    rng = np.random.default_rng(7)
+    img = (rng.random((480, 640)) * 255).astype(np.uint8)
+    img = cv2.GaussianBlur(img, (0, 0), 3)
+    img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
+    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), [cv2.IMWRITE_JPEG_QUALITY, 92])
+    return buf.tobytes()
+
+
+def test_a_false_alarm_label_teaches_it_and_relabelling_withdraws_it():
+    b = Box(items=[["person", 3.0, 16, 16, 16, [2, 2, 2, 2]]])
+    try:
+        JS = {"Content-Type": "application/json"}
+        eid = "look-ep-0001"
+        data = textured_jpeg()
+        b.req("POST", "/v1/cameras/door/episodes", json.dumps({"id": eid, "action": "start", "t_ms": T0, "mode": "gate", "kind": "camera", "groups": ["person"]}).encode(), JS)
+        for i in range(2):
+            assert b.frame("door", T0 + i * 1000, data=data)[0] == 200
+        b.app.journal.drain()
+        b.req("POST", "/v1/cameras/door/episodes", json.dumps({"id": eid, "action": "end", "t_ms": T0 + 3000, "outcome": "confirmed"}).encode(), JS)
+        assert b.req("POST", f"/v1/journal/{eid}/label", json.dumps({"label": "false_alarm"}).encode(), JS)[0] == 200
+        assert b.app.learn_lookalike(b.app._learn_q.get(timeout=5))                  # what the learner thread does
+        st, r = b.req("GET", "/v1/cameras/door/lookalikes")
+        assert st == 200 and r["lookalikes"][0]["episode"] == eid
+        b.req("POST", "/v1/cameras/door/reset")
+        st, r = b.frame("door", T0 + 10_000, data=data)
+        assert st == 200 and r["session"]["lookalikes"] == 1 and r["person"]["state"] == "idle"
+        b.app.save_lookalikes()
+        b2 = Box(opts={"lookalikes_root": b.app.looks_dir})                          # a restart reads it back
+        try:
+            assert b2.app.registry.lookalikes_describe("door")[0]["episode"] == eid
+        finally:
+            b2.close()
+        assert b.req("POST", f"/v1/journal/{eid}/label", json.dumps({"label": "correct"}).encode(), JS)[0] == 200
+        b.app.learn_lookalike(b.app._learn_q.get(timeout=5))
+        assert b.req("GET", "/v1/cameras/door/lookalikes")[1]["lookalikes"] == []
+        assert b.app.backfill_lookalikes() == 0                                      # nothing labelled false_alarm any more
+        st, r = b.req("POST", "/v1/cameras/door/lookalikes", b"{}", JS)
+        assert st == 200 and r["forgotten"] is False
+    finally:
+        b.close()

@@ -1,5 +1,5 @@
 name: "Coral Verifier"
-version: "0.3.30"
+version: "0.3.31"
 slug: coral_verifier
 url: "https://github.com/marl1w/scrypted-coral-guard"
 description: "Person/vehicle verifier on a Coral Edge TPU (USB): HTTP API for post-trigger confirmation, see API.md. Owns the Coral exclusively."

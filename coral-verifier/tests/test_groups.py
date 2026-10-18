@@ -161,7 +161,9 @@ def test_weak_vehicle_never_touches_session_state():
     for i in range(5):
         a.update(T0 + i * 1000, [])
         b.update(T0 + i * 1000, [weak])
-    assert a.snapshot() == b.snapshot() and b.snapshot()["vehicle"] == {"moving": False, "hold_until_ms": None, "tracks": []}
+    core = lambda v: {k: x for k, x in v.items() if k not in ("shape", "spots")}                     # 0.3.30/31 diagnostics
+    assert a.snapshot() == b.snapshot() and core(b.snapshot()["vehicle"]) == {"moving": False, "hold_until_ms": None, "tracks": []}
+    assert b.snapshot()["vehicle"]["shape"]["weak"] == 0                                              # no parked vehicle in a trusted spot to keep
 
 
 def test_weak_flows_through_reply_without_vehicle_state():
@@ -169,7 +171,7 @@ def test_weak_flows_through_reply_without_vehicle_state():
     try:
         r = b.frame("g", T0)[1]
         assert r["detections"][0]["weak"] is True and r["detections"][0]["group"] == "vehicle"
-        assert r["vehicle"] == {"moving": False, "hold_until_ms": None, "tracks": []}
+        assert {k: x for k, x in r["vehicle"].items() if k not in ("shape", "spots")} == {"moving": False, "hold_until_ms": None, "tracks": []}
     finally:
         b.close()
 

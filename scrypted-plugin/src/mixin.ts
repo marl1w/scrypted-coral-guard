@@ -133,6 +133,28 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             type: 'string',
             placeholder: '60',
         },
+        parkingSpots: {
+            title: 'Learn parking spots',
+            description: 'Remember where vehicles park on this camera. In a spot used on two separate occasions a known vehicle is parked at once (also after a restart) and a weak detection keeps it.',
+            type: 'boolean',
+            defaultValue: true,
+        },
+        forgetSpots: {
+            title: 'Forget parking spots',
+            description: 'Clear the parking spots learnt on this camera (e.g. after moving it).',
+            type: 'button',
+        },
+        lookalikes: {
+            title: 'Ignore known look-alikes',
+            description: 'A person or animal you labelled false alarm (a statue, a plant) is ignored where it stands while it looks the same; someone in front of it still counts.',
+            type: 'boolean',
+            defaultValue: true,
+        },
+        forgetLookalikes: {
+            title: 'Forget look-alikes',
+            description: 'Clear the look-alikes learnt from your false alarm labels on this camera.',
+            type: 'button',
+        },
     });
     /** label -> stream id of the last rendered Stream choices */
     private streamLabels = new Map<string, string>([[STREAM_DEFAULT_LABEL, 'default']]);
@@ -495,6 +517,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const r: TrackerConfig = { shape_hold: sh === undefined || sh === null || sh === '' ? true : sh === true || sh === 'true' };
         const thr = num(v.shapeThreshold, 'Vehicle shape match', 0.1, 0.99);
         const hold = num(v.coveredHold, 'Covered vehicle hold', 0, 600);
+        const ps = (v as any).parkingSpots;
+        r.parking_spots = ps === undefined || ps === null || ps === '' ? true : ps === true || ps === 'true';
+        const la = (v as any).lookalikes;
+        r.lookalikes = la === undefined || la === null || la === '' ? true : la === true || la === 'true';
         if (thr !== undefined) r.shape_thr = thr;
         if (hold !== undefined) r.occlusion_hold_s = hold;
         const w = bad.join(', ');
@@ -1601,6 +1627,26 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     async putMixinSetting(key: string, value: SettingValue): Promise<boolean | void> {
         if (key === 'refresh') {
             this.notifySettings(); // user-initiated: one re-render from the in-memory state, nothing stored
+            return true;
+        }
+        if (key === 'forgetLookalikes') {
+            try {
+                const r = await this.plugin.client.forgetLookalikes(this.verifierId);
+                this.console.log(r?.forgotten ? 'Look-alikes forgotten' : 'No look-alikes to forget');
+            }
+            catch (e: any) {
+                this.console.warn('look-alikes not forgotten:', maskUrls(String(e?.message || e)));
+            }
+            return true;
+        }
+        if (key === 'forgetSpots') {
+            try {
+                const r = await this.plugin.client.forgetSpots(this.verifierId);
+                this.console.log(r?.forgotten ? 'Parking spots forgotten' : 'No parking spots to forget');
+            }
+            catch (e: any) {
+                this.console.warn('parking spots not forgotten:', maskUrls(String(e?.message || e)));
+            }
             return true;
         }
         if (key === 'zoneNames' || key === 'zones' || key.startsWith('zone:')) {

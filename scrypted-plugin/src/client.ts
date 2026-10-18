@@ -96,6 +96,10 @@ export interface TrackerConfig {
     shape_hold?: boolean;
     shape_thr?: number;
     occlusion_hold_s?: number;
+    /** service 0.3.31+: learn and use known parking spots */
+    parking_spots?: boolean;
+    /** service 0.3.31+: ignore person/animal boxes that match a look-alike labelled false alarm */
+    lookalikes?: boolean;
     /** newer service: extra shrunk-with-border pass, 0 = off */
     zoom_out?: number;
     /** newer service: re-check uncertain detections with a zoomed-in pass */
@@ -271,6 +275,18 @@ export class VerifierClient {
     async episodeEvent(camera: string, ev: EpisodeEvent): Promise<unknown> {
         assertCameraId(camera);
         return this.request('POST', `/v1/cameras/${encodeURIComponent(camera)}/episodes`, JSON.stringify(ev), 'application/json');
+    }
+
+    /** POST /v1/cameras/{camera}/spots (service 0.3.31+): forget the camera's known parking spots. */
+    async forgetSpots(camera: string): Promise<{ forgotten?: boolean } | null> {
+        assertCameraId(camera);
+        return this.request('POST', `/v1/cameras/${encodeURIComponent(camera)}/spots`, '{}', 'application/json');
+    }
+
+    /** POST /v1/cameras/{camera}/lookalikes (service 0.3.31+): forget the camera's known look-alikes. */
+    async forgetLookalikes(camera: string): Promise<{ forgotten?: boolean } | null> {
+        assertCameraId(camera);
+        return this.request('POST', `/v1/cameras/${encodeURIComponent(camera)}/lookalikes`, '{}', 'application/json');
     }
 
     async config(camera: string, cfg: TrackerConfig): Promise<TrackerConfig | null> {

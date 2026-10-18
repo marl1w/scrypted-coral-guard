@@ -17,8 +17,10 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 import math, re, threading, time
 
 import shape as SH
+import spots as SP
+import lookalikes as LA
 
-from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR
+from defaults import TRACKER as _T, SPOTS as _SP, WEAK_VEHICLE_THR, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -82,6 +84,8 @@ class Config:
     shape_thr: float = _T["shape_thr"]
     shape_cover: float = _T["shape_cover"]
     occlusion_hold_s: float = _T["occlusion_hold_s"]
+    parking_spots: bool = _T["parking_spots"]
+    lookalikes: bool = _T["lookalikes"]
 
     def validate(self):
         for k, v in asdict(self).items():
@@ -410,16 +414,28 @@ class VehicleTracker:
         self.cfg = cfg
         self.tracks = []
         self.nid = 0
-        self.shape_stats = {"held": 0, "covered": 0, "released": 0}     # misses decided by the shape hold since the session started
+        self.shape_stats = {"held": 0, "covered": 0, "released": 0, "weak": 0, "spot_parked": 0}   # since the session started
         self.shape_ms = 0.0                                             # time of the last frame's shape checks (diagnostics only)
+        self.spots = None                                               # the camera's spots.Spots (set by the Registry; kept across sessions)
 
     def _alive(self, tr, t):
         hold = self.cfg.max_hold_s if tr.parked else self.cfg.hold_s
         return t - tr.last <= hold * 1000.0
 
-    def step(self, t, dets, gray=None, others=()):
+    def _spots(self):
+        return self.spots if self.spots is not None and self.cfg.parking_spots else None
+
+    def _parked_now(self, tr, t, gray):
+        """A track just became parked: its place (and look) is learnt as a parking spot."""
+        sp = self._spots()
+        if sp is not None:
+            sig = tr.ref if tr.ref is not None else (SH.signature(gray, tr.box) if gray is not None else None)
+            sp.learn(tr.box, sig, t, f"{int(tr.born_t)}:{tr.id}")
+
+    def step(self, t, dets, gray=None, others=(), weak=()):
         """dets: [(cls, score, box)]. gray: the frame reduced by shape.gray_small (None = no shape hold for this frame). others: boxes of
-        every other detection of this frame (people, animals, weak vehicles), which can cover a vehicle."""
+        every other detection of this frame (people, animals, weak vehicles), which can cover a vehicle. weak: (cls, score, box) of the
+        weak vehicles (WEAK_VEHICLE_THR to vehicle_thr), which only keep a vehicle parked in a trusted spot."""
         c = self.cfg
         trks = self.tracks = [tr for tr in self.tracks if self._alive(tr, t)]
         used = set()
@@ -432,6 +448,7 @@ class VehicleTracker:
             if iou(d[2], tr.anchor) > thr:
                 if not tr.parked and (t - tr.stable_since) > c.parked_after_s * 1000.0:
                     tr.parked = True
+                    self._parked_now(tr, t, gray)
             else:
                 tr.anchor, tr.stable_since, tr.parked = d[2], t, False
         for j, d in enumerate(dets):
@@ -442,7 +459,24 @@ class VehicleTracker:
             tr.hist, tr.moving = [(t, d[2])], False                     # a new track is "still" (unknown) until it actually moves or parks
             tr.ref, tr.covered_since = None, None
             matched[id(tr)] = j
+            spots = self._spots()
+            if spots is not None and gray is not None:
+                sp = spots.at(d[2])
+                if sp is not None and sp.matches(SH.signature(gray, d[2]), c.shape_thr):
+                    tr.parked = True                                     # a known car back in its trusted spot: parked at once
+                    tr.stable_since = t - c.parked_after_s * 1000.0
+                    spots.seen(sp, t, f"{int(tr.born_t)}:{tr.id}")
+                    self.shape_stats["spot_parked"] += 1
             trks.append(tr)
+        spots = self._spots()
+        if spots is not None and weak:
+            for tr in trks:
+                if id(tr) in matched or tr.moving or not tr.parked or spots.at(tr.box) is None:
+                    continue
+                if any(iou(w[2], tr.box) >= _SP["weak_iou"] for w in weak):
+                    tr.last = t                                          # a weak box at the same place of a trusted spot: still there
+                    matched[id(tr)] = -1
+                    self.shape_stats["weak"] += 1
         if gray is not None and c.shape_hold:
             t0 = time.perf_counter()
             self._shape(t, trks, dets, matched, gray, others)
@@ -484,6 +518,7 @@ class VehicleTracker:
                 tr.covered_since = None
                 if not tr.parked and (t - tr.stable_since) > c.parked_after_s * 1000.0:
                     tr.parked = True
+                    self._parked_now(tr, t, gray)
                 self.shape_stats["held"] += 1
                 keep.append(tr)
             elif SH.covered(tr.box, list(others) + vboxes, c.shape_cover):
@@ -517,6 +552,7 @@ class VehicleTracker:
         hold = max((tr.last + (self.cfg.max_hold_s if tr.parked else self.cfg.hold_s) * 1000.0 for tr in live), default=None)
         return {"moving": any(st(tr) == "moving" for tr in live), "hold_until_ms": None if hold is None else int(hold),
                 "shape": dict(self.shape_stats, ms=round(self.shape_ms, 3)),
+                "spots": self.spots.summary() if self.spots is not None else {"spots": 0, "trusted": 0},
                 "tracks": [{"id": tr.id, "cls": tr.cls, "state": st(tr), "parked": tr.parked, "since_ms": int(tr.born_t),
                             "box": [round(v, 4) for v in tr.box]} for tr in live]}
 
@@ -627,6 +663,8 @@ class Session:
         self.vehicle = VehicleTracker(cfg)
         self.animal = AnimalTracker(cfg)
         self.frames = 0
+        self.lookalikes = None            # the camera's lookalikes.Lookalikes (set by the Registry; kept across sessions)
+        self.lookalike_hits = 0
         self.started_ms = None
         self.last_t = None
         self.wall = wall_now          # monotonic seconds when the last frame was RECEIVED (server clock), for TTL and GET-time expiry
@@ -682,6 +720,22 @@ class Session:
             out.append(d)
         return out
 
+    def _drop_lookalikes(self, detections, gray):
+        """Person/animal boxes that match a known look-alike (lookalikes.py) are marked `lookalike` (the look match) and left out."""
+        la = self.lookalikes
+        if gray is None or la is None or not la.items or not self.cfg.lookalikes:
+            return detections
+        out = []
+        for d in detections:
+            g = "person" if d["cls"] == "person" else ("animal" if d["cls"] in ANIMALS else None)
+            m = la.match(g, tuple(d["box"]), gray) if g is not None else None
+            if m is not None:
+                d["lookalike"] = round(m, 3)
+                self.lookalike_hits += 1
+                continue
+            out.append(d)
+        return out
+
     def update(self, t_ms, detections, wall_now=None, claim=None, gray=None):
         """detections: [{"cls": str, "score": float, "box": [x0,y0,x1,y1]}]. gray: the frame from shape.gray_small (shape hold; None = off for
         this frame). Returns the effective (clamped) t."""
@@ -695,6 +749,7 @@ class Session:
             self.wall = wall_now
         detections = person_animal_overlap(detections)
         detections = self._drop_in_vehicle(t, detections)
+        detections = self._drop_lookalikes(detections, gray)
         pdets = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person"]
         vdets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in VEHICLES and not d.get("weak") and d["score"] >= (DETECT_THR["vehicle"][d["cls"]] if d["cls"] == "bicycle" else self.cfg.vehicle_thr)]
         adets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in ANIMALS and not d.get("same_object") and d["score"] >= self.cfg.animal_cont_thr]
@@ -734,7 +789,9 @@ class Session:
             self.confirmed_by = f[2] if f is not None and f[0] == self._tick_t else "ticks"
         vset = {id(d) for d in detections if d["cls"] in VEHICLES and not d.get("weak") and d["score"] >= (DETECT_THR["vehicle"][d["cls"]] if d["cls"] == "bicycle" else self.cfg.vehicle_thr)}
         others = [tuple(d["box"]) for d in detections if id(d) not in vset]       # people (also in a vehicle), animals, weak vehicles: anything in front
-        self.vehicle.step(t, vdets, gray, others)
+        weak = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections
+                if d["cls"] in VEHICLES and d["cls"] != "bicycle" and id(d) not in vset and d["score"] >= WEAK_VEHICLE_THR]
+        self.vehicle.step(t, vdets, gray, others, weak[:MAX_TRACK_DETS])
         self.animal.step(t, adets, claim if self.cfg.fast_confirm else None)
         self.frames += 1
         return t
@@ -771,7 +828,7 @@ class Session:
                        "hold_until_ms": int(max(tr.last + p._hold(tr) * 1000.0 for tr in live)) if live else None},
             "vehicle": self.vehicle.snapshot(eff),
             "animal": self.animal.snapshot(eff),
-            "session": {"frames": self.frames, "started_ms": self.started_ms},
+            "session": {"frames": self.frames, "started_ms": self.started_ms, "lookalikes": self.lookalike_hits},
         }
 
 
@@ -793,6 +850,8 @@ class Registry:
         self._sessions = {}
         self._sl = {}            # camera -> second-look cache entries (see secondlook.py)
         self._over = {}          # camera -> (dict of overrides, last touched wall)
+        self._spots = {}         # camera -> spots.Spots: known parking spots, kept across sessions (saved by the server)
+        self._looks = {}         # camera -> lookalikes.Lookalikes: known look-alikes, kept across sessions (saved by the server)
         self._next_sweep = 0.0
         self.lock = threading.RLock()
 
@@ -849,6 +908,10 @@ class Registry:
             if s is None:
                 self._admit(camera, wall_now)
                 s = self._sessions[camera] = Session(self.config(camera), wall_now)
+            if s.vehicle.spots is None:
+                s.vehicle.spots = self._spots.setdefault(camera, SP.Spots())
+            if s.lookalikes is None:
+                s.lookalikes = self._looks.setdefault(camera, LA.Lookalikes())
             s.update(t_ms, detections, wall_now, claim, gray)
             return s.snapshot(wall_now)
 
@@ -888,6 +951,81 @@ class Registry:
                 self._sl[camera] = cache[-16:]
             else:
                 self._sl.pop(camera, None)
+
+    def spots_describe(self, camera):
+        with self.lock:
+            sp = self._spots.get(camera)
+            return [] if sp is None else sp.describe()
+
+    def spots_forget(self, camera):
+        with self.lock:
+            sp = self._spots.get(camera)
+            if sp is None or not sp.items:
+                return False
+            sp.items = []
+            sp.dirty = True
+            return True
+
+    def spots_dirty(self):
+        """{camera: exported spots} of the cameras whose spots changed since the last call (the server writes them)."""
+        with self.lock:
+            out = {}
+            for cam, sp in self._spots.items():
+                if sp.dirty:
+                    out[cam] = sp.export()
+                    sp.dirty = False
+            return out
+
+    def spots_restore(self, camera, data):
+        with self.lock:
+            sp = self._spots[camera] = SP.Spots.restore(data)
+            s = self._sessions.get(camera)
+            if s is not None:
+                s.vehicle.spots = sp
+
+    def lookalike_add(self, camera, eid, group, box, sig):
+        with self.lock:
+            return self._looks.setdefault(camera, LA.Lookalikes()).add(eid, group, box, sig)
+
+    def lookalike_remove(self, camera, eid):
+        with self.lock:
+            la = self._looks.get(camera)
+            return la is not None and la.remove(eid)
+
+    def lookalike_known(self, camera, eid):
+        with self.lock:
+            la = self._looks.get(camera)
+            return la is not None and la.known(eid)
+
+    def lookalikes_describe(self, camera):
+        with self.lock:
+            la = self._looks.get(camera)
+            return [] if la is None else la.describe()
+
+    def lookalikes_forget(self, camera):
+        with self.lock:
+            la = self._looks.get(camera)
+            if la is None or not la.items:
+                return False
+            la.items = []
+            la.dirty = True
+            return True
+
+    def lookalikes_dirty(self):
+        with self.lock:
+            out = {}
+            for cam, la in self._looks.items():
+                if la.dirty:
+                    out[cam] = la.export()
+                    la.dirty = False
+            return out
+
+    def lookalikes_restore(self, camera, data):
+        with self.lock:
+            la = self._looks[camera] = LA.Lookalikes.restore(data)
+            s = self._sessions.get(camera)
+            if s is not None:
+                s.lookalikes = la
 
     def reset(self, camera):
         with self.lock:
