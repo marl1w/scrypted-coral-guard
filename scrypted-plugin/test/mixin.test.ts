@@ -1838,3 +1838,28 @@ test('occupancy: sensorless camera writes occupied false at start and raises it 
     await h.mixin.release();
     assert.equal(ctl.state.occupied, false, 'released mixin clears its occupancy');
 });
+
+test('journal: an episode a restart cut is closed at the next start (released when it had confirmed), and a normal end clears the record', async () => {
+    const at = Date.now() - 60_000;
+    const h = make({ settings: { mode: 'Gate' }, store: { journalOpenEpisode: JSON.stringify({ id: 'left-open-01', kind: 'camera', confirmed: true, at }) } });
+    await eventually(() => h.calls.episodes.some((e: any) => e.id === 'left-open-01'), 2000, 'leftover closed');
+    const e = h.calls.episodes.find((x: any) => x.id === 'left-open-01');
+    assert.equal(e.action, 'end'); assert.equal(e.outcome, 'released'); assert.equal(e.t_ms, at);
+    assert.match(e.timeline_event.text, /plugin restarted during the episode/);
+    await eventually(() => (h.mixin as any).storage.getItem('journalOpenEpisode') === null, 2000, 'record cleared');
+    await h.mixin.release();
+});
+
+test('journal: the open episode is recorded while it runs and the record is cleared once its end reached the service', async () => {
+    const h = make({ settings: { mode: 'Gate' } });
+    (h.mixin as any).jId = 'run-ep-0001'; (h.mixin as any).jKind = 'camera';
+    (h.mixin as any).journal('start', {});
+    assert.equal(JSON.parse((h.mixin as any).storage.getItem('journalOpenEpisode')).id, 'run-ep-0001');
+    (h.mixin as any).jConfirmed = true;
+    (h.mixin as any).journal('update', { outcome: 'confirmed' });
+    assert.equal(JSON.parse((h.mixin as any).storage.getItem('journalOpenEpisode')).confirmed, true);
+    (h.mixin as any).journal('end', { outcome: 'released' });
+    await eventually(() => (h.mixin as any).storage.getItem('journalOpenEpisode') === null, 2000, 'cleared after the end');
+    (h.mixin as any).jId = undefined;
+    await h.mixin.release();
+});

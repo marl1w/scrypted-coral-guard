@@ -42,7 +42,7 @@ class Base {
         error: (...a: any[]) => ctl.logs.push(['error', a.join(' ')]),
     };
     store: Record<string, any> = { ...ctl.pre };
-    storage = { getItem: (k: string) => this.store[k] ?? null, setItem: (k: string, v: any) => { this.store[k] = String(v); } };
+    storage = { getItem: (k: string) => this.store[k] ?? null, setItem: (k: string, v: any) => { this.store[k] = String(v); }, removeItem: (k: string) => { delete this.store[k]; } };
     constructor(_o: any) { }
     get motionDetected() { return ctl.state.motionDetected; }
     set motionDetected(v: boolean) {
@@ -140,7 +140,7 @@ export async function releaseAll() {
 import { DEFAULTS } from '../src/defaults';
 const PRISTINE = JSON.parse(JSON.stringify(DEFAULTS));
 
-export function make(opts: { settings?: Record<string, any>; initial?: boolean; hangStart?: boolean; client?: any; persistWrites?: boolean; holdReset?: boolean; dup?: string; sensorless?: boolean; interfaces?: string[]; fast?: boolean; graceMs?: number } = {}) {
+export function make(opts: { store?: Record<string, string>; settings?: Record<string, any>; initial?: boolean; hangStart?: boolean; client?: any; persistWrites?: boolean; holdReset?: boolean; dup?: string; sensorless?: boolean; interfaces?: string[]; fast?: boolean; graceMs?: number } = {}) {
     hook(true);
     (ctl as any).notified = 0;
     ctl.starts = []; ctl.listeners = 0; ctl.removed = 0; ctl.logs = []; ctl.writes = []; ctl.occWrites = []; (ctl.state as any).occupied = undefined; (ctl as any).detections = [];
@@ -160,7 +160,7 @@ export function make(opts: { settings?: Record<string, any>; initial?: boolean; 
     // that the tests override here. Reset to the pristine values first, then apply the test's overrides.
     const { mode, detect, ...tuning } = (opts.settings || {}) as Record<string, any>;
     Object.assign(DEFAULTS, PRISTINE, { frameProcess: 'Per trigger', hwDecode: 'Off', heartbeatMs: 1e9, holdIntervalMs: 0 }, tuning);
-    ctl.pre = { ...(mode === undefined ? {} : { mode }), ...(detect === undefined ? {} : { detect }) };
+    ctl.pre = { ...(mode === undefined ? {} : { mode }), ...(detect === undefined ? {} : { detect }), ...(opts.store ?? {}) };
     const { GuardMixin } = require('../src/mixin') as typeof import('../src/mixin');
     const mixin = new GuardMixin({ mixinDevice: {}, ...(opts.sensorless ? { mixinDeviceInterfaces: ['VideoCamera', 'Camera'] } : opts.interfaces ? { mixinDeviceInterfaces: opts.interfaces } : {}) } as any, plugin);
     made.push(mixin);

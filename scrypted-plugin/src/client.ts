@@ -121,7 +121,7 @@ export interface FrameOptions {
     /** the longest the frame may wait in the service queue, ms (stale otherwise) */
     deadlineMs?: number;
     /** the camera's own AI claims this class for the current episode */
-    claim?: 'person';
+    claim?: 'person' | 'animal';
 }
 
 /** Plain explanation of an HTTP status for logs and the panel, the code only in brackets. */
@@ -249,7 +249,7 @@ export class VerifierClient {
             this.framePaths.set(camera, prefix = `/v1/cameras/${encodeURIComponent(camera)}/frame?t=`);
         }
         const o = this.opts();
-        const q = (o2.low ? '&prio=low' : '') + (o2.deadlineMs && o2.deadlineMs > 0 ? `&deadline_ms=${Math.round(o2.deadlineMs)}` : '') + (o2.claim === 'person' ? '&claim=person' : '');
+        const q = (o2.low ? '&prio=low' : '') + (o2.deadlineMs && o2.deadlineMs > 0 ? `&deadline_ms=${Math.round(o2.deadlineMs)}` : '') + (o2.claim === 'person' || o2.claim === 'animal' ? `&claim=${o2.claim}` : '');
         const r = await this.request<any>('POST', prefix + Math.round(tMs) + q, jpeg, 'image/jpeg', true, o.frameTimeoutMs ?? o.timeoutMs, true);
         if (r === null)
             return null;

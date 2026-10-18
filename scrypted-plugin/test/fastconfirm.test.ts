@@ -132,3 +132,20 @@ test('burst ends after burstMaxMs even when nothing confirms', async () => {
     await eventually(() => s.burst.length === 2);
     assert.deepEqual(s.burst, [true, false]);
 });
+
+test('camera AI dog/cat: frames carry claim=animal (a person claim wins when both are claimed)', async () => {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', preRollS: 0 }, fast: true });
+    await eventually(() => ctl.starts.length === 1);
+    const s: any = ctl.starts[0];
+    h.claim('dog_cat');
+    h.raw(true);
+    await eventually(() => h.mixin['episode'].scanning === true);
+    s.o.onFrame(J, Date.now());
+    await eventually(() => h.calls.frame.length === 1);
+    assert.equal(h.calls.frame[0].a[4].claim, 'animal');
+    h.claim('people');
+    h.calls.frame[0].d.res(idleReply);
+    s.o.onFrame(J, Date.now() + 400);
+    await eventually(() => h.calls.frame.length === 2);
+    assert.equal(h.calls.frame[1].a[4].claim, 'person');
+});

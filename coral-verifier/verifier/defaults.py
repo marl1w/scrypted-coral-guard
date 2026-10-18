@@ -89,6 +89,8 @@ TRACKER = {
 FAST_B_THR = 0.45
 # 0.3.15: with claim=person (the camera's own AI says person) one frame at or above this confirms at once (two independent sources agree).
 FAST_SINGLE_CLAIM = 0.75
+# 0.3.29: with claim=animal (the camera's own AI says dog/cat) one animal frame at or above this confirms the animal at once (a doubtful one is capped below it).
+FAST_SINGLE_CLAIM_ANIMAL = 0.70
 # 0.3.14: the two qualifying frames must be at least this far apart (frame time), so "seen twice" is two looks, not two copies.
 FAST_MIN_SPAN_MS = 200.0
 FAST_IOU = 0.3                  # fast-confirm track matching between consecutive frames (IoU), frames are ~0.15-0.5 s apart

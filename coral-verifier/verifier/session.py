@@ -16,7 +16,7 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 """
 import math, re, threading
 
-from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_B_THR
+from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -468,8 +468,9 @@ class AnimalTracker:
     def set_cfg(self, base):
         self.cfg = self.pt.cfg = self._acfg(base)
 
-    def step(self, t, dets):
-        """dets: [(cls, score, box)] >= animal floor."""
+    def step(self, t, dets, claim=None):
+        """dets: [(cls, score, box)] >= animal floor. claim="animal": the camera's own AI says dog/cat, so one frame >= FAST_SINGLE_CLAIM_ANIMAL
+        confirms the animal track under that box at once (two independent sources agree)."""
         pd = [(d[1], d[2]) for d in dets]
         if self._tick_t is not None and t - self._tick_t < TICK_MERGE_MS:
             self.pt.restore(self._tick_snap)
@@ -477,6 +478,10 @@ class AnimalTracker:
         else:
             self._tick_t, self._tick_snap, self._tick_dets = t, self.pt.export(), pd
         self.pt.step(self._tick_t, t, pd)
+        if claim == "animal":
+            strong = [d for d in pd if d[0] >= FAST_SINGLE_CLAIM_ANIMAL]
+            if strong:
+                self._force(t, max(strong, key=lambda d: d[0]))
         hold = self.cfg.hold_s * 1000.0
         trks = self.tracks = [tr for tr in self.tracks if t - tr.last <= hold]
         used = set()
@@ -491,6 +496,24 @@ class AnimalTracker:
         if len(trks) > MAX_TRACKS:
             trks.sort(key=lambda tr: -tr.last)
             del trks[MAX_TRACKS:]
+
+    def _force(self, t, det):
+        """Confirms the animal tick track under det's box now (or creates it confirmed), like the person fast_claim."""
+        p, tick = self.pt, self._tick_t
+        score, box = det
+        cands = [tr for tr in p.tracks if tr.last == tick and _cd(tr.box, box) <= GATE]
+        if any(tr.conf for tr in cands):
+            return
+        if cands:
+            min(cands, key=lambda tr: _cd(tr.box, box)).conf = True
+        else:
+            tr = _PTrack(); tr.id = p.nid; p.nid += 1
+            tr.box = box; tr.last = tick; tr.last_hi = tick; tr.born = tick; tr.hits = 1
+            tr.hist = [(tick, box)]; tr.still = False; tr.score = score; tr.conf = True
+            p.tracks.append(tr)
+        if p.first_conf is None:
+            p.first_conf = tick
+        p.last_seen = t
 
     def snapshot(self, eff):
         """eff: tick time advanced by the server clock (same clock as the person state; both trackers see the same frames)."""
@@ -639,7 +662,7 @@ class Session:
             f = self._force
             self.confirmed_by = f[2] if f is not None and f[0] == self._tick_t else "ticks"
         self.vehicle.step(t, vdets)
-        self.animal.step(t, adets)
+        self.animal.step(t, adets, claim if self.cfg.fast_confirm else None)
         self.frames += 1
         return t
 

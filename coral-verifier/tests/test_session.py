@@ -432,3 +432,25 @@ def test_in_vehicle_flag_is_cleared_once_the_car_is_gone():
     assert d.get("in_vehicle") is True
     s.update(T0 + 15000, [d])                                     # the car track has expired
     assert "in_vehicle" not in d
+
+
+def dog(score, box=(0.4, 0.5, 0.5, 0.6)):
+    return {"cls": "dog", "score": score, "box": list(box)}
+
+
+def test_animal_claim_confirms_on_one_strong_frame():
+    s = new(fast_confirm=True)
+    s.update(T0, [dog(0.75)], claim="animal")                      # the camera AI says dog/cat: one 0.75 frame is enough
+    assert s.snapshot()["animal"]["confirmed"]
+    s2 = new(fast_confirm=True)
+    s2.update(T0, [dog(0.75)])                                     # no claim: needs 2 of 3 ticks as before
+    assert not s2.snapshot()["animal"]["confirmed"]
+    s3 = new(fast_confirm=True)
+    s3.update(T0, [dog(0.65)], claim="animal")                     # below 0.70: no
+    assert not s3.snapshot()["animal"]["confirmed"]
+    s4 = new(fast_confirm=True)
+    s4.update(T0, [dog(0.75)], claim="person")                     # a person claim says nothing about animals
+    assert not s4.snapshot()["animal"]["confirmed"]
+    s5 = new()                                                     # fast confirm off for the camera
+    s5.update(T0, [dog(0.75)], claim="animal")
+    assert not s5.snapshot()["animal"]["confirmed"]

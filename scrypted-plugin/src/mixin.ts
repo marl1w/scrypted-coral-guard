@@ -45,6 +45,8 @@ const AI_CLAIM_WAIT_MS = 1500;
 const STREAM_DEFAULT_LABEL = 'Default (already open stream)';
 /** a chosen (non-default) stream must deliver its first JPEG within this long, else the default stream is used. */
 const STREAM_FIRST_FRAME_MS = 25000;
+/** camera storage key of the journal episode in progress (closed at the next start if a restart cut it). */
+const OPEN_EPISODE_KEY = 'journalOpenEpisode';
 /** while a camera analyses the default stream because its chosen one failed, the chosen one is retried after these delays (the last repeats). */
 const STREAM_RETRY_MS = [60_000, 120_000, 300_000];
 /** a retry due during an episode waits this long instead (a retry may leave the camera without frames for up to STREAM_FIRST_FRAME_MS). */
@@ -130,7 +132,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private listener: EventListenerRegister | undefined;
     private claimListener: EventListenerRegister | undefined;
     /** the camera's own detection classes (ObjectsDetected events of the inner device), newest last. */
-    private claimEvents: { at: number; groups: Group[]; other: string[]; person?: boolean }[] = [];
+    private claimEvents: { at: number; groups: Group[]; other: string[]; person?: boolean; animal?: boolean }[] = [];
     private claimFrom = 0;
     private unverifiedLogged = false;
     private released = false;
@@ -234,6 +236,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             // no prior value exists for a sensor we add: write false once (normal cameras stay fully transparent at start)
             try { this.motionDetected = false; } catch (e) { /* ignore */ }
         }
+        this.closeLeftoverEpisode();
         // OccupancySensor is ours on every camera: no prior value, start false (a write of false is harmless for consumers)
         try { this.occupied = false; } catch (e) { /* ignore */ }
         // the camera's own AI class (e.g. people / vehicle / dog_cat / package), when the device reports one
@@ -490,11 +493,40 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const ev: EpisodeEvent = { id: this.jId, action, t_ms: Date.now(), mode: this.mode, kind: this.jKind, ...(action === 'start' ? { detect: this.detectGroups() } : {}), ...extra };
         if (action === 'start') this.jOpen.add(ev.id);
         if (action === 'end') { if (!this.jOpen.has(ev.id)) return; this.jOpen.delete(ev.id); } // exactly one end per id
+        if (action !== 'end')
+            this.saveOpenEpisode({ id: ev.id, kind: ev.kind ?? 'camera', confirmed: this.jConfirmed || extra.outcome === 'confirmed', at: Date.now() });
         // strictly in order per camera: an update or end must never overtake its start (the service would drop it)
-        this.jChain = this.jChain.then(() => this.journalOff ? undefined : this.plugin.client.episodeEvent(this.verifierId, ev)).then(() => undefined, (e: any) => {
+        this.jChain = this.jChain.then(() => this.journalOff ? undefined : this.plugin.client.episodeEvent(this.verifierId, ev)).then(() => {
+            if (action === 'end') this.saveOpenEpisode(undefined); // only once the end has reached the service
+        }, (e: any) => {
             if (e?.status === 404 && !this.journalOff)
                 this.journalOff = true; // older service: no journal, silently
         });
+    }
+
+    /** the open journal episode, kept in the camera's storage: a restart that cuts the episode (a deploy kills the process before its end
+     * is sent) closes it at the next start instead of leaving it 'in progress' until the service's 2-hour stale rule. */
+    private saveOpenEpisode(v: { id: string; kind: string; confirmed: boolean; at: number } | undefined) {
+        try {
+            if (v) this.storage.setItem(OPEN_EPISODE_KEY, JSON.stringify(v));
+            else this.storage.removeItem(OPEN_EPISODE_KEY);
+        }
+        catch { /* best effort */ }
+    }
+
+    /** at start: end a journal episode a previous run left open (confirmed -> released, else aborted), at its last known time. */
+    private closeLeftoverEpisode() {
+        let v: any;
+        try { v = JSON.parse(this.storage.getItem(OPEN_EPISODE_KEY) || 'null'); } catch { v = undefined; }
+        if (!v || typeof v.id !== 'string' || typeof (this.plugin.client as any).episodeEvent !== 'function')
+            return;
+        const at = Number.isFinite(v.at) ? v.at : Date.now();
+        const outcome = v.confirmed ? 'released' : 'aborted';
+        const ev: EpisodeEvent = { id: v.id, action: 'end', t_ms: at, mode: this.mode, kind: v.kind === 'unflagged' ? 'unflagged' : 'camera', outcome,
+            timeline_event: { t_ms: at, text: `${outcome} (plugin restarted during the episode)` } };
+        this.jChain = this.jChain.then(() => this.plugin.client.episodeEvent(this.verifierId, ev)).then(() => undefined, () => undefined)
+            .then(() => { if (!this.jId) this.saveOpenEpisode(undefined); });   // 409 (already ended) or 404 (gone) clear it too
+        this.console.log(`journal: closing episode ${v.id.slice(0, 8)} left open by the previous run (${outcome})`);
     }
     private jChain: Promise<void> = Promise.resolve();
     /** journal ids started and not yet ended (reconciled on every transition) */
@@ -1239,6 +1271,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const other: string[] = [];
         let verifiable = false;
         let person = false;
+        let animal = false;
         for (const d of data?.detections || []) {
             const c = String(d?.className || '').toLowerCase();
             if (!c || c === 'motion' || NOT_A_CLAIM.includes(c))
@@ -1246,11 +1279,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             const g = claimGroup(c);
             if (g) verifiable = true; else other.push(c);
             if (g === 'person') person = true;
+            if (g === 'animal') animal = true;
         }
         if (!verifiable && !other.length)
             return;
         const now = monoNow();
-        this.claimEvents = this.claimEvents.filter(e => now - e.at < 10000).concat({ at: now, groups: verifiable ? ['person'] : [], other, person });
+        this.claimEvents = this.claimEvents.filter(e => now - e.at < 10000).concat({ at: now, groups: verifiable ? ['person'] : [], other, person, animal });
         if (this.cameraRaw && this.aiWaitTimer) {
             // the claim the held-back edge was waiting for: it becomes a trigger now
             clearTimeout(this.aiWaitTimer);
@@ -1290,6 +1324,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (!this.scanActive) return false;
         const from = this.loopStartedAt - 3000;
         return this.claimEvents.some(e => e.person && e.at >= from);
+    }
+
+    /** the camera's own AI claimed an animal for the current scan (from 3 s before its start). */
+    private animalClaimed(): boolean {
+        if (!this.scanActive) return false;
+        const from = this.loopStartedAt - 3000;
+        return this.claimEvents.some(e => e.animal && e.at >= from);
     }
 
     private hasClaimSince(from: number): boolean {
@@ -1397,7 +1438,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             const reply = await this.plugin.client.frame(this.verifierId, item.jpeg, item.t, {
                 low: this.episode.synthetic && this.fastGen !== gen,
                 deadlineMs: burst ? DEFAULTS.burstDeadlineMs : undefined,
-                claim: (this.plugin.fastConfirm ?? true) && this.personClaimed() ? 'person' : undefined,
+                claim: !(this.plugin.fastConfirm ?? true) ? undefined : this.personClaimed() ? 'person' : this.animalClaimed() ? 'animal' : undefined,
             });
             if (gen !== this.scanGen || this.released)
                 return;
@@ -1673,7 +1714,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.snapTimer = undefined;
         if (this.jId) {
             // never leave a journal episode 'in progress' across a restart or a removal
-            try { this.journal('end', { outcome: 'aborted', note: 'plugin restart', timeline_event: { t_ms: Date.now(), text: 'aborted (plugin restart)' } }); } catch { /* best effort */ }
+            const outcome = this.jConfirmed ? 'released' : 'aborted';
+            try { this.journal('end', { outcome, note: 'plugin restart', timeline_event: { t_ms: Date.now(), text: `${outcome} (plugin restart)` } }); } catch { /* best effort */ }
             this.jId = undefined;
         }
         this.released = true;
