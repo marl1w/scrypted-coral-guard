@@ -5,6 +5,7 @@
 import sdk, { EventListenerRegister, MediaObject, MotionSensor, ObjectDetectionTypes, OccupancySensor, ObjectDetector, ObjectsDetected, ScryptedInterface, Setting, SettingValue, VideoCamera } from '@scrypted/sdk';
 import { SettingsMixinDeviceBase, SettingsMixinDeviceOptions } from '@scrypted/sdk/settings-mixin';
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
+import { OverviewCamera, ViewInfo, viewInfoOf } from './overview';
 import { randomUUID } from 'crypto';
 import { EpisodeEvent, FrameReply, groupOf, slugify, TrackerConfig } from './client';
 import { DEFAULTS } from './defaults';
@@ -1588,9 +1589,23 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     }
 
     /** this camera's row in the plugin Overview */
-    overviewRow() {
+    overviewRow(): OverviewCamera {
         this.refreshStatus();
-        return { name: `${String(this.name || this.id)}${this.sensorless ? ' (sensorless)' : ''}`, ...this.status.overviewCells() };
+        this.refreshViewInfo();
+        const base = String(this.name || this.id);
+        return { name: `${base}${this.sensorless ? ' (sensorless)' : ''}`, base, ...this.status.overviewCells(), stream: this.streamUp ? this.streamName || undefined : undefined,
+            fallback: this.streamFallback, view: this.viewInfo };
+    }
+
+    /** the camera plugin's crop / mirror settings for the Overview: read in the background, at most once a minute */
+    private viewInfo: ViewInfo = {};
+    private viewInfoAt = -Infinity;
+    private refreshViewInfo() {
+        const now = monoNow();
+        if (now - this.viewInfoAt < 60_000)
+            return;
+        this.viewInfoAt = now;
+        Promise.resolve((this.mixinDevice as any)?.getSettings?.()).then((s: any) => { this.viewInfo = viewInfoOf(Array.isArray(s) ? s : []); }, () => undefined);
     }
 
     /** the stream id to request, undefined = the default stream */

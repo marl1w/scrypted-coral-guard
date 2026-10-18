@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderOverview } from '../src/overview';
+import { renderOverview, viewInfoOf } from '../src/overview';
 import { MetricsRing, axisRange, headerText, renderPerformance, sparkChart, sparkPath } from '../src/performance';
 import { loadProvider } from './harness';
 
@@ -125,4 +125,23 @@ test('sparkline chart: auto-scaled ms axis with padding, 60 min label, escaped t
     assert.match(svg, />9 ms<\/text>/); assert.match(svg, />20 ms<\/text>/, 'padded range 9..20 (19+~1)');
     assert.match(svg, /stroke-dasharray="3 3"/);
     assert.equal(sparkChart('x', [{ at: now, v: 1 }], now, '', 0, false), '');
+});
+
+test('overview: the Analyses column names the analysed stream, the crop, mirrors of a crop and a stream fallback', () => {
+    const parent = viewInfoOf([{ key: 'viewCrop', value: '928:576:608:0' }, { key: 'mirrors', value: ['Drive A=Drive B (Plugin)', 'bad'] }, { key: 'other', value: 1 }]);
+    assert.deepEqual(parent, { crop: 'crop 928\u00d7576 at 608,0', mirrors: [{ name: 'Drive A', source: 'Drive B (Plugin)' }] });
+    const child = viewInfoOf([{ key: 'crop', value: 'Front 928x576 at 0,0 (Rebroadcast output prefix: ...)' }]);
+    assert.deepEqual(child, { crop: 'crop of Front 928\u00d7576 at 0,0' });
+    assert.deepEqual(viewInfoOf([]), {});
+    const h = renderOverview([
+        { ...cam, name: 'Front', base: 'Front', stream: 'View 928x576', view: parent },
+        { ...cam, name: 'Drive B (sensorless)', base: 'Drive B', stream: 'Crop 928x576', view: child },
+        { ...cam, name: 'Garden', base: 'Garden', stream: 'sub 640x480', fallback: true },
+        { ...cam, name: 'Off', base: 'Off', decode: '\u2014', stream: 'x' },
+    ]);
+    assert.match(h, /Analyses/); assert.ok(!/>Decode</.test(h));
+    assert.match(h, /GPU \u00b7 View 928x576<div[^>]*>crop 928\u00d7576 at 608,0</);
+    assert.match(h, /GPU \u00b7 Crop 928x576<div[^>]*>crop of Front 928\u00d7576 at 0,0 \u00b7 also shown as Drive A</);
+    assert.match(h, /sub 640x480 <span style="color:#e5484d">\u00b7 fallback<\/span>/);
+    assert.ok(!h.includes('\u2014 \u00b7 x'), 'no stream name without a connected stream');
 });
