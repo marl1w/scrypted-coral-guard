@@ -14,7 +14,9 @@ and 4 fps senders cannot confirm on near-duplicate frames.
   - fast confirm (per camera, off by default): FastConfirm below runs on every FRAME (not ticks); when it fires, the tick track under that box is confirmed at once
 Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`snapshot(wall_now)`) advances with the server clock.
 """
-import math, re, threading
+import math, re, threading, time
+
+import shape as SH
 
 from defaults import TRACKER as _T, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR
 from dataclasses import dataclass, fields, asdict
@@ -76,6 +78,10 @@ class Config:
     min_area_person: float = _T["min_area_person"]
     min_area_vehicle: float = _T["min_area_vehicle"]
     min_area_animal: float = _T["min_area_animal"]
+    shape_hold: bool = _T["shape_hold"]
+    shape_thr: float = _T["shape_thr"]
+    shape_cover: float = _T["shape_cover"]
+    occlusion_hold_s: float = _T["occlusion_hold_s"]
 
     def validate(self):
         for k, v in asdict(self).items():
@@ -113,6 +119,12 @@ class Config:
         for k in MIN_AREA_KEYS:
             if not 0 <= getattr(self, k) <= 0.25:
                 raise ValueError(f"{k} must be in [0, 0.25]")
+        if not 0.1 <= self.shape_thr <= 0.99:
+            raise ValueError("shape_thr must be in [0.1, 0.99]")
+        if not 0.01 <= self.shape_cover <= 0.9:
+            raise ValueError("shape_cover must be in [0.01, 0.9]")
+        if not 0 <= self.occlusion_hold_s <= 600:
+            raise ValueError("occlusion_hold_s must be in [0, 600]")
         return self
 
     def updated(self, changes):
@@ -390,7 +402,7 @@ class FastConfirm:
 
 
 class _VTrack:
-    __slots__ = ("id", "cls", "box", "last", "born_t", "anchor", "stable_since", "parked", "hist", "moving")
+    __slots__ = ("id", "cls", "box", "last", "born_t", "anchor", "stable_since", "parked", "hist", "moving", "ref", "covered_since")
 
 
 class VehicleTracker:
@@ -398,17 +410,22 @@ class VehicleTracker:
         self.cfg = cfg
         self.tracks = []
         self.nid = 0
+        self.shape_stats = {"held": 0, "covered": 0, "released": 0}     # misses decided by the shape hold since the session started
+        self.shape_ms = 0.0                                             # time of the last frame's shape checks (diagnostics only)
 
     def _alive(self, tr, t):
         hold = self.cfg.max_hold_s if tr.parked else self.cfg.hold_s
         return t - tr.last <= hold * 1000.0
 
-    def step(self, t, dets):
+    def step(self, t, dets, gray=None, others=()):
+        """dets: [(cls, score, box)]. gray: the frame reduced by shape.gray_small (None = no shape hold for this frame). others: boxes of
+        every other detection of this frame (people, animals, weak vehicles), which can cover a vehicle."""
         c = self.cfg
         trks = self.tracks = [tr for tr in self.tracks if self._alive(tr, t)]
         used = set()
+        matched = {}
         for i, j in greedy_iou([tr.box for tr in trks], [d[2] for d in dets], MATCH_IOU_VEHICLE):
-            tr = trks[i]; d = dets[j]; used.add(j)
+            tr = trks[i]; d = dets[j]; used.add(j); matched[id(tr)] = j
             tr.cls, tr.box, tr.last = d[0], d[2], t
             tr.moving = self._moved(tr, t, d[2])
             thr = PARKED_BREAK_IOU if tr.parked else STILL_IOU
@@ -423,10 +440,62 @@ class VehicleTracker:
             tr = _VTrack(); tr.id = self.nid; self.nid += 1
             tr.cls, tr.box, tr.anchor, tr.last, tr.born_t, tr.stable_since, tr.parked = d[0], d[2], d[2], t, t, t, False
             tr.hist, tr.moving = [(t, d[2])], False                     # a new track is "still" (unknown) until it actually moves or parks
+            tr.ref, tr.covered_since = None, None
+            matched[id(tr)] = j
             trks.append(tr)
+        if gray is not None and c.shape_hold:
+            t0 = time.perf_counter()
+            self._shape(t, trks, dets, matched, gray, others)
+            self.shape_ms = (time.perf_counter() - t0) * 1e3
+            trks = self.tracks
         if len(trks) > MAX_TRACKS:
             trks.sort(key=lambda tr: (tr.parked, -tr.last))
             del trks[MAX_TRACKS:]
+
+    def _shape(self, t, trks, dets, matched, gray, others):
+        """Shape hold (see shape.py). A still or parked vehicle seen in this frame, with nothing in front of it, renews its look (edge
+        signature). One that was missed is compared with that look: same outline -> counts as seen (it keeps living and can park); a
+        different outline while another box covers it -> held up to occlusion_hold_s (waiting for it to be seen again, its look untouched);
+        a different outline with nothing in front -> it is gone, dropped at once."""
+        c = self.cfg
+        vboxes = [d[2] for d in dets]
+        keep = []
+        for tr in trks:
+            j = matched.get(id(tr))
+            if tr.moving:                                                                   # a moving vehicle has no fixed look
+                tr.ref = tr.covered_since = None
+                keep.append(tr)
+                continue
+            if j is not None:
+                front = list(others) + [b for k, b in enumerate(vboxes) if k != j]
+                if not SH.covered(tr.box, front, c.shape_cover):
+                    sig = SH.signature(gray, tr.box)
+                    if sig is not None:
+                        tr.ref = sig
+                tr.covered_since = None
+                keep.append(tr)
+                continue
+            if tr.ref is None:
+                keep.append(tr)
+                continue
+            sig = SH.signature(gray, tr.box)
+            if sig is not None and SH.similarity(sig, tr.ref) >= c.shape_thr:
+                tr.last = t                                                                 # same car: as good as a detection
+                tr.covered_since = None
+                if not tr.parked and (t - tr.stable_since) > c.parked_after_s * 1000.0:
+                    tr.parked = True
+                self.shape_stats["held"] += 1
+                keep.append(tr)
+            elif SH.covered(tr.box, list(others) + vboxes, c.shape_cover):
+                if tr.covered_since is None:
+                    tr.covered_since = t
+                if t - tr.covered_since <= c.occlusion_hold_s * 1000.0:
+                    tr.last = t
+                self.shape_stats["covered"] += 1
+                keep.append(tr)
+            else:
+                self.shape_stats["released"] += 1                                         # the outline changed and nothing is in front: gone
+        self.tracks = keep
 
     @staticmethod
     def _moved(tr, t, box):
@@ -447,6 +516,7 @@ class VehicleTracker:
         st = lambda tr: "parked" if tr.parked else ("moving" if tr.moving else "still")
         hold = max((tr.last + (self.cfg.max_hold_s if tr.parked else self.cfg.hold_s) * 1000.0 for tr in live), default=None)
         return {"moving": any(st(tr) == "moving" for tr in live), "hold_until_ms": None if hold is None else int(hold),
+                "shape": dict(self.shape_stats, ms=round(self.shape_ms, 3)),
                 "tracks": [{"id": tr.id, "cls": tr.cls, "state": st(tr), "parked": tr.parked, "since_ms": int(tr.born_t),
                             "box": [round(v, 4) for v in tr.box]} for tr in live]}
 
@@ -612,8 +682,9 @@ class Session:
             out.append(d)
         return out
 
-    def update(self, t_ms, detections, wall_now=None, claim=None):
-        """detections: [{"cls": str, "score": float, "box": [x0,y0,x1,y1]}]. Returns the effective (clamped) t."""
+    def update(self, t_ms, detections, wall_now=None, claim=None, gray=None):
+        """detections: [{"cls": str, "score": float, "box": [x0,y0,x1,y1]}]. gray: the frame from shape.gray_small (shape hold; None = off for
+        this frame). Returns the effective (clamped) t."""
         t = int(t_ms)
         if self.last_t is not None and t < self.last_t:
             t = self.last_t
@@ -661,7 +732,9 @@ class Session:
         elif self.confirmed_by is None:
             f = self._force
             self.confirmed_by = f[2] if f is not None and f[0] == self._tick_t else "ticks"
-        self.vehicle.step(t, vdets)
+        vset = {id(d) for d in detections if d["cls"] in VEHICLES and not d.get("weak") and d["score"] >= (DETECT_THR["vehicle"][d["cls"]] if d["cls"] == "bicycle" else self.cfg.vehicle_thr)}
+        others = [tuple(d["box"]) for d in detections if id(d) not in vset]       # people (also in a vehicle), animals, weak vehicles: anything in front
+        self.vehicle.step(t, vdets, gray, others)
         self.animal.step(t, adets, claim if self.cfg.fast_confirm else None)
         self.frames += 1
         return t
@@ -769,14 +842,14 @@ class Registry:
                 s.animal.set_cfg(cfg)
             return cfg
 
-    def update(self, camera, t_ms, detections, wall_now, claim=None):
+    def update(self, camera, t_ms, detections, wall_now, claim=None, gray=None):
         with self.lock:
             self.sweep(wall_now)
             s = self._live(camera, wall_now)
             if s is None:
                 self._admit(camera, wall_now)
                 s = self._sessions[camera] = Session(self.config(camera), wall_now)
-            s.update(t_ms, detections, wall_now, claim)
+            s.update(t_ms, detections, wall_now, claim, gray)
             return s.snapshot(wall_now)
 
     def known(self, camera, wall_now):

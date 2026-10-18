@@ -92,6 +92,10 @@ export interface TrackerConfig {
     min_area_person?: number;
     min_area_vehicle?: number;
     min_area_animal?: number;
+    /** service 0.3.30+: shape hold of still/parked vehicles the detector misses */
+    shape_hold?: boolean;
+    shape_thr?: number;
+    occlusion_hold_s?: number;
     /** newer service: extra shrunk-with-border pass, 0 = off */
     zoom_out?: number;
     /** newer service: re-check uncertain detections with a zoomed-in pass */

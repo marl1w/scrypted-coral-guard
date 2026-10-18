@@ -84,6 +84,13 @@ TRACKER = {
     "min_area_person": 0.0,
     "min_area_vehicle": 0.0,
     "min_area_animal": 0.0,
+    # Shape hold (0.3.30, see shape.py): a still or parked vehicle the detector misses is kept while the outline inside its box still matches
+    # its last look (edge correlation >= shape_thr); covered by another box (>= shape_cover of its area) it is held up to occlusion_hold_s;
+    # changed with nothing in front it is dropped at once. Per camera, set by the client (the plugin's camera settings).
+    "shape_hold": True,
+    "shape_thr": 0.6,
+    "shape_cover": 0.1,
+    "occlusion_hold_s": 60.0,
 }
 # Rule B (logged in 0.3.16, live since 0.3.18): claim=person + one person box at or above this, not on a still track, confirms (confirmed_by fast_b).
 FAST_B_THR = 0.45

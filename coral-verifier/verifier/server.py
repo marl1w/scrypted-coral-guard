@@ -9,6 +9,7 @@ import defaults as DF
 import metrics as M
 import session as S
 import detect as D
+import shape as SH
 import secondlook as SL
 from journal import Journal
 from coral import CoralManager, Job
@@ -438,6 +439,14 @@ class Handler(BaseHTTPRequestHandler):
             app.decode_sem.release()
         decode_ms = (time.perf_counter() - t_dec) * 1e3
         cfg = app.registry.config(cam)
+        gray, shape_prep_ms = None, 0.0
+        if cfg.shape_hold:                                   # reduced gray frame for the shape hold, made here (the request thread) while the Coral worker is busy
+            t_g = time.perf_counter()
+            try:
+                gray = SH.gray_small(img)
+            except Exception:
+                log.exception("shape frame failed")
+            shape_prep_ms = (time.perf_counter() - t_g) * 1e3
 
         def sl_hook(engine, frame, dets, reduced=False):
             now = time.monotonic()
@@ -467,7 +476,9 @@ class Handler(BaseHTTPRequestHandler):
                 if S.too_small(d, cfg):
                     d["too_small"] = True                                                               # below the camera's minimum size for its group: never tracked
             live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected" and not d.get("too_small")]      # rejected / too small: never; doubtful person/animal: score capped
-            sn = app.registry.update(cam, t, live, time.monotonic(), claim)
+            sn = app.registry.update(cam, t, live, time.monotonic(), claim, gray)
+            shape_ms = shape_prep_ms + (sn["vehicle"].get("shape") or {}).get("ms", 0.0)
+            app.coral.note_stage("shape_ms", shape_ms)
             try:
                 app.journal.record_frame_async(cam, sn["t"], body, dets)
             except Exception:
@@ -475,7 +486,7 @@ class Handler(BaseHTTPRequestHandler):
             shown = dets if verbose else [d for d in live if d["score"] >= REPLY_MIN_SCORE and not d.get("in_vehicle")]
             return {"camera": cam, "t": sn["t"], "coral_ms": round(st["infer_ms"], 1), "queue_ms": round(st["queue_ms"], 1),
                     "decode_ms": round(st["decode_ms"], 2), "preprocess_ms": round(st["preprocess_ms"], 2), "infer_ms": round(st["infer_ms"], 2),
-                    "post_ms": round(st["post_ms"], 2), "second_look_ms": round(st.get("second_look_ms", 0.0), 2), "reduced": bool(st.get("reduced")), "total_ms": round(st["total_ms"], 2), "detections": shown,
+                    "post_ms": round(st["post_ms"], 2), "second_look_ms": round(st.get("second_look_ms", 0.0), 2), "shape_ms": round(shape_ms, 3), "reduced": bool(st.get("reduced")), "total_ms": round(st["total_ms"], 2), "detections": shown,
                     "person": sn["person"], "vehicle": sn["vehicle"], "animal": sn["animal"], "session": sn["session"]}
 
         job = app.coral.submit(Job(img, tiles, cfg.cont_thr, finish, decode_ms, deadline, arrival, low=(prio == "low"),

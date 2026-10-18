@@ -20,16 +20,16 @@ def test_health_shape_and_no_auth_needed(box):
     box.frame("c1", T0)
     h = box.req("GET", "/v1/health", auth=False)[1]
     assert h["coral_ms"]["last"] > 0 and h["cameras_active"] == 1
-    assert set(h["stages"]) == {"decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "second_look_ms"}
+    assert set(h["stages"]) == {"decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "second_look_ms", "shape_ms"}
     assert all(set(v) == {"median", "p95"} and v["median"] is not None for v in h["stages"].values())
 
 
 def test_frame_reply_shape_and_session(box):
     st, r = box.frame("front_door", T0)
     assert st == 200
-    assert set(r) == {"camera", "t", "coral_ms", "queue_ms", "decode_ms", "preprocess_ms", "infer_ms", "post_ms", "second_look_ms", "reduced", "total_ms", "detections", "person", "vehicle", "animal", "session"}
+    assert set(r) == {"camera", "t", "coral_ms", "queue_ms", "decode_ms", "preprocess_ms", "infer_ms", "post_ms", "second_look_ms", "shape_ms", "reduced", "total_ms", "detections", "person", "vehicle", "animal", "session"}
     assert r["camera"] == "front_door" and r["t"] == T0
-    for k in ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "coral_ms"):
+    for k in ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "coral_ms", "shape_ms"):
         assert isinstance(r[k], float) and r[k] >= 0, k
     assert r["total_ms"] >= r["infer_ms"] >= 1.5 and abs(r["coral_ms"] - r["infer_ms"]) <= 0.051                  # same value, rounded to 1 and 2 decimals (no exact-equality flake on .x5)
     d = r["detections"][0]
@@ -38,7 +38,8 @@ def test_frame_reply_shape_and_session(box):
     st, r = box.frame("front_door", T0 + 1000)
     p = r["person"]
     assert p["state"] == "confirmed" and p["confirmed"] and p["present"] and p["tracks"] == 1 and p["since_ms"] == T0 and p["last_seen_ms"] == T0 + 1000
-    assert r["session"] == {"frames": 2, "started_ms": T0} and r["vehicle"] == {"moving": False, "hold_until_ms": None, "tracks": []}
+    assert r["session"] == {"frames": 2, "started_ms": T0} and {k: v for k, v in r["vehicle"].items() if k != "shape"} == {"moving": False, "hold_until_ms": None, "tracks": []}
+    assert r["vehicle"]["shape"]["held"] == 0 and r["vehicle"]["shape"]["ms"] >= 0
     st, g = box.req("GET", "/v1/cameras/front_door")
     assert st == 200 and g["person"]["present"] and "detections" not in g and g["session"]["frames"] == 2
     st, lst = box.req("GET", "/v1/cameras")

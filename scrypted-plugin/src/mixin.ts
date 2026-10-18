@@ -115,6 +115,24 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             type: 'string',
             placeholder: 'off',
         },
+        shapeHold: {
+            title: 'Vehicle shape hold',
+            description: 'Keep a still or parked vehicle the detector misses while the outline inside its box still matches its last look (stops parked cars flickering at night).',
+            type: 'boolean',
+            defaultValue: true,
+        },
+        shapeThreshold: {
+            title: 'Vehicle shape match',
+            description: 'Outline match (0.1-0.99) that keeps a missed vehicle. Same parked car scores 0.87-1, an empty spot about 0.2. Empty = 0.6.',
+            type: 'string',
+            placeholder: '0.6',
+        },
+        coveredHold: {
+            title: 'Covered vehicle hold',
+            description: 'Seconds a vehicle is kept while someone or something stands in front of it (0-600). Empty = 60.',
+            type: 'string',
+            placeholder: '60',
+        },
     });
     /** label -> stream id of the last rendered Stream choices */
     private streamLabels = new Map<string, string>([[STREAM_DEFAULT_LABEL, 'default']]);
@@ -461,10 +479,35 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         return r;
     }
 
+    private shapeWarned = '';
+    /** Per-camera shape hold (service 0.3.30+); empty or invalid values fall back to the service defaults (invalid warned once). */
+    private shapeConfig(): TrackerConfig {
+        const v = this.storageSettings.values, bad: string[] = [];
+        const num = (raw: unknown, title: string, lo: number, hi: number) => {
+            const s = String(raw ?? '').trim().replace(',', '.');
+            if (!s)
+                return undefined;
+            const n = Number(s);
+            if (!Number.isFinite(n) || n < lo || n > hi) { bad.push(title); return undefined; }
+            return n;
+        };
+        const sh = (v as any).shapeHold;
+        const r: TrackerConfig = { shape_hold: sh === undefined || sh === null || sh === '' ? true : sh === true || sh === 'true' };
+        const thr = num(v.shapeThreshold, 'Vehicle shape match', 0.1, 0.99);
+        const hold = num(v.coveredHold, 'Covered vehicle hold', 0, 600);
+        if (thr !== undefined) r.shape_thr = thr;
+        if (hold !== undefined) r.occlusion_hold_s = hold;
+        const w = bad.join(', ');
+        if (w && w !== this.shapeWarned)
+            this.console.warn(`${w}: out of range; the service default is used`);
+        this.shapeWarned = w;
+        return r;
+    }
+
     /** Push the tracker overrides and the plugin-wide thresholds (at start, on a change, after a service restart). */
     postConfig() {
         const person = serviceThresholds(this.thresholds);
-        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, ...this.minAreas(), zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, fast_confirm: this.plugin.fastConfirm ?? true, name: String(this.name || this.id) };
+        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, ...this.minAreas(), ...this.shapeConfig(), zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, fast_confirm: this.plugin.fastConfirm ?? true, name: String(this.name || this.id) };
         this.configPosted = false;
         if (this.released || this.mode === 'off' || this.plugin.config.killSwitch)
             return;

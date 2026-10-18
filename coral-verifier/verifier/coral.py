@@ -22,7 +22,7 @@ from detect import Engine
 from defaults import BUSY_DEPTH
 
 log = logging.getLogger("coral")
-STAGES = ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "second_look_ms")
+STAGES = ("decode_ms", "preprocess_ms", "infer_ms", "post_ms", "queue_ms", "total_ms", "second_look_ms", "shape_ms")
 
 
 class Job:
@@ -265,7 +265,8 @@ class CoralManager:
             self.roll.add("busy_ms", stages["infer_ms"]); self.roll.add("inv"); self.roll.add("frames")
             with self.lock:
                 for k in STAGES:
-                    self.hist[k].append(stages[k])
+                    if k in stages:
+                        self.hist[k].append(stages[k])
             try:
                 job.complete(200, job.finish(dets, stages))
             except Exception:
@@ -348,6 +349,11 @@ class CoralManager:
             self._request_restart()
 
     # ---------------- metrics ----------------
+    def note_stage(self, name, ms):
+        """A stage timed outside the worker loop (shape_ms is known only once the session has run)."""
+        with self.lock:
+            self.hist[name].append(ms)
+
     @staticmethod
     def _pct(xs):
         xs = sorted(xs)

@@ -399,7 +399,7 @@ test('Hardware decode: a hwaccel failure restarts once in software and stays in 
 test('settings: Refresh and Status on top, then Mode with a short description (no repeated summary)', async () => {
     const h = make({ settings: { mode: 'Gate' } });
     const st = await h.mixin.getMixinSettings();
-    assert.deepEqual(st.map(x => x.key), ['refresh', 'status', 'mode', 'detect', 'stream', 'zoomOut', 'animalStart', 'animalKeep', 'minPerson', 'minVehicle', 'minAnimal', 'zoneNames']);
+    assert.deepEqual(st.map(x => x.key), ['refresh', 'status', 'mode', 'detect', 'stream', 'zoomOut', 'animalStart', 'animalKeep', 'minPerson', 'minVehicle', 'minAnimal', 'shapeHold', 'shapeThreshold', 'coveredHold', 'zoneNames']);
     assert.equal(st[1].type, 'html');
     assert.equal(st[1].readonly, true);
     assert.ok(!st.some(x => x.group), 'one group only (the mixin default)');
@@ -1136,6 +1136,27 @@ test('minimum sizes: camera settings in % are posted as frame fractions; empty o
     await h.mixin.release();
 });
 
+test('vehicle shape hold: on by default; switch, match and covered hold are posted; invalid values fall back to the service default (warned)', async () => {
+    const posted: any[] = [];
+    const h = make({ settings: { mode: 'Shadow' }, client: {
+        frame: async () => null, reset: async () => ({}), health: async () => ({ ok: true }), check: async () => ({ ok: true }),
+        config: async (_id: string, cfg: any) => { posted.push(cfg); return {}; },
+    } });
+    await eventually(() => posted.length >= 1);
+    assert.equal(posted[0].shape_hold, true);
+    assert.ok(!('shape_thr' in posted[0]) && !('occlusion_hold_s' in posted[0]), 'service defaults unless set');
+    await h.mixin.putMixinSetting('shapeThreshold', '0,7');
+    await eventually(() => posted.some(c => c.shape_thr === 0.7));
+    await h.mixin.putMixinSetting('coveredHold', '90');
+    await eventually(() => posted.some(c => c.occlusion_hold_s === 90));
+    await h.mixin.putMixinSetting('shapeThreshold', '2');
+    await eventually(() => ctl.logs.some(l => /Vehicle shape match: out of range/.test(String(l[1]))));
+    assert.ok(!('shape_thr' in posted[posted.length - 1]));
+    await h.mixin.putMixinSetting('shapeHold', 'false');
+    await eventually(() => posted[posted.length - 1].shape_hold === false);
+    await h.mixin.release();
+});
+
 test('thresholds are posted to the service at start; an old service rejecting the new keys gets the person keys only', async () => {
     const posted: any[] = [];
     const h = make({ settings: { mode: 'Shadow' }, client: {
@@ -1143,7 +1164,7 @@ test('thresholds are posted to the service at start; an old service rejecting th
         config: async (_id: string, cfg: any) => { posted.push(cfg); if ('vehicle_thr' in cfg) { const e: any = new Error('bad'); e.status = 400; throw e; } return {}; },
     } });
     await eventually(() => posted.length === 2);
-    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, min_area_person: 0, min_area_vehicle: 0, min_area_animal: 0, zoom_out: 0, second_look: true, fast_confirm: false, name: 'Cam 1' });
+    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, min_area_person: 0, min_area_vehicle: 0, min_area_animal: 0, shape_hold: true, zoom_out: 0, second_look: true, fast_confirm: false, name: 'Cam 1' });
     assert.deepEqual(posted[1], { start_thr: 0.65, cont_thr: 0.2 });
     assert.ok(!ctl.logs.some(l => /tracker config not applied/.test(String(l[1]))));
     await h.mixin.release();
@@ -1315,7 +1336,7 @@ test('camera settings tabs: Overview (Status only) first, then Setup (Mode, Dete
     assert.deepEqual([...new Set(st.map(x => x.subgroup))], ['Overview', 'Setup', 'Zones'], 'exactly three tabs');
     assert.equal(st.find(x => x.key === 'zone:Street')!.title, 'Edit zone: Street');
     assert.deepEqual(st.map(x => [x.key, x.subgroup]), [
-        ['refresh', 'Overview'], ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'], ['animalStart', 'Setup'], ['animalKeep', 'Setup'], ['minPerson', 'Setup'], ['minVehicle', 'Setup'], ['minAnimal', 'Setup'],
+        ['refresh', 'Overview'], ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'], ['animalStart', 'Setup'], ['animalKeep', 'Setup'], ['minPerson', 'Setup'], ['minVehicle', 'Setup'], ['minAnimal', 'Setup'], ['shapeHold', 'Setup'], ['shapeThreshold', 'Setup'], ['coveredHold', 'Setup'],
         ['zoneNames', 'Zones'], ['zone:Street', 'Zones'],
     ]);
     await h.mixin.release();
