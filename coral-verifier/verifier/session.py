@@ -1027,10 +1027,23 @@ class Registry:
             if s is not None:
                 s.lookalikes = la
 
-    def reset(self, camera):
+    def reset(self, camera, wall_now=None, keep_vehicles=True):
+        """Fresh episode: person, animal and fast-confirm state start over. Still and parked vehicle tracks are scene, not episode: with
+        keep_vehicles they move to the new session (look, spot and parked state intact), so a camera trigger does not drop a parked car
+        until the detector finds it again. keep_vehicles=False clears everything (the analysed view changed)."""
         with self.lock:
             self._sl.pop(camera, None)
-            return self._sessions.pop(camera, None) is not None
+            old = self._sessions.pop(camera, None)
+            if old is None:
+                return False
+            if keep_vehicles and old.last_t is not None:
+                eff = old._tick_t + (max(0.0, wall_now - old.wall) * 1000.0 if wall_now is not None else 0.0)
+                kept = [tr for tr in old.vehicle.tracks if not tr.moving and old.vehicle._alive(tr, eff)]
+                if kept:
+                    s = self._sessions[camera] = Session(old.cfg, old.wall)
+                    s.vehicle.tracks, s.vehicle.nid, s.vehicle.spots = kept, old.vehicle.nid, old.vehicle.spots
+                    s.lookalikes = old.lookalikes
+            return True
 
     def listing(self, wall_now):
         with self.lock:

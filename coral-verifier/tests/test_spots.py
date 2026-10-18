@@ -117,6 +117,42 @@ def test_spots_survive_a_session_reset_and_are_saved_once():
     assert r.spots_forget("c1") and r.spots_describe("c1") == [] and r.spots_dirty() == {"c1": []}
 
 
+def test_a_reset_keeps_the_parked_car_and_clears_people():
+    r = S.Registry()
+    for i in range(125):                                         # parked after parked_after_s
+        r.update("c1", T0 + i * 1000, [car(), {"cls": "person", "score": 0.9, "box": [0.7, 0.2, 0.8, 0.6]}], 1.0 + i, gray=frame(seed=i))
+    sn = r.peek("c1", 125.0)
+    assert sn["person"]["present"] and sn["vehicle"]["tracks"][0]["parked"]
+    assert r.reset("c1", 125.5) is True
+    sn = r.update("c1", T0 + 126_000, [], 126.0, gray=frame(seed=200))       # the detector misses the car on the first frame after the trigger
+    assert not sn["person"]["present"] and sn["session"]["frames"] == 1
+    assert [(t["id"], t["parked"]) for t in sn["vehicle"]["tracks"]] == [(0, True)]
+    assert r.reset("c1", 127.0, keep_vehicles=False) is True                   # the analysed view changed: nothing lingers
+    assert r.update("c1", T0 + 128_000, [], 128.0, gray=frame(car=False, seed=3))["vehicle"]["tracks"] == []
+
+
+def test_a_reset_drops_moving_vehicles():
+    r = S.Registry()
+    for i in range(8):
+        x = 0.05 * i
+        r.update("c1", T0 + i * 1000, [{"cls": "car", "score": 0.9, "box": [x, 0.5, x + 0.3, 0.9]}], 1.0 + i)
+    assert r.peek("c1", 8.0)["vehicle"]["moving"]
+    r.reset("c1", 8.0)
+    assert r.update("c1", T0 + 9000, [], 9.0)["vehicle"]["tracks"] == []
+
+
+def test_server_reset_all_clears_vehicles():
+    b = Box(items=[["car", 3.0, 16, 8, 8, [3, 2, 3, 2]]])
+    try:
+        b.frame("g", NOW - 5000)
+        assert b.req("POST", "/v1/cameras/g/reset")[0] == 200                # a camera trigger keeps the still car
+        assert b.app.registry._sessions["g"].vehicle.tracks
+        assert b.req("POST", "/v1/cameras/g/reset", b'{"all": true}')[0] == 200
+        assert "g" not in b.app.registry._sessions
+    finally:
+        b.close()
+
+
 def test_server_saves_loads_and_forgets_spots():
     b = Box()
     try:

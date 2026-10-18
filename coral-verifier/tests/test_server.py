@@ -264,7 +264,7 @@ def test_reset_clears_vehicles_keeps_config():
         assert b.frame("g", T0 - 5000)[1]["vehicle"]["tracks"]
         r = b.frame("g", T0 - 6000)[1]
         assert r["t"] == T0 - 5000                                           # out of order: clamped to the last t
-        assert b.req("POST", "/v1/cameras/g/reset")[0] == 200
+        assert b.req("POST", "/v1/cameras/g/reset", b'{"all": true}')[0] == 200
         assert b.req("GET", "/v1/cameras/g/config")[1]["hold_s"] == 5
         assert b.req("GET", "/v1/cameras/g")[1]["vehicle"]["tracks"] == []
     finally:

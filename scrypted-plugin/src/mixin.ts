@@ -1786,7 +1786,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private viewChanged() {
         if (this.scanActive || this.released)
             return;
-        this.plugin.client.reset(this.verifierId).catch(() => undefined);
+        this.plugin.client.reset(this.verifierId, true).catch(() => undefined);
     }
 
     private chosenStream(): string | undefined {

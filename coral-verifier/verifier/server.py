@@ -529,7 +529,13 @@ class Handler(BaseHTTPRequestHandler):
                     body = self._read_body(MAX_JSON_BYTES, False)
                     if not isinstance(body, bytes):
                         return
-                    return self._send(200, {"camera": cam, "reset": True, "had_session": app.registry.reset(cam)})
+                    try:
+                        obj = json.loads(body) if body.strip() else {}
+                    except (json.JSONDecodeError, RecursionError, UnicodeDecodeError):
+                        obj = {}
+                    clear_all = isinstance(obj, dict) and obj.get("all") is True
+                    return self._send(200, {"camera": cam, "reset": True,
+                                            "had_session": app.registry.reset(cam, time.monotonic(), keep_vehicles=not clear_all)})
             return self._reject(404, {"error": "not found"})
         except OSError:                                    # peer gone or cut by the reaper
             self.close_connection = True

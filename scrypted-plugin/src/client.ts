@@ -266,9 +266,10 @@ export class VerifierClient {
         return r;
     }
 
-    async reset(camera: string): Promise<unknown> {
+    /** a fresh episode; the service (0.3.32+) keeps still and parked vehicles unless `all` (the analysed view changed: nothing may linger). */
+    async reset(camera: string, all = false): Promise<unknown> {
         assertCameraId(camera);
-        return this.request('POST', `/v1/cameras/${encodeURIComponent(camera)}/reset`, '{}', 'application/json');
+        return this.request('POST', `/v1/cameras/${encodeURIComponent(camera)}/reset`, all ? '{"all":true}' : '{}', 'application/json');
     }
 
     /** POST /v1/cameras/{camera}/episodes (event journal, service 0.3.0+): fire-and-forget for the caller. */
