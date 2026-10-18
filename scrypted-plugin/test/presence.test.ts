@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePresenceNativeId, presenceNativeId, presenceOf } from '../src/presence';
+import { parsePresenceNativeId, presenceAfterReset, presenceNativeId, presenceOf } from '../src/presence';
 
 const none = () => false;
 
@@ -28,4 +28,13 @@ test('presence: native ids round-trip and reject anything else', () => {
     assert.deepEqual(parsePresenceNativeId(presenceNativeId('cam1', 'vehicle')), { cameraId: 'cam1', group: 'vehicle' });
     assert.equal(parsePresenceNativeId('presence:cam1:package'), undefined);
     assert.equal(parsePresenceNativeId('something-else'), undefined);
+});
+
+test('presence after a reset: on stays on during the grace, turns on at once, goes off after the grace', () => {
+    const off = { person: false, vehicle: false, animal: false };
+    const shown = { person: true, vehicle: true, animal: false };
+    assert.deepEqual(presenceAfterReset(off, shown, 1000, 4000), shown, 'fresh trackers report nothing: kept');
+    assert.deepEqual(presenceAfterReset({ ...off, animal: true }, shown, 1000, 4000), { person: true, vehicle: true, animal: true });
+    assert.deepEqual(presenceAfterReset(off, shown, 4000, 4000), off, 'grace over: the model says nothing is there');
+    assert.deepEqual(presenceAfterReset(off, shown, Infinity, 4000), off, 'no reset: replies as they are');
 });

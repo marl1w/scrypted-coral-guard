@@ -245,3 +245,7 @@ Plugin: camera settings "Learn parking spots" and "Ignore known look-alikes" (on
 `POST /v1/cameras/{camera}/reset` keeps the scene. People, animals and the fast confirmation start over as before, but the vehicle tracks that are not moving (still or parked, with their look and parked state) move to the new session. Before, every camera trigger wiped a parked car: at night, when the camera's own motion fires every few seconds, the vehicle presence flipped off until the detector found the car again (measured: up to 73 s), then on again through the trusted spot. Moving vehicles are dropped as before. A body `{"all": true}` clears everything (the old behaviour); the plugin sends it when the analysed view changes (stream fallback and back), so parked cars of the other view still do not linger.
 
 Plugin: the reset on a stream switch sends `{"all": true}`; camera triggers keep the parked cars.
+
+## 0.3.33 notes
+
+Plugin only (service version aligned). A session reset never turns a per-class presence sensor off by itself. After the reset of a camera trigger the fresh trackers report nothing until they confirm again (about 1 to 3 s), which is not the model saying the subject left: for 4 s after the reset (`presenceResetGraceMs`) a person, vehicle or animal presence sensor that is on stays on. It can still turn on at once, and it goes off on the first reply after the grace that still has nothing. The 15 s rule for no analysed frame at all is unchanged.

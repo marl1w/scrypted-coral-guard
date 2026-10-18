@@ -1920,3 +1920,21 @@ test('journal: the open episode is recorded while it runs and the record is clea
     (h.mixin as any).jId = undefined;
     await h.mixin.release();
 });
+
+test('presence: a camera trigger reset never turns a presence sensor off by itself', async () => {
+    const h = make({ settings: { mode: 'Gate' }, holdReset: true });
+    const m: any = h.mixin;
+    const on = () => h.plugin.presence.get(`${m.id}:person`);
+    m.publishPresence({ person: true, vehicle: false, animal: false });
+    assert.equal(on(), true);
+    h.raw(true);
+    await eventually(() => h.calls.reset.length === 1);
+    assert.ok(m.presenceResetAt > 0, 'the episode reset is remembered');
+    m.publishPresence({ person: false, vehicle: false, animal: false });  // first reply of the fresh session
+    assert.equal(on(), true, 'kept while the fresh session confirms');
+    m.presenceResetAt -= 5000;
+    m.publishPresence({ person: false, vehicle: false, animal: false });
+    assert.equal(on(), false, 'after the grace the model decides');
+    h.calls.reset[0].d.res({});
+    await h.mixin.release();
+});

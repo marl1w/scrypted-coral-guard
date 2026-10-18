@@ -32,3 +32,16 @@ export function presenceOf(items: { group: string; box?: number[] }[], enabled: 
     }
     return out;
 }
+
+/**
+ * Presence after a session reset (a camera trigger starts a fresh episode on the service): the fresh trackers report nothing
+ * until they confirm again (about 1-3 s), which is not the model saying the subject left. Within `graceMs` of the reset a group
+ * that is shown on stays on; it can turn on at once, and goes off only on a reply after the grace that still has nothing.
+ */
+export function presenceAfterReset(present: Record<PresenceGroup, boolean>, shown: Record<PresenceGroup, boolean>, sinceResetMs: number, graceMs: number): Record<PresenceGroup, boolean> {
+    const hold = sinceResetMs >= 0 && sinceResetMs < graceMs;
+    const out = { ...present };
+    for (const g of PRESENCE_GROUPS)
+        out[g] = !!present[g] || (hold && !!shown[g]);
+    return out;
+}

@@ -12,7 +12,7 @@ import { DEFAULTS } from './defaults';
 import { CameraStatus, StatusState } from './status';
 import { backoffMs, Effects, Episode, Group, vehicleView, VEHICLE_HOLD_WINDOW_MS, EpisodeConfig, EpisodeSummary, formatSummary, Mode } from './episode';
 import { isMasked, maskReply, parseZones, Zone } from './zones';
-import { PRESENCE_GROUPS, presenceOf } from './presence';
+import { PRESENCE_GROUPS, PresenceGroup, presenceAfterReset, presenceOf } from './presence';
 import type { NowInfo, NowReason, TrackedItem } from './status';
 import { applyAnimalOverride, DEFAULT_THRESHOLDS, serviceThresholds, Thresholds } from './thresholds';
 import { fetchSnapshot, FastPathTimer, SNAP_MAX_FAILS } from './fastpath';
@@ -409,18 +409,24 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     // ---- per-class presence sensors ---------------------------------------------------------------
 
     private presenceAt = 0;
+    /** what the presence sensors show, and when the service session was last reset for an episode (mono ms, 0 = never). */
+    private presenceShown: Record<PresenceGroup, boolean> = { person: false, vehicle: false, animal: false };
+    private presenceResetAt = 0;
 
-    /** one analysed frame: every group the tracker holds, still and parked included. */
-    private publishPresence(present: Record<string, boolean>) {
+    /** one analysed frame: every group the tracker holds, still and parked included. A reset never turns a sensor off by itself. */
+    private publishPresence(present: Record<PresenceGroup, boolean>) {
         this.presenceAt = Date.now();
         this.plugin.ensurePresence(this.id, this.name || this.id, this.detectGroups()); // cheap: repeats only on a rename
-        for (const g of PRESENCE_GROUPS) this.plugin.setPresence(this.id, g, !!present[g]);
+        const since = this.presenceResetAt ? monoNow() - this.presenceResetAt : Infinity;
+        this.presenceShown = presenceAfterReset(present, this.presenceShown, since, DEFAULTS.presenceResetGraceMs);
+        for (const g of PRESENCE_GROUPS) this.plugin.setPresence(this.id, g, this.presenceShown[g]);
     }
 
     /** no analysed frame for a while (mode off, service down, camera gone): nothing is known to be there. */
     private expirePresence(force = false) {
         if (!this.presenceAt || (!force && Date.now() - this.presenceAt < DEFAULTS.presenceStaleMs)) return;
         this.presenceAt = 0;
+        this.presenceShown = { person: false, vehicle: false, animal: false };
         for (const g of PRESENCE_GROUPS) this.plugin.setPresence(this.id, g, false);
     }
 
@@ -708,6 +714,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
         else if (fx.reset) {
             // frames wait for this (contract: the reset must complete before the episode's frames).
+            this.presenceResetAt = monoNow();
             this.resetPromise = this.plugin.client.reset(this.verifierId).then(() => undefined, e => {
                 this.apply(this.episode.failure(`reset failed: ${maskUrls(String(e?.message || e))}`, monoNow()));
             });

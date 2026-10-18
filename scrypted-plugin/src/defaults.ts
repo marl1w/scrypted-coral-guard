@@ -35,6 +35,8 @@ export const DEFAULTS = {
     heartbeatMs: 2000,
     /** per-class presence sensors go off when no frame has been analysed for this long (about 7 missed heartbeats). */
     presenceStaleMs: 15000,
+    /** after a session reset (camera trigger) a presence sensor that is on stays on this long while the fresh trackers confirm again. */
+    presenceResetGraceMs: 4000,
     /** at most this many cameras use VAAPI at once (concurrent sessions are limited); the rest decode in software. */
     maxHwCameras: 64,
     /** LIBVA_DRIVER_NAME for hardware decode ('' = leave unset). */
