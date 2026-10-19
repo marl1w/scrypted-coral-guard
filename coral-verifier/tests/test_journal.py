@@ -53,6 +53,25 @@ def test_lifecycle_first_best_last_with_sidecars_and_original_bytes(tmp_path):
     assert ep(j, "cam1", "ep-000001", "update", 9500)[0] == 409 and ep(j, "cam1", "nope-0001", "end", 1)[0] == 404
 
 
+def test_best_is_repicked_for_the_groups_set_on_confirmation(tmp_path):
+    """0.3.34: frames linked before the groups were known were ranked by any group, so a parked car at 0.94 stayed best and the
+    confirmed person never showed in the review. Setting the groups re-picks best; the first group outranks the others."""
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    car = det("vehicle", 0.94, "car")
+    j.record_frame("c", 500, b"cars", [car])
+    clk.t += 500
+    ep(j, "c", "regroup-01", "start", 600, kind="unflagged")
+    j.record_frame("c", 900, b"person", [car, det("person", 0.7)])
+    j.record_frame("c", 1200, b"cars2", [car])
+    ep(j, "c", "regroup-01", "update", 1300, outcome="confirmed", groups=["person"])
+    assert (tmp_path / "regroup-01" / "best.jpg").read_bytes() == b"person"
+    j.record_frame("c", 1500, b"weaker", [car, det("person", 0.6)])
+    ep(j, "c", "regroup-01", "update", 1600, groups=["person", "vehicle"])                                # a car joins: the person frame stays best
+    ep(j, "c", "regroup-01", "end", 2000, outcome="released")
+    assert (tmp_path / "regroup-01" / "best.jpg").read_bytes() == b"person"
+    assert json.loads((tmp_path / "regroup-01" / "best.json").read_text())["t_ms"] == 900
+
+
 def test_start_adopts_the_trigger_frame_received_just_before(tmp_path):
     clk = Clock(); j = Journal(str(tmp_path), clock=clk)
     j.record_frame("c", 500, b"trigger", [det("person", 0.8)])

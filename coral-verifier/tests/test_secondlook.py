@@ -161,7 +161,7 @@ def test_version_comes_from_config_yaml():
         pytest.skip("config.yaml not available")
     want = re.search(r'^version:\s*"?([^"\n]+)', open(p).read(), re.M).group(1)
     if "VERIFIER_VERSION" not in os.environ:
-        assert SV.VERSION == want == "0.3.33"
+        assert SV.VERSION == want == "0.3.34"
 
 
 def test_http_second_look_on_and_off_and_metrics():

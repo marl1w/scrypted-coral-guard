@@ -249,3 +249,7 @@ Plugin: the reset on a stream switch sends `{"all": true}`; camera triggers keep
 ## 0.3.33 notes
 
 Plugin only (service version aligned). A session reset never turns a per-class presence sensor off by itself. After the reset of a camera trigger the fresh trackers report nothing until they confirm again (about 1 to 3 s), which is not the model saying the subject left: for 4 s after the reset (`presenceResetGraceMs`) a person, vehicle or animal presence sensor that is on stays on. It can still turn on at once, and it goes off on the first reply after the grace that still has nothing. The 15 s rule for no analysed frame at all is unchanged.
+
+## 0.3.34 notes
+
+Journal: the `best` frame is re-picked when an episode's `groups` change. Frames linked before the groups were known (the adopted trigger frames, and every frame of a camera episode until it confirms) were ranked by any group, so a parked car at 0.94 stayed `best` and the person the episode confirmed never appeared in the review; such episodes were easy to label as false alarms. The journal now keeps, per ongoing episode, the strongest frame of each group, and on a groups change picks `best` again among them and the current best. Relevance ranks a frame showing the episode's first group (the one the review question asks about) above any frame without it, then by the other groups' scores; the same ranking applies when a continuation is folded. Plugin unchanged (version aligned).

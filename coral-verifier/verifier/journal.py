@@ -194,7 +194,7 @@ class Journal:
 
     @staticmethod
     def _state(meta, d, size):
-        return {"meta": meta, "dir": d, "bytes": size, "best": None, "last": None, "snap_t": None, "first_done": any(f["role"] == "first" for f in meta["frames"])}
+        return {"meta": meta, "dir": d, "bytes": size, "best": None, "last": None, "cand": {}, "snap_t": None, "first_done": any(f["role"] == "first" for f in meta["frames"])}
 
     def _write_file(self, st, name, data):
         path = os.path.join(st["dir"], name)
@@ -363,7 +363,10 @@ class Journal:
             if kind:
                 m["kind"] = kind
             if groups is not None:
+                regroup = groups != m["groups"]
                 m["groups"] = groups
+                if regroup:
+                    self._rebest(st)
             if note is not None:
                 m["note"] = note
             if inconclusive is not None:
@@ -503,6 +506,7 @@ class Journal:
             m["auto_pending"] = int(self.clock())                            # out of Validate until the check answers
         self._flush(st)
         st["best"] = st["last"] = None
+        st["cand"] = {}
 
     def _auto_result(self, eid, ref):
         """The auto-validation's answer (worker): `ref` = the user-validated episode showing the same scene, or None."""
@@ -529,11 +533,34 @@ class Journal:
     # ---------------- frames ----------------
     @staticmethod
     def _relevance(dets, groups):
-        sc = [d.get("score", 0) for d in dets if (not groups or d.get("group") in groups) and d.get("second_look") != "rejected"]
+        """Frame relevance for best: a frame showing the episode's first group (the one the review asks about) ranks above any frame
+        without it (1 + its score), then the other groups' score; all groups count while the groups are unknown."""
+        ok = [d for d in dets if d.get("second_look") != "rejected"]
+        if groups:
+            first = [d.get("score", 0) for d in ok if d.get("group") == groups[0]]
+            if first:
+                return 1.0 + max(first)
+        sc = [d.get("score", 0) for d in ok if not groups or d.get("group") in groups]
         return max(sc) if sc else 0.0
+
+    def _rebest(self, st):
+        """The groups changed (usually on confirmation): best is re-picked for the new groups among the current best and the strongest
+        frame of each group seen so far, so a frame picked while the groups were unknown (a parked car at 0.94) no longer hides the subject."""
+        groups = st["meta"]["groups"]
+        cur = st["best"]
+        if cur is not None:
+            cur["rel"] = self._relevance(cur["dets"], groups)
+        for c in st["cand"].values():
+            rel = self._relevance(c["dets"], groups)
+            if st["best"] is None or rel > st["best"]["rel"]:
+                st["best"] = {"rel": rel, "t_ms": c["t_ms"], "jpeg": c["jpeg"], "dets": c["dets"], "dirty": True}
 
     def _link(self, st, t_ms, jpeg, dets):
         m = st["meta"]
+        for d in dets:                                                       # strongest frame per group, for _rebest
+            g, sc = d.get("group"), d.get("score", 0)
+            if g and d.get("second_look") != "rejected" and (g not in st["cand"] or sc > st["cand"][g]["rel"]):
+                st["cand"][g] = {"rel": sc, "t_ms": t_ms, "jpeg": jpeg, "dets": dets}   # rel here = that group's score
         rel = self._relevance(dets, m["groups"])
         if not st["first_done"]:
             self._put_frame(st, "first", "first", t_ms, jpeg, dets)
