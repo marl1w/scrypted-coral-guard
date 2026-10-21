@@ -92,6 +92,9 @@ export interface TrackerConfig {
     min_area_person?: number;
     min_area_vehicle?: number;
     min_area_animal?: number;
+    /** service 0.3.35+: largest person box (share of the frame area) and the one-frame person rule's minimum box height (share of the frame height, 0 = off) */
+    max_area_person?: number;
+    single_min_h?: number;
     /** service 0.3.30+: shape hold of still/parked vehicles the detector misses */
     shape_hold?: boolean;
     shape_thr?: number;

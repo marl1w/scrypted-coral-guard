@@ -63,6 +63,9 @@ export const DEFAULTS = {
     gatePostMinMs: 1000,
     /** log/count one 'person seen but camera did not trigger' per camera per this many ms. */
     unflaggedEveryMs: 60000,
+    /** service 0.3.35+: default "Maximum person size" (% of the frame area) and "One-frame person minimum height" (% of the frame height) */
+    maxPersonPct: 85,
+    singleMinHeightPct: 25,
     /** verified ObjectDetector event repeated this often while a confirmed group is held, ms. */
     detectionRepeatMs: 10000,
     /** tracker overrides posted to the service; empty object = service defaults, nothing is posted. */

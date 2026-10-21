@@ -174,3 +174,18 @@ def test_rule_b_confirms_on_camera_ai_person_plus_one_weak_box():
     sess3 = new()
     sess3.update(T0, [person(0.4, box)], claim="person")                             # below 0.45
     assert sess3.snapshot()["person"]["would_b_ms"] is None and not sess3.snapshot()["person"]["present"]
+
+
+def test_one_frame_person_confirmed_by_the_second_look_and_tall_enough_confirms():
+    """0.3.35: one person frame >= 0.75 that the second look confirmed, at least single_min_h (default 25 %) of the frame tall, confirms."""
+    tall, squat = (0.1, 0.5, 0.18, 0.78), (0.15, 0.09, 0.24, 0.26)                   # a person in a doorway (h 0.28) / a bird on a wall (h 0.17)
+    sl = lambda score, box, status="confirmed": {**person(score, box), "second_look": status}
+    sn = run(new(), [[sl(0.79, tall)]])
+    assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "single"
+    assert not run(new(), [[sl(0.81, squat)]])[0]["person"]["present"]               # too short: a bird
+    assert not run(new(), [[sl(0.74, tall)]])[0]["person"]["present"]                # below 0.75
+    assert not run(new(), [[person(0.90, tall)]])[0]["person"]["present"]            # no second look (large boxes skip it): one frame is not enough
+    assert not run(new(), [[sl(0.90, tall, "lowered")]])[0]["person"]["present"]
+    assert not run(new(single_min_h=0), [[sl(0.90, tall)]])[0]["person"]["present"]  # 0 = rule off
+    assert run(new(single_min_h=0.15), [[sl(0.81, squat)]])[0]["person"]["present"]  # per camera
+    assert not run(new(fast_confirm=False), [[sl(0.90, tall)]])[0]["person"]["present"]

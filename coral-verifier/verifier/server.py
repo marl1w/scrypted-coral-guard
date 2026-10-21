@@ -193,7 +193,7 @@ class App:
             return False
         if img is None:
             return False
-        cand = [d for d in dets if d.get("group") in groups and d.get("second_look") != "rejected" and not d.get("too_small")
+        cand = [d for d in dets if d.get("group") in groups and d.get("second_look") != "rejected" and not d.get("too_small") and not d.get("too_big")
                 and isinstance(d.get("box"), list) and len(d["box"]) == 4]
         if not cand:
             return False
@@ -638,7 +638,9 @@ class Handler(BaseHTTPRequestHandler):
             for d in dets:
                 if S.too_small(d, cfg):
                     d["too_small"] = True                                                               # below the camera's minimum size for its group: never tracked
-            live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected" and not d.get("too_small")]      # rejected / too small: never; doubtful person/animal: score capped
+                elif S.too_big(d, cfg):
+                    d["too_big"] = True                                                                 # a person box over max_area_person: never tracked
+            live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected" and not d.get("too_small") and not d.get("too_big")]      # rejected / too small: never; doubtful person/animal: score capped
             sn = app.registry.update(cam, t, live, time.monotonic(), claim, gray)
             shape_ms = shape_prep_ms + (sn["vehicle"].get("shape") or {}).get("ms", 0.0)
             app.coral.note_stage("shape_ms", shape_ms)

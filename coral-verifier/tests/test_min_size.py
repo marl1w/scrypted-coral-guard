@@ -2,7 +2,7 @@
 import json
 import pytest
 import session as S
-from boxlib import Box
+from boxlib import Box, person_item
 
 T0 = 1_791_886_000_000
 
@@ -36,5 +36,30 @@ def test_too_small_person_is_never_tracked_over_http():
         assert b.frame("small", T0 + 1000)[1]["detections"] == []                # hidden from normal replies
         b.req("POST", "/v1/cameras/big/config", json.dumps({"confirm_n": 1}).encode())
         assert b.frame("big", T0)[1]["person"]["state"] == "confirmed"          # same frame, no minimum: confirmed
+    finally:
+        b.close()
+
+
+def test_too_big_person_and_bounds():
+    """0.3.35: a person box over max_area_person (default 85 %) is something on the lens: never tracked."""
+    cfg = S.Config()
+    assert S.too_big(det("person", (0.0, 0.0, 0.98, 0.99)), cfg)                    # 97 %
+    assert not S.too_big(det("person", (0.0, 0.0, 0.7, 0.72)), cfg)                 # 50 %: the largest real person seen
+    assert not S.too_big(det("car", (0.0, 0.0, 1.0, 1.0)), cfg)                     # persons only
+    assert not S.too_big(det("person", (0.0, 0.0, 0.98, 0.99)), S.Config(max_area_person=1.0))
+    for bad in (0.04, 1.01):
+        with pytest.raises(ValueError):
+            S.Config().updated({"max_area_person": bad})
+    with pytest.raises(ValueError):
+        S.Config().updated({"single_min_h": 1.5})
+
+
+def test_too_big_person_is_never_tracked_over_http():
+    b = Box(items=[person_item(d=8)])                                             # a person box of about a quarter of the frame
+    try:
+        b.req("POST", "/v1/cameras/lens/config", json.dumps({"confirm_n": 1, "max_area_person": 0.1}).encode())
+        st, r = b.frame("lens", T0, "&verbose=1")
+        assert st == 200 and r["person"]["state"] == "idle"
+        assert r["detections"] and all(d.get("too_big") for d in r["detections"] if d["cls"] == "person")
     finally:
         b.close()

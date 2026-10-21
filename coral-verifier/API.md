@@ -253,3 +253,13 @@ Plugin only (service version aligned). A session reset never turns a per-class p
 ## 0.3.34 notes
 
 Journal: the `best` frame is re-picked when an episode's `groups` change. Frames linked before the groups were known (the adopted trigger frames, and every frame of a camera episode until it confirms) were ranked by any group, so a parked car at 0.94 stayed `best` and the person the episode confirmed never appeared in the review; such episodes were easy to label as false alarms. The journal now keeps, per ongoing episode, the strongest frame of each group, and on a groups change picks `best` again among them and the current best. Relevance ranks a frame showing the episode's first group (the one the review question asks about) above any frame without it, then by the other groups' scores; the same ranking applies when a continuation is folded. Plugin unchanged (version aligned).
+
+## 0.3.35 notes
+
+Two per-camera config keys, set by the plugin's camera settings.
+
+`max_area_person` (default 0.85, 0.05-1): a person box covering more than this share of the frame area never reaches the trackers. Something on the lens at night (an insect, a web) can be scored as a person filling the frame; the largest real person boxes stay around half the frame. Such a detection stays in the journal and in verbose replies with `too_big: true`, like `too_small`.
+
+`single_min_h` (default 0.25, 0-1, 0 = off): one-frame person confirmation. With `fast_confirm`, one person detection at or above `FAST_SINGLE_SECOND_LOOK` (0.75) that the second look confirmed (`second_look: "confirmed"`), whose box is at least `single_min_h` of the frame height and that does not lie on a still track, confirms at once (`confirmed_by: "single"`). Before, a person seen clearly in only one frame (walking past a doorway) was vetoed when the camera's own AI did not claim a person. The height keeps birds out: they score as persons with squat boxes. Large boxes skip the second look (0.3.25) and so never confirm on one frame.
+
+Plugin: camera settings "Maximum person size" (% of the frame area, empty = 85) and "One-frame person minimum height" (% of the frame height, empty = 25, 0 = off), posted as `max_area_person` and `single_min_h`.

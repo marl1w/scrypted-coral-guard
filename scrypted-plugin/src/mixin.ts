@@ -115,6 +115,18 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             type: 'string',
             placeholder: 'off',
         },
+        maxPerson: {
+            title: 'Maximum person size',
+            description: 'Larger person boxes are ignored (something on the lens): % of the frame area (5-100). Empty = 85.',
+            type: 'string',
+            placeholder: '85',
+        },
+        singleMinHeight: {
+            title: 'One-frame person minimum height',
+            description: 'One strong person frame confirmed by the second look is enough when its box is at least this tall: % of the frame height (0-100, 0 = off). Empty = 25.',
+            type: 'string',
+            placeholder: '25',
+        },
         shapeHold: {
             title: 'Vehicle shape hold',
             description: 'Keep a still or parked vehicle the detector misses while the outline inside its box still matches its last look (stops parked cars flickering at night).',
@@ -488,7 +500,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     }
 
     private minWarned = '';
-    /** Per-camera minimum sizes (settings in % of the frame area) as service fractions; empty or invalid = 0 (off, invalid warned once). */
+    /** Per-camera size limits as service fractions: minimum sizes (% of the frame area, empty or invalid = 0 = off), maximum person size
+     *  (% of the area) and one-frame person minimum height (% of the frame height), both empty or invalid = the default; invalid warned once. */
     private minAreas() {
         const v = this.storageSettings.values, bad: string[] = [];
         const frac = (raw: unknown, title: string) => {
@@ -499,10 +512,19 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (!Number.isFinite(n) || n < 0 || n > 25) { bad.push(title); return 0; }
             return n / 100;
         };
-        const r = { min_area_person: frac(v.minPerson, 'Minimum person size'), min_area_vehicle: frac(v.minVehicle, 'Minimum vehicle size'), min_area_animal: frac(v.minAnimal, 'Minimum animal size') };
+        const pct = (raw: unknown, title: string, lo: number, dflt: number) => {
+            const s = String(raw ?? '').trim().replace('%', '').replace(',', '.');
+            if (!s)
+                return dflt / 100;
+            const n = Number(s);
+            if (!Number.isFinite(n) || n < lo || n > 100) { bad.push(title); return dflt / 100; }
+            return n / 100;
+        };
+        const r = { min_area_person: frac(v.minPerson, 'Minimum person size'), min_area_vehicle: frac(v.minVehicle, 'Minimum vehicle size'), min_area_animal: frac(v.minAnimal, 'Minimum animal size'),
+            max_area_person: pct(v.maxPerson, 'Maximum person size', 5, DEFAULTS.maxPersonPct), single_min_h: pct(v.singleMinHeight, 'One-frame person minimum height', 0, DEFAULTS.singleMinHeightPct) };
         const w = bad.join(', ');
         if (w && w !== this.minWarned)
-            this.console.warn(`${w}: not a number between 0 and 25; ignored`);
+            this.console.warn(`${w}: not a number in range; ignored`);
         this.minWarned = w;
         return r;
     }

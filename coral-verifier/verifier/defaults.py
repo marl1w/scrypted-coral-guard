@@ -86,6 +86,12 @@ TRACKER = {
     "min_area_person": 0.0,
     "min_area_vehicle": 0.0,
     "min_area_animal": 0.0,
+    # Maximum person size (0.3.35): a person box covering more than this share of the frame area never reaches the trackers (something on the
+    # lens, not a person; the largest real person seen was about half the frame). It stays in the journal with too_big: true. Per camera.
+    "max_area_person": 0.85,
+    # One-frame person (0.3.35): with fast_confirm, ONE person frame >= FAST_SINGLE_SECOND_LOOK that the second look confirmed, and whose box
+    # is at least this share of the frame HEIGHT, confirms (confirmed_by "single"). The height keeps birds out (squat boxes); 0 = rule off. Per camera.
+    "single_min_h": 0.25,
     # Shape hold (0.3.30, see shape.py): a still or parked vehicle the detector misses is kept while the outline inside its box still matches
     # its last look (edge correlation >= shape_thr); covered by another box (>= shape_cover of its area) it is held up to occlusion_hold_s;
     # changed with nothing in front it is dropped at once. Per camera, set by the client (the plugin's camera settings).
@@ -119,6 +125,8 @@ SPOTS = {
 FAST_B_THR = 0.45
 # 0.3.15: with claim=person (the camera's own AI says person) one frame at or above this confirms at once (two independent sources agree).
 FAST_SINGLE_CLAIM = 0.75
+# 0.3.35: one person frame at or above this, confirmed by the second look and tall enough (single_min_h), confirms without a camera claim.
+FAST_SINGLE_SECOND_LOOK = 0.75
 # 0.3.29: with claim=animal (the camera's own AI says dog/cat) one animal frame at or above this confirms the animal at once (a doubtful one is capped below it).
 FAST_SINGLE_CLAIM_ANIMAL = 0.70
 # 0.3.14: the two qualifying frames must be at least this far apart (frame time), so "seen twice" is two looks, not two copies.

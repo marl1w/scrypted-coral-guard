@@ -20,7 +20,7 @@ import shape as SH
 import spots as SP
 import lookalikes as LA
 
-from defaults import TRACKER as _T, SPOTS as _SP, WEAK_VEHICLE_THR, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR
+from defaults import TRACKER as _T, SPOTS as _SP, WEAK_VEHICLE_THR, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR, FAST_SINGLE_SECOND_LOOK
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -55,6 +55,14 @@ def too_small(d, cfg):
     return max(0.0, x1 - x0) * max(0.0, y1 - y0) < m
 
 
+def too_big(d, cfg):
+    """True when a person box covers more of the frame than max_area_person (something on the lens, not a person)."""
+    if d.get("cls") != "person":
+        return False
+    x0, y0, x1, y1 = d["box"]
+    return max(0.0, x1 - x0) * max(0.0, y1 - y0) > cfg.max_area_person
+
+
 @dataclass
 class Config:
     start_thr: float = _T["start_thr"]
@@ -80,6 +88,8 @@ class Config:
     min_area_person: float = _T["min_area_person"]
     min_area_vehicle: float = _T["min_area_vehicle"]
     min_area_animal: float = _T["min_area_animal"]
+    max_area_person: float = _T["max_area_person"]
+    single_min_h: float = _T["single_min_h"]
     shape_hold: bool = _T["shape_hold"]
     shape_thr: float = _T["shape_thr"]
     shape_cover: float = _T["shape_cover"]
@@ -123,6 +133,10 @@ class Config:
         for k in MIN_AREA_KEYS:
             if not 0 <= getattr(self, k) <= 0.25:
                 raise ValueError(f"{k} must be in [0, 0.25]")
+        if not 0.05 <= self.max_area_person <= 1:
+            raise ValueError("max_area_person must be in [0.05, 1]")
+        if not 0 <= self.single_min_h <= 1:
+            raise ValueError("single_min_h must be in [0, 1]")
         if not 0.1 <= self.shape_thr <= 0.99:
             raise ValueError("shape_thr must be in [0.1, 0.99]")
         if not 0.01 <= self.shape_cover <= 0.9:
@@ -781,6 +795,15 @@ class Session:
                     if self._force is None or self._force[0] != self._tick_t:
                         self._force = (self._tick_t, max(cand, key=lambda d: d[0])[1], "fast_b")
                         self._apply_force()
+            # one-frame person (0.3.35): a strong person box the second look confirmed, tall enough not to be a bird, not a still object
+            if self.cfg.single_min_h > 0 and (self._force is None or self._force[0] != self._tick_t):
+                stills = [tr.box for tr in self.person.live(self._tick_t) if tr.still]
+                one = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person" and d.get("second_look") == "confirmed"
+                       and float(d["score"]) >= FAST_SINGLE_SECOND_LOOK and d["box"][3] - d["box"][1] >= self.cfg.single_min_h
+                       and all(iou(tuple(d["box"]), sb) <= 0.5 for sb in stills)]
+                if one:
+                    self._force = (self._tick_t, max(one, key=lambda d: d[0])[1], "single")
+                    self._apply_force()
         live = bool(self.person.live(self._tick_t))
         if not live:
             self.confirmed_by = None
