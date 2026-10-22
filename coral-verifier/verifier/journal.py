@@ -742,8 +742,8 @@ class Journal:
     def _set_label(self, eid, label, note, truth=None):
         if truth is not None and truth not in TRUTHS:
             return 400, {"error": "truth must be " + "|".join(TRUTHS)}
-        if truth is None and label not in LABELS:
-            return 400, {"error": "label must be " + "|".join(LABELS)}
+        if truth is None and label is not None and label not in LABELS:
+            return 400, {"error": "label must be " + "|".join(LABELS) + " or null"}
         try:
             if note is not None:
                 note = _str(note, "note", 500)

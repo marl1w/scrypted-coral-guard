@@ -41,6 +41,17 @@ MAX_JSON_BYTES = 64 * 1024
 RATE_PER_S = 8      # sustained frames/s per camera: a 6 fps confirm burst (0.3.12) plus the normal pacing fits
 RATE_BURST = 20     # pre-roll (up to 6 frames) plus a 1.5 s burst at 6 fps, with margin
 REPLY_MIN_SCORE = 0.2          # detections below this are omitted from replies unless verbose=1
+
+
+def marks_back(dets, live):
+    """A doubtful detection reaches the session as a capped copy (secondlook.tracker_view): the session's marks on the copy go back to the
+    detection the journal stores, so its frames show what was left out and why."""
+    for d in dets:
+        v = next((x for x in live if x is not d and x.get("box") is d.get("box")), None)
+        if v is not None:
+            for k in ("lookalike", "lookalike_place", "in_vehicle"):
+                if k in v:
+                    d[k] = v[k]
 JOB_WAIT_S = 10.0
 IDLE_S = 15.0                  # keep-alive connection idle limit
 FIRST_BYTE_S = 2.0             # a NEW connection must start its request within this (idle sockets are cut)
@@ -642,6 +653,7 @@ class Handler(BaseHTTPRequestHandler):
                     d["too_big"] = True                                                                 # a person box over max_area_person: never tracked
             live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected" and not d.get("too_small") and not d.get("too_big")]      # rejected / too small: never; doubtful person/animal: score capped
             sn = app.registry.update(cam, t, live, time.monotonic(), claim, gray)
+            marks_back(dets, live)
             shape_ms = shape_prep_ms + (sn["vehicle"].get("shape") or {}).get("ms", 0.0)
             app.coral.note_stage("shape_ms", shape_ms)
             try:
@@ -722,6 +734,8 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("object expected")
                 except (json.JSONDecodeError, RecursionError, ValueError):
                     return self._send(400, {"error": "invalid JSON object"})
+                if "label" not in obj and obj.get("truth") is None:
+                    return self._send(400, {"error": "label or truth required (label null clears it)"})
                 st, out = j.set_label(rest[0], obj.get("label"), obj.get("note"), obj.get("truth"))
                 return self._send(st, out)
             if len(rest) == 2 and method == "GET" and "." in rest[1]:

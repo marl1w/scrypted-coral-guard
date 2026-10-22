@@ -27,8 +27,9 @@ h1{font-size:20px;font-weight:500;margin:0;flex:1;white-space:nowrap}
 .appbar .mut{color:inherit;opacity:.8}
 nav{display:flex;overflow-x:auto;padding:0 8px}
 nav button{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;color:inherit;opacity:.75;padding:12px 16px;font:500 14px Roboto,system-ui,sans-serif;letter-spacing:.03em;text-transform:uppercase;cursor:pointer;white-space:nowrap}
-nav button.on{opacity:1;border-bottom-color:var(--accent-color)}
-nav button:hover{opacity:1}
+nav button[aria-selected=true]{opacity:1;border-bottom-color:var(--accent-color)}
+nav button:hover,nav button:active,nav button:focus{opacity:1;background:none;outline:none}     /* tabs have their own state: never the toggle-button fill */
+nav button:focus-visible{outline:2px solid var(--primary-color);outline-offset:-2px}
 h2{font-size:16px;font-weight:500;margin:20px 0 8px}h3{font-size:14px;font-weight:500;margin:16px 0 6px}
 button{border:1px solid var(--line);background:transparent;color:var(--fg);padding:8px 16px;border-radius:18px;cursor:pointer;font:500 14px Roboto,system-ui,sans-serif;display:inline-flex;align-items:center;gap:6px;min-height:36px}
 button:hover{background:var(--chip)}
@@ -76,7 +77,10 @@ textarea{width:100%;min-height:56px;margin-top:10px}
 .fwrap{position:relative}
 .fwrap>button{border:1px solid var(--line);position:relative}
 .fdot{width:8px;height:8px;border-radius:50%;background:var(--primary-color)}
-.fstate{font-size:13px;color:var(--mut)}
+.fstate{font-size:13px;color:var(--mut);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.fchip{display:inline-flex;align-items:center;gap:2px;background:var(--chip);color:var(--fg);border-radius:14px;padding:2px 4px 2px 10px;font-size:13px}
+.fchip .fx{border:0;background:none;padding:2px;min-height:0;border-radius:50%;color:var(--mut)}.fchip .fx:hover{background:var(--line);color:var(--fg)}
+.fchip .fx svg{width:16px;height:16px;fill:currentColor}
 .menu{position:absolute;top:calc(100% + 4px);left:0;z-index:12;min-width:240px;max-height:70vh;overflow:auto;padding:6px 0;display:flex;flex-direction:column;
  background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .menu .ml{font-size:12px;color:var(--mut);padding:6px 14px 2px}
@@ -92,9 +96,20 @@ textarea{width:100%;min-height:56px;margin-top:10px}
 .vbtns button svg{width:26px;height:26px}
 .vbtns.four{grid-template-columns:repeat(4,1fr);gap:8px}
 .vbtns.four button{padding:14px 4px;font-size:18px;border:2px solid var(--fg);background:transparent;color:var(--fg)}
-.vbtns.four button.on{background:var(--dark-primary-color);border-color:var(--dark-primary-color);color:#fff}
-.vmeta{margin-top:10px}
-.vsub{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 12px}
+.vbtns.four button.pri{background:var(--dark-primary-color);border-color:var(--dark-primary-color);color:#fff;box-shadow:0 2px 4px rgba(0,0,0,.25)}
+.vmeta{margin-top:10px;align-items:center}
+.chip.ex{color:var(--warn)}
+.recap{display:flex;flex-wrap:wrap;gap:6px 18px;padding:2px 16px 10px;align-items:baseline;max-width:1400px;margin:0 auto;box-sizing:border-box}
+.rc b{font-size:18px;font-weight:500;margin-right:5px}.rc span{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.rc.todo b{color:var(--acc)}.rc.bad b{color:var(--bad)}.rc.warn b{color:var(--warn)}
+.kh{opacity:.75;font-size:.8em}
+.vsub{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 0}
+/* the answer bar is fixed at the bottom on every screen, so frames and answers are always visible together */
+.vbar{position:fixed;left:0;right:0;bottom:0;z-index:7;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -2px 6px rgba(0,0,0,.15);
+  padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
+.vbar>*{max-width:900px;margin-left:auto;margin-right:auto}
+.vbar .vbtns{margin-top:0;margin-bottom:0}
+#vBody{padding-bottom:170px}
 .prog{font-weight:500}
 /* dashboard */
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:18px;overflow:hidden}
@@ -118,12 +133,11 @@ svg.chart text{fill:var(--mut);font-size:9px}
   #vaView .frames{grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
   #vaView .frames>div:nth-child(2){grid-column:1/3;order:-1}
   #vaView .frames .mut{font-size:11px}
-  .vbar{position:fixed;left:0;right:0;bottom:0;z-index:7;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -2px 6px rgba(0,0,0,.15);
-    padding:8px 12px calc(8px + env(safe-area-inset-bottom))}
+  .vbar{padding:8px 12px calc(8px + env(safe-area-inset-bottom))}
   .vbar .vbtns{margin:0;gap:10px}
   .vbar .vbtns button{padding:10px;min-height:54px;font-size:18px}
   .vbar .vbtns.four{gap:6px}.vbar .vbtns.four button{padding:10px 2px;font-size:16px}
-  .vbar .vsub,#vNote{display:none}
+  .vbar .vsub,#vNote,.kh{display:none}
 }
 </style>
 </head>
@@ -131,24 +145,18 @@ svg.chart text{fill:var(--mut);font-size:9px}
 <header>
 <div class="appbar"><svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 8.7 8 10.2 4.6-1.5 8-5.2 8-10.2V5z" fill="#ff7f50" stroke="#d65c34" stroke-width=".9" stroke-linejoin="round"/><circle cx="11.4" cy="10.6" r="3.9" fill="#ff7f50" stroke="#fff" stroke-width="1.9"/><circle cx="11.4" cy="10.6" r="1.25" fill="#fff"/><path d="m14.2 13.4 3 3" stroke="#fff" stroke-width="1.9" stroke-linecap="round"/></svg>
 <h1>Coral Guard <span class="mut" id="ver">v__VERSION__</span></h1><span class="mut" id="stat"></span></div>
-<nav role="tablist"><button id="tEv" class="on" role="tab">Events</button><button id="tVa" role="tab">Validate</button><button id="tRe" role="tab">Reviewed</button><button id="tSu" role="tab">Summary</button></nav>
+<nav role="tablist"><button id="tEv" role="tab" aria-selected="true">Events</button><button id="tVa" role="tab" aria-selected="false">Validate</button><button id="tSu" role="tab" aria-selected="false">Summary</button></nav>
 </header>
 
 <div id="evView">
   <div class="bar"><div id="evBar"></div></div>
+  <div class="recap" id="evRecap"></div>
   <main><div class="grid" id="grid"></div><button class="more" id="more" hidden>Load more</button><div class="empty" id="empty" hidden>No events</div></main>
 </div>
 
 <div id="vaView" hidden>
   <div class="bar"><div id="vaBar"></div><span class="prog" id="vProg"></span></div>
   <main id="vBody"></main>
-</div>
-
-<div id="reView" hidden>
-  <div class="bar"><div id="reBar"></div><span id="rTot" class="mut"></span></div>
-  <main>
-    <section id="rDoSec"><h2 id="rDoH">Reviewed</h2><div class="empty" id="rDoEmpty" hidden>Nothing reviewed yet</div><div class="grid" id="rDoGrid"></div><button class="more" id="rDoMore" hidden>Load more</button></section>
-  </main>
 </div>
 
 <div id="suView" hidden>
@@ -166,7 +174,8 @@ const CAT={confirmed:"#22c55e",vetoed:"#f59e0b",unflagged:"#3b82f6",other:"#9ca3
 let TAB="ev";
 async function j(url,opt){const r=await fetch(url,opt);if(!r.ok)throw new Error(r.status+" "+url);return r.json()}
 const post=(url,obj)=>j(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(obj)});
-const fmtT=ms=>ms?new Date(ms).toLocaleString([],{dateStyle:"short",timeStyle:"medium"}):"-";
+const fmtT=ms=>ms?new Date(ms).toLocaleString("it-IT",{dateStyle:"short",timeStyle:"medium"}):"-";
+const itDay=d=>d.slice(8,10)+"/"+d.slice(5,7)+"/"+d.slice(0,4);                   // "YYYY-MM-DD" -> "DD/MM/YYYY" (Italian order everywhere)
 const fmtD=(a,b)=>{if(!b)return"ongoing";let s=Math.max(0,Math.round((b-a)/1000));return s>=3600?(s/3600).toFixed(1)+" h":s>=60?Math.round(s/60)+" min":s+" s"};
 const pct=v=>v==null?"-":Math.round(v*100)+"%";
 const eid=encodeURIComponent;
@@ -180,15 +189,17 @@ function btn(cls,text,ic,fn){const b=E("button",cls);if(ic)b.appendChild(icon(ic
 function mark(d){const s=d.second_look;if(s==="rejected")return"✗";if(d.second_look_doubt||s==="not_found"||s==="not_upgraded"||s==="skipped")return"?";if(s==="confirmed"||s==="lowered")return"✓";return""}
 function boxLayer(dets,focus){                                                // focus: group to highlight, others are dimmed ("none" dims all)
   const o=E("div","ov");
-  for(const d of dets||[]){const [a,b,c,e]=d.box;const col=d.second_look==="rejected"?"#9ca3af":(COL[d.group]||"#fff");
+  for(const d of dets||[]){const [a,b,c,e]=d.box;const ex=excluded(d),col=d.second_look==="rejected"||ex?"#9ca3af":(COL[d.group]||"#fff");
     const r=E("div","bx");if(focus&&d.group!==focus)r.style.opacity=".3";r.style.left=(a*100)+"%";r.style.top=(b*100)+"%";r.style.width=((c-a)*100)+"%";r.style.height=((e-b)*100)+"%";
-    r.style.borderColor=col;if(d.weak||d.second_look==="rejected"||d.second_look_doubt)r.style.borderStyle="dashed";
-    const t=E("span","bl",(d.cls||"")+" "+Number(d.score).toFixed(2)+(mark(d)?" "+mark(d):""));t.style.background=col;r.appendChild(t);o.appendChild(r)}
+    r.style.borderColor=col;if(d.weak||d.second_look==="rejected"||d.second_look_doubt||ex)r.style.borderStyle="dashed";
+    const t=E("span","bl",(d.cls||"")+" "+Number(d.score).toFixed(2)+(mark(d)?" "+mark(d):"")+(ex?" · "+ex:""));t.style.background=col;r.appendChild(t);o.appendChild(r)}
   return o}
-function frameBox(id,f,cls,label,focus){
+const excluded=d=>d.lookalike_place?"known place":d.lookalike!=null?"look-alike":"";          // left out of the trackers by a known look-alike (0.3.31 / 0.3.36)
+function frameBox(id,f,cls,label,focus,onEx){                                  // onEx(): called when the frame has a box a known look-alike excluded
   const w=E("div",cls);const img=E("img");img.loading="lazy";img.src=`${API}/${eid(id)}/${f.name}.jpg`;img.alt=f.name;w.appendChild(img);
   if(label)w.appendChild(E("b","",label));
-  j(`${API}/${eid(id)}/${f.name}.json`).then(s=>w.appendChild(boxLayer(s.detections,focus))).catch(()=>{});return w}
+  j(`${API}/${eid(id)}/${f.name}.json`).then(s=>{w.appendChild(boxLayer(s.detections,focus));if(onEx&&(s.detections||[]).some(excluded))onEx()}).catch(()=>{});return w}
+function exChip(c){if(!c.querySelector(".chip.ex"))c.appendChild(E("span","chip ex","excluded by a known look-alike"))}
 /* 0.3.19: occupancy vs motion time and still releases (absent on older episodes) */
 function fmtS(s){s=Math.max(0,Math.round(Number(s)||0));return s<60?s+" s":Math.floor(s/60)+" min"+(s%60?" "+(s%60)+" s":"")}
 function motionText(m){const o=m&&m.motion;if(!o)return null;const n=(v,w)=>v?` \u00b7 ${v} ${w}${v>1?"s":""}`:"";
@@ -198,8 +209,8 @@ function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.out
   (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.truth)c.appendChild(E("span","chip","is: "+(m.truth==="vehicle"?"car":m.truth)));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
 function card(m){
   const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",dn(m)));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
-  c.appendChild(E("div","mut",fmtT(m.start_ms)));if(m.motion&&m.motion.motion_s!==m.motion.occupied_s)c.appendChild(E("div","mut",motionText(m)));c.appendChild(chips(m));
-  const t=E("div","thumbs");for(const role of["first","best","last"]){const f=m.frames.find(x=>x.role===role);if(f)t.appendChild(frameBox(m.id,f,"th",role))}
+  c.appendChild(E("div","mut",fmtT(m.start_ms)));if(m.motion&&m.motion.motion_s!==m.motion.occupied_s)c.appendChild(E("div","mut",motionText(m)));const ch=chips(m);c.appendChild(ch);
+  const t=E("div","thumbs");for(const role of["first","best","last"]){const f=m.frames.find(x=>x.role===role);if(f)t.appendChild(frameBox(m.id,f,"th",role,null,()=>exChip(ch)))}
   c.appendChild(t);c.onclick=()=>openDetail(m.id);return c}
 function framesOf(m){const order=["first","best","last"];return[...order.map(r=>m.frames.find(f=>f.role===r)).filter(Boolean),...m.frames.filter(f=>f.role==="snapshot")]}
 
@@ -207,9 +218,16 @@ function framesOf(m){const order=["first","best","last"];return[...order.map(r=>
 let offset=0,total=0;const PAGE=24;
 async function load(reset){
   if(reset){offset=0;$("#grid").replaceChildren()}
-  const p=fparams("ev");p.set("limit",PAGE);p.set("offset",offset);
+  const p=fparams("ev",{label:true});p.set("limit",PAGE);p.set("offset",offset);if(reset)recap();
   try{const r=await j(`${API}?${p}`);total=r.total;r.items.forEach(m=>$("#grid").appendChild(card(m)));offset+=r.items.length;
     more("#more",r.items.length,PAGE,offset,total);$("#empty").hidden=total>0;$("#stat").textContent=total+" events"}catch(e){$("#stat").textContent="error: "+e.message}}
+async function recap(){                                                         // the metrics of the Events filters (camera, category, period) in one compact row
+  const r=$("#evRecap"),my=recap.seq=(recap.seq||0)+1;
+  try{const x=(await j(`${API}/summary?${sparams("ev")}`)).totals;if(my!==recap.seq)return;r.replaceChildren();
+    const add=(v,l,c)=>{const k=E("span","rc"+(c?" "+c:""));k.appendChild(E("b","",String(v)));k.appendChild(E("span","",l));r.appendChild(k)};
+    add(x.events,"events");add(x.reviewed?pct(x.precision):"-","precision");add(x.reviewed,"reviewed");if(x.auto_validated)add(x.auto_validated,"auto-validated");
+    add(x.reviewable,"to review",x.reviewable?"todo":"");add(x.false_alarm,"false alarms",x.false_alarm?"bad":"");add(x.missed,"missed",x.missed?"warn":"");if(x.ongoing)add(x.ongoing,"in progress")}
+  catch(e){r.replaceChildren()}}
 async function cams(){try{const s=await j(`${API}/summary`);CAMS=s.cameras.slice().sort((a,b)=>dn(a).localeCompare(dn(b)))}catch(e){}}
 
 /* ---------- detail (also used to change a label) ---------- */
@@ -246,37 +264,27 @@ async function vLoad(after,labelled){
 function vRender(){
   const b=$("#vBody");b.replaceChildren();$("#vProg").textContent=V.remaining+" left";const m=V.cur;
   if(!m){b.appendChild(E("div","empty","Nothing left to review"));return}
-  b.appendChild(E("div","mut vmeta",dn(m)+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));
-  const bar=E("div","vbar");                                                  // phones: fixed at the bottom, so frames and answer share one screen
-  const row=E("div","vbtns four");for(const[t,l,k]of TRUTH){const x=btn(t===m.truth?"on":"",l,null,()=>vAnswer(t));x.title="Key "+k.toUpperCase();row.appendChild(x)}bar.appendChild(row);
+  const ch=E("div","chips vmeta");ch.appendChild(E("span","mut",dn(m)+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));b.appendChild(ch);
+  const bar=E("div","vbar"),det=vDetected(m);                                // fixed at the bottom, so frames and answer share one screen
+  const row=E("div","vbtns four");for(const[t,l,k]of TRUTH){const x=btn(t===det?"pri":"",l,t===m.truth?"check":null,()=>vAnswer(t));if(t===det)x.appendChild(E("span","kh","\u00a0\u00b7 Y"));x.title="Key "+(t===det?"Y or ":"")+k.toUpperCase();row.appendChild(x)}bar.appendChild(row);
   const sub=E("div","vsub");sub.appendChild(btn("","Skip (S)","next",vSkip));sub.appendChild(btn("","Previous","prev",vBack));bar.appendChild(sub);b.appendChild(bar);
   const shown=framesOf(m).slice(0,3);
-  const fr=E("div","frames");for(const f of shown){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,null));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
+  const fr=E("div","frames");for(const f of shown){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,null,()=>exChip(ch)));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
   const note=E("textarea");note.id="vNote";note.placeholder="Note (optional)";note.value=m.label_note||"";b.appendChild(note)}
 async function vAnswer(truth){
   const m=V.cur;if(!m)return;const n=$("#vNote");
   await post(`${API}/${eid(m.id)}/label`,{truth,note:n&&n.value?n.value:null});
   V.hist.push(m.id);await vLoad(m.id,!m.label)}
+function vDetected(m){                                                         // what Coral Guard decided: empty for a veto, else the episode's first group
+  if(m.outcome==="vetoed"&&m.kind!=="unflagged")return"empty";return(m.groups||[]).find(g=>g in COL)||null}
 function vSkip(){if(V.cur)vLoad(V.cur.id,false)}
 async function vBack(){const id=V.hist.pop();if(!id)return;const m=await j(`${API}/${eid(id)}`);V.cur=m;V.pre=null;vRender();vPrefetch(m)}
 document.addEventListener("keydown",e=>{
   if(TAB!=="va"||$("#detail").classList.contains("on")||/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName||"")))return;
-  const k=e.key.toLowerCase(),t=TRUTH.find(x=>x[2]===k);if(t)vAnswer(t[0]);else if(k==="s"||k==="arrowright")vSkip();else if(k==="arrowleft")vBack()});
+  const k=e.key.toLowerCase(),t=TRUTH.find(x=>x[2]===k),det=V.cur&&vDetected(V.cur);
+  if(k==="y"){if(det)vAnswer(det)}else if(t)vAnswer(t[0]);else if(k==="s"||k==="arrowright")vSkip();else if(k==="arrowleft")vBack()});
 
-/* ---------- reviewed tab ---------- */
-const R={do:{off:0}};
 function more(sel,got,limit,off,total){$(sel).hidden=got<limit||off>=total||total===0}      // no button when the list is empty, short, or fully loaded
-async function reLoad(kind,reset){                                             // the Reviewed list (what is left to review lives in Validate)
-  const s=R[kind],grid=$("#rDoGrid"),my=s.seq=(s.seq||0)+1;if(reset){s.off=0;grid.replaceChildren()}
-  const p=new URLSearchParams({limit:12,offset:s.off,labelled:"true"});
-  for(const[k,v]of fparams("re",{label:true}))p.set(k,v);
-  const r=await j(`${API}?${p}`);if(my!==s.seq)return;                       // a newer request replaced this one: never append stale items
-  r.items.forEach(m=>grid.appendChild(card(m)));s.off+=r.items.length;
-  more("#rDoMore",r.items.length,12,s.off,r.total);$("#rDoH").textContent="Reviewed ("+r.total+")";
-  $("#rDoEmpty").hidden=r.total>0}                                              // the empty state is ONE message outside the grid
-async function reAll(){reLoad("do",true);
-  const t=$("#rTot");try{const s=await j(`${API}/summary?${sparams("re")}`);const x=s.totals;
-    t.textContent=x.reviewed+" reviewed \u00b7 "+(x.auto_validated?x.auto_validated+" auto-validated \u00b7 ":"")+x.reviewable+" to review \u00b7 "+x.ongoing+" in progress"}catch(e){t.textContent=""}}
 
 /* ---------- summary dashboard ---------- */
 const SU={hours:168,sort:"precision",dir:1};
@@ -289,9 +297,9 @@ function chart(days){
   days.forEach((d,i)=>{let y=base;const x=14+i*((W-20)/days.length);
     for(const c of["confirmed","vetoed","unflagged","other"]){const h=(d[c]/max)*(base-top);if(!h)continue;y-=h;
       const r=document.createElementNS(NS,"rect");r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",bw);r.setAttribute("height",h);r.setAttribute("fill",CAT[c]);r.setAttribute("rx",2);
-      const t=document.createElementNS(NS,"title");t.textContent=d.day+" "+c+": "+d[c];r.appendChild(t);s.appendChild(r)}
+      const t=document.createElementNS(NS,"title");t.textContent=itDay(d.day)+" "+c+": "+d[c];r.appendChild(t);s.appendChild(r)}
     const v=document.createElementNS(NS,"text");v.setAttribute("x",x+bw/2);v.setAttribute("y",y-3);v.setAttribute("text-anchor","middle");v.textContent=d.total;s.appendChild(v);
-    const l=document.createElementNS(NS,"text");l.setAttribute("x",x+bw/2);l.setAttribute("y",base+13);l.setAttribute("text-anchor","middle");l.textContent=d.day.slice(5);s.appendChild(l)});
+    const l=document.createElementNS(NS,"text");l.setAttribute("x",x+bw/2);l.setAttribute("y",base+13);l.setAttribute("text-anchor","middle");l.textContent=itDay(d.day).slice(0,5);s.appendChild(l)});
   return s}
 async function suLoad(){
   const p=sparams("su");p.set("tz",-new Date().getTimezoneOffset());
@@ -304,7 +312,7 @@ async function suLoad(){
   const cols=[["camera","Camera"],["events","Events"],["reviewed","Reviewed"],["auto_validated","Auto"],["precision","Precision"],["false_alarm","False alarms"],["missed","Missed"],["confirmed","Confirmed"],["vetoed","Vetoed"],["unflagged","Unflagged"]];
   const rows=[...s.cameras].sort((a,c)=>{const x=a[SU.sort],y=c[SU.sort];if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return (x<y?-1:x>y?1:0)*SU.dir});
   const tb=E("table"),hr=tb.insertRow();cols.forEach(([key,t])=>{const th=E("th","s",t+(SU.sort===key?(SU.dir>0?" ▲":" ▼"):""));th.onclick=()=>{SU.dir=SU.sort===key?-SU.dir:1;SU.sort=key;suLoad()};hr.appendChild(th)});
-  for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{F.va.camera=F.re.camera=c.camera;hashWrite();V.hist=[];tab(c.reviewable>0?"va":"re")};   // unreviewed events: Validate, else Reviewed
+  for(const c of rows){const r=tb.insertRow();r.className="row";r.onclick=()=>{FILTER.camera=c.camera;hashWrite();V.hist=[];tab(c.reviewable>0?"va":"ev")};   // unreviewed events: Validate, else Events
     for(const[key]of cols){const td=r.insertCell();if(key==="camera")td.textContent=dn(c);else if(key==="precision"){td.appendChild(bar(c.precision));td.appendChild(document.createTextNode(c.reviewed?pct(c.precision):"-"))}else td.textContent=c[key]}}
   const sc=E("div","scroll");sc.appendChild(tb);b.appendChild(sc);
   b.appendChild(E("h2","","Categories"));const gt=E("table"),gh=gt.insertRow();["Category","Events","Precision"].forEach(x=>gh.appendChild(E("th","",x)));
@@ -315,34 +323,41 @@ async function suLoad(){
   b.appendChild(lg);b.appendChild(chart(s.days))}
 
 /* ---------- filters: one outlined Filter button per tab, a menu of radio groups, state in the URL hash ---------- */
-const TABS=["ev","va","re","su"];
-const DEF={ev:"all",va:"all",re:"all",su:"7d"};                                        // default period per tab
+const TABS=["ev","va","su"];
+const DEF={ev:"all",va:"all",su:"all"};                                       // default period (one filter set is shared by every tab)
 const PER={"24h":["24 h",24],"7d":["7 days",168],"14d":["14 days",336],all:["All time",0]};
 const LABELS={correct:"correct",false_alarm:"false alarm",missed:"missed",wrong_class:"wrong class"};
-const F={};for(const t of TABS)F[t]={camera:"",category:"",outcome:"",label:"",period:DEF[t],from:"",to:""};
+const FILTER={camera:"",category:"",outcome:"",label:"",period:"all",from:"",to:""};      // ONE filter set: what is set on a tab applies to all of them
+const F={};for(const t of TABS)F[t]=FILTER;                                       // each tab reads the keys it uses (groupsFor)
+function fclear(keys){for(const k of keys)FILTER[k]=k==="period"?"all":""}
 let CAMS=[];
 function dayRange(f){if(f.from||f.to)return{from:f.from?new Date(f.from+"T00:00:00").getTime():0,to:f.to?new Date(f.to+"T23:59:59").getTime():0};
   const h=PER[f.period][1];return h?{from:Date.now()-h*3600e3,to:0}:{from:0,to:0}}
 function sparams(t){const f=F[t],p=new URLSearchParams();if(f.camera)p.set("camera",f.camera);if(f.category)p.set("group",f.category);
   const r=dayRange(f);if(r.from)p.set("from",r.from);if(r.to)p.set("to",r.to);return p}
 function fparams(t,o){const f=F[t],p=sparams(t);if(f.outcome)p.set("outcome",f.outcome);if(o&&o.label&&f.label)p.set("label",f.label);return p}
-function summaryOf(t){const f=F[t],a=[];if(f.camera){const c=CAMS.find(x=>x.camera===f.camera);a.push(c?dn(c):f.camera)}
-  if(f.category)a.push(f.category);if(f.outcome)a.push(f.outcome);if(f.label)a.push(LABELS[f.label]||f.label);
-  if(f.from||f.to)a.push((f.from||"\u2026")+" \u2013 "+(f.to||"\u2026"));else if(f.period!==DEF[t])a.push(PER[f.period][0]);return a.join(" \u00b7 ")}
-function groupsFor(t){const f=F[t],all=["","All"];
+function activeOf(t){                                                           // the filters in force on tab t, in words: [{keys, text}] (only the ones t uses)
+  const f=F[t],a=[],uses=new Set(groupsFor(t,true).map(g=>g.id));
+  if(f.camera){const c=CAMS.find(x=>x.camera===f.camera);a.push({keys:["camera"],text:c?dn(c):f.camera})}
+  if(f.category)a.push({keys:["category"],text:f.category});if(f.outcome&&uses.has("outcome"))a.push({keys:["outcome"],text:f.outcome});
+  if(f.label&&uses.has("label"))a.push({keys:["label"],text:f.label==="none"?"to review":LABELS[f.label]||f.label});
+  if(f.from||f.to)a.push({keys:["from","to"],text:(f.from?itDay(f.from):"\u2026")+" \u2013 "+(f.to?itDay(f.to):"\u2026")});
+  else if(f.period!==DEF[t])a.push({keys:["period"],text:PER[f.period][0]});return a}
+const summaryOf=t=>activeOf(t).map(x=>x.text).join(" \u00b7 ");
+function groupsFor(t,bare){const f=F[t],all=["","All"];
   const g=[{kind:"radio",id:"camera",label:"Camera",value:f.camera,options:[all,...CAMS.map(c=>[c.camera,dn(c)])]},
     {kind:"radio",id:"category",label:"Category",value:f.category,options:[all,["person","person"],["vehicle","vehicle"],["animal","animal"]]}];
   if(t!=="su")g.push({kind:"radio",id:"outcome",label:"Outcome",value:f.outcome,options:[all,["confirmed","confirmed"],["vetoed","vetoed"],["unflagged","unflagged"]]});
-  if(t==="re")g.push({kind:"radio",id:"label",label:"Label",value:f.label,options:[all,...Object.entries(LABELS)]});
+  if(t==="ev")g.push({kind:"radio",id:"label",label:"Label",value:f.label,options:[all,["none","to review"],...Object.entries(LABELS)]});
   g.push({kind:"radio",id:"period",label:"Period",value:f.from||f.to?"":f.period,options:Object.entries(PER).map(([k,v])=>[k,v[0]])});
   g.push({kind:"date",id:"from",label:"From",value:f.from},{kind:"date",id:"to",label:"To",value:f.to});
-  if(summaryOf(t))g.push({kind:"action",id:"reset",label:"Reset"});return g}
-function hashWrite(){const p=new URLSearchParams();p.set("t",TAB);for(const t of TABS)for(const k in F[t]){const d=k==="period"?DEF[t]:"";if(F[t][k]!==d)p.set(t+"."+k,F[t][k])}
+  if(!bare&&summaryOf(t))g.push({kind:"action",id:"reset",label:"Reset"});return g}
+function hashWrite(){const p=new URLSearchParams();p.set("t",TAB);for(const k in FILTER){const d=k==="period"?"all":"";if(FILTER[k]!==d)p.set("f."+k,FILTER[k])}
   try{history.replaceState(null,"","#"+p)}catch(e){}}
 function hashRead(){let p;try{p=new URLSearchParams(String(location.hash||"").replace(/^#/,""))}catch(e){return}
-  for(const[k,v]of p){const m=/^(ev|va|re|su)\.(camera|category|outcome|label|period|from|to)$/.exec(k);if(!m)continue;
-    if(m[2]==="period"&&!PER[v])continue;if((m[2]==="from"||m[2]==="to")&&!/^\d{4}-\d{2}-\d{2}$/.test(v))continue;F[m[1]][m[2]]=v}
-  if(TABS.includes(p.get("t")))TAB=p.get("t")}
+  for(const[k,v]of p){const m=/^(f|ev|va|re|su)\.(camera|category|outcome|label|period|from|to)$/.exec(k);if(!m)continue;      // f.*; ev./va./re./su.: links from before the shared filter
+    if(m[2]==="period"&&!PER[v])continue;if((m[2]==="from"||m[2]==="to")&&!/^\d{4}-\d{2}-\d{2}$/.test(v))continue;FILTER[m[2]]=v}
+  const t=p.get("t")==="re"?"ev":p.get("t");if(TABS.includes(t))TAB=t}
 const MENUS={};
 function filterMenu(t,mount){
   const wrap=E("div","toolbar"),w=E("div","fwrap"),btn=E("button",""),dot=E("span","fdot"),state=E("span","fstate"),menu=E("div","menu");
@@ -350,17 +365,19 @@ function filterMenu(t,mount){
   btn.setAttribute("aria-haspopup","menu");btn.setAttribute("aria-expanded","false");menu.setAttribute("role","menu");menu.setAttribute("aria-label","Filter");
   w.appendChild(btn);w.appendChild(menu);wrap.appendChild(w);wrap.appendChild(state);mount.appendChild(wrap);
   let items=[],isOpen=false;
-  const api={open:()=>isOpen,paint(){const s=summaryOf(t);dot.hidden=!s;state.hidden=!s;state.textContent=s;btn.title=s}};
+  const api={open:()=>isOpen,paint(){const a=activeOf(t);dot.hidden=!a.length;state.hidden=!a.length;btn.title=summaryOf(t);state.replaceChildren();
+    for(const x of a){const c=E("span","fchip");c.appendChild(E("span","",x.text));const rm=E("button","fx");rm.appendChild(icon("close"));
+      rm.setAttribute("aria-label","Remove filter "+x.text);rm.onclick=()=>{fclear(x.keys);changed()};c.appendChild(rm);state.appendChild(c)}}};
   function changed(){hashWrite();api.paint();refreshTab(t)}
   function build(){menu.replaceChildren();items=[];
     groupsFor(t).forEach((g,i)=>{if(i>0)menu.appendChild(E("hr"));
       if(g.kind==="radio"){menu.appendChild(E("div","ml",g.label));for(const[v,l]of g.options){const b=E("button","");b.setAttribute("role","menuitemradio");b.setAttribute("tabindex","-1");
         b.setAttribute("aria-checked",g.value===v?"true":"false");const tk=E("span","tick");if(g.value===v)tk.appendChild(icon("check"));b.appendChild(tk);
-        b.onclick=()=>{F[t][g.id]=v;if(g.id==="period"){F[t].from="";F[t].to=""}close(true);changed()};b.appendChild(E("span","",l));menu.appendChild(b);items.push(b)}}
+        b.onclick=()=>{FILTER[g.id]=v;if(g.id==="period")fclear(["from","to"]);close(true);changed()};b.appendChild(E("span","",l));menu.appendChild(b);items.push(b)}}
       else if(g.kind==="date"){const lb=E("label","date");lb.appendChild(E("span","ml",g.label));const inp=E("input");inp.type="date";inp.value=g.value;inp.setAttribute("aria-label",g.label);
-        inp.onchange=()=>{F[t][g.id]=inp.value;changed()};lb.appendChild(inp);menu.appendChild(lb);items.push(inp)}
+        inp.onchange=()=>{FILTER[g.id]=inp.value;changed()};lb.appendChild(inp);menu.appendChild(lb);items.push(inp)}
       else{const b=E("button","");b.setAttribute("role","menuitem");b.setAttribute("tabindex","-1");b.appendChild(icon("close"));b.appendChild(E("span","",g.label));
-        b.onclick=()=>{F[t]={camera:"",category:"",outcome:"",label:"",period:DEF[t],from:"",to:""};close(true);changed()};menu.appendChild(b);items.push(b)}})}
+        b.onclick=()=>{fclear(Object.keys(FILTER));close(true);changed()};menu.appendChild(b);items.push(b)}})}
   function outside(e){if(!w.contains(e.target))close(false)}
   function open(){build();menu.hidden=false;isOpen=true;btn.setAttribute("aria-expanded","true");document.addEventListener("pointerdown",outside,true);
     (items.find(i=>i.getAttribute("aria-checked")==="true")||items[0]).focus()}
@@ -372,15 +389,15 @@ function filterMenu(t,mount){
     const to=e.key==="ArrowDown"?(at+1)%n:e.key==="ArrowUp"?(at-1+n)%n:e.key==="Home"?0:e.key==="End"?n-1:-1;
     if(to>=0){e.preventDefault();items[to].focus()}});
   api.close=close;api.btn=btn;return api}
-function refreshTab(t){if(t==="ev")load(true);else if(t==="va"){V.hist=[];V.pre=null;vLoad(null,false)}else if(t==="re")reAll();else suLoad();for(const k of TABS)MENUS[k]&&MENUS[k].paint()}
+function refreshTab(t){if(t==="ev")load(true);else if(t==="va"){V.hist=[];V.pre=null;vLoad(null,false)}else suLoad();for(const k of TABS)MENUS[k]&&MENUS[k].paint()}
 
 /* ---------- tabs ---------- */
-const VIEWS={ev:"#evView",va:"#vaView",re:"#reView",su:"#suView"},BTN={ev:"#tEv",va:"#tVa",re:"#tRe",su:"#tSu"};
-function tab(n){TAB=n;hashWrite();for(const k in VIEWS){$(VIEWS[k]).hidden=k!==n;$(BTN[k]).className=k===n?"on":""}
-  if(n==="va"){V.pre=null;vLoad(null,false)}else if(n==="re")reAll();else if(n==="su")suLoad();else load(true)}
-function refresh(){if(TAB==="ev")load(true);else if(TAB==="va")vLoad(null,false);else if(TAB==="re")reAll();else suLoad()}
+const VIEWS={ev:"#evView",va:"#vaView",su:"#suView"},BTN={ev:"#tEv",va:"#tVa",su:"#tSu"};
+function tab(n){TAB=n;hashWrite();for(const k in VIEWS){$(VIEWS[k]).hidden=k!==n;$(BTN[k]).setAttribute("aria-selected",String(k===n))}
+  if(n==="va"){V.pre=null;vLoad(null,false)}else if(n==="su")suLoad();else load(true)}
+function refresh(){if(TAB==="ev")load(true);else if(TAB==="va")vLoad(null,false);else suLoad()}
 for(const k in BTN)$(BTN[k]).onclick=()=>tab(k);
-$("#more").onclick=()=>load(false);$("#rDoMore").onclick=()=>reLoad("do",false);
+$("#more").onclick=()=>load(false);
 hashRead();
 for(const t of TABS)MENUS[t]=filterMenu(t,$("#"+t+"Bar"));
 cams().then(()=>{for(const t of TABS)MENUS[t].paint()});

@@ -373,11 +373,12 @@ def test_truth_label_is_stored_and_a_plain_label_clears_it(tmp_path):
     clk = Clock(); j = Journal(str(tmp_path), clock=clk)
     ep(j, "a", "tru-00001", "start", 1000, groups=["person"]); ep(j, "a", "tru-00001", "end", 2000, outcome="confirmed")
     assert j.set_label("tru-00001", None, None, "empty") == (200, {"id": "tru-00001", "label": "false_alarm", "label_note": None, "truth": "empty"})
-    assert j.set_label("tru-00001", None, None, "ghost")[0] == 400 and j.set_label("tru-00001", None, None)[0] == 400
+    assert j.set_label("tru-00001", None, None, "ghost")[0] == 400 and j.set_label("tru-00001", "bogus", None)[0] == 400
     m = Journal(str(tmp_path), clock=clk).get("tru-00001")
     assert (m["label"], m["truth"], m["labels"][-1]["truth"]) == ("false_alarm", "empty", "empty")
     j.set_label("tru-00001", "correct", None)
     assert "truth" not in j.get("tru-00001") and j.get("tru-00001")["label"] == "correct"
+    assert j.set_label("tru-00001", None, None)[0] == 200 and j.get("tru-00001")["label"] is None                     # cleared: back to review
 
 
 def test_next_unlabelled_oldest_first_after_filters_and_remaining(tmp_path):
@@ -456,6 +457,10 @@ def test_http_next_summary_filters_and_ui_markup():
         b.req("POST", "/v1/journal/web-q-0000/label", json.dumps({"label": "correct"}).encode(), JS)
         assert b.req("POST", "/v1/journal/web-q-0000/label", json.dumps({"truth": "ghost"}).encode(), JS)[0] == 400
         assert b.req("GET", "/v1/journal/web-q-0000")[1]["label"] == "correct"
+        assert b.req("POST", "/v1/journal/web-q-0000/label", b"{}", JS)[0] == 400                    # no key: never a silent clear
+        assert b.req("POST", "/v1/journal/web-q-0000/label", json.dumps({"label": None}).encode(), JS)[0] == 200
+        assert b.req("GET", "/v1/journal/next")[1]["item"]["id"] == "web-q-0000"                       # back in Validate
+        b.req("POST", "/v1/journal/web-q-0000/label", json.dumps({"label": "correct"}).encode(), JS)
         assert [m["id"] for m in b.req("GET", "/v1/journal?labelled=false&status=closed")[1]["items"]] == ["web-q-0001"]
         assert b.req("GET", "/v1/journal?labelled=maybe")[0] == 400 and b.req("GET", "/v1/journal?status=weird")[0] == 400
         st, sm = b.req("GET", "/v1/journal/summary?from=0&tz=120&camera=a")
@@ -549,8 +554,8 @@ def test_camera_display_name_config_sanitising_episode_meta_and_fallback():
 def test_ui_uses_display_names_hides_load_more_and_routes_summary_clicks():
     html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "verifier", "ui.html")).read()
     assert "display_name" in html and r"replace(/_\d+$/" in html                                              # fallback: id without a trailing _<digits>
-    assert 'more("#more",r.items.length,PAGE,offset,total)' in html and "r.items.length,12,s.off,r.total" in html                                      # no "Load more" after a short last page
-    assert 'tab(c.reviewable>0?"va":"re")' in html                                                     # Validate when unreviewed events exist, else Reviewed
+    assert 'more("#more",r.items.length,PAGE,offset,total)' in html                                     # no "Load more" after a short last page
+    assert 'tab(c.reviewable>0?"va":"ev")' in html                                                     # Validate when unreviewed events exist, else Events
 
 
 def test_reviewable_has_one_definition_closed_and_unlabelled(tmp_path):
@@ -574,10 +579,10 @@ def test_reviewable_has_one_definition_closed_and_unlabelled(tmp_path):
 
 def test_ui_lists_render_one_empty_message_and_hide_load_more_when_empty():
     html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "verifier", "ui.html")).read()
-    assert 'id="rToSec"' not in html and 'id="rDoSec"' in html                                                                 # Reviewed only: what is left to review is Validate
-    assert 'id="rDoEmpty"' in html and 'E("div","empty"' not in html.split("async function reLoad")[1].split("async function reAll")[0]   # one message outside the grid, never a card in it
-    assert "total===0" in html and html.count("more(") >= 3                                                                    # Load more: hidden for empty / short / fully loaded lists
-    assert 'x.reviewable' in html and '" in progress"' in html and "T.reviewed/T.closed" in html and "x.events-x.reviewed" not in html
+    assert 'id="rDoSec"' not in html and 'id="tRe"' not in html                                                                # no Reviewed tab: Events has the Label filter
+    assert 'id="empty"' in html and 'E("div","empty"' not in html.split("async function load")[1].split("async function recap")[0]   # one message outside the grid, never a card in it
+    assert "total===0" in html and html.count("more(") >= 2                                                                    # Load more: hidden for empty / short / fully loaded lists
+    assert 'x.reviewable' in html and '"in progress"' in html and "T.reviewed/T.closed" in html and "x.events-x.reviewed" not in html
 
 
 def test_page_is_never_cached_names_its_version_and_lists_return_total():

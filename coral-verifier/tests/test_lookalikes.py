@@ -166,3 +166,14 @@ def test_a_false_alarm_label_teaches_it_and_relabelling_withdraws_it():
         assert st == 200 and r["forgotten"] is False
     finally:
         b.close()
+
+
+def test_marks_on_a_doubtful_copy_reach_the_journal_detection():
+    import server as SV
+    doubt = {"cls": "person", "score": 0.7, "box": [0.4, 0.3, 0.55, 0.8], "second_look_doubt": True}
+    plain = {"cls": "person", "score": 0.9, "box": [0.1, 0.3, 0.2, 0.8]}
+    live = [{**doubt, "score": 0.25}, plain]
+    s = session()
+    s.update(T0, live, gray=scene(seed=4, person_in_front=True))
+    SV.marks_back([doubt, plain], live)
+    assert doubt["lookalike_place"] is True and doubt["score"] == 0.7 and "lookalike_place" not in plain

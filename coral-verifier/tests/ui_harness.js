@@ -28,7 +28,7 @@ function boot(hash) {
     const id = /\sid="([^"]+)"/.exec(m[2]); if (!id) continue;
     const e = new El(m[1]); e.id = id[1]; e.hidden = /\shidden(\s|$|=)/.test(m[2]); ids[id[1]] = e;
   }
-  const initial = { more: ids.more.hidden, rDoMore: ids.rDoMore.hidden, empty: ids.empty.hidden, rDoEmpty: ids.rDoEmpty.hidden };
+  const initial = { more: ids.more.hidden, empty: ids.empty.hidden, noReviewedTab: !("reView" in ids) && !("tRe" in ids) };
   const state = { responder: () => ({ total: 0, items: [], cameras: [], rows: [], totals: {}, days: [], groups: [] }), calls: [], hash: [] };
   Object.assign(doc, { querySelector: s => (s[0] === "#" ? ids[s.slice(1)] || new El("x") : new El("x")), querySelectorAll: () => [], createElement: t => new El(t),
     createTextNode: t => { const e = new El("#text"); e._text = String(t); return e }, createElementNS: (ns, t) => new El(t),
@@ -55,7 +55,6 @@ const SUMMARY = { cameras: [{ camera: "garden_1", display_name: "Garden" }, { ca
   // ---- Load more / empty message per list ----
   const lists = [
     ["events", "#more", "empty", "load(true)", "load(false)", u => u.startsWith("v1/journal?") && !u.includes("labelled") && !u.includes("summary") && !u.includes("next"), 24],
-    ["reviewed", "#rDoMore", "rDoEmpty", 'reLoad("do",true)', 'reLoad("do",false)', u => u.includes("labelled=true"), 12],
   ];
   for (const [name, more, emptyId, first, next, match, limit] of lists) {
     const btn = ids[more.slice(1)], empty = ids[emptyId], res = {};
@@ -69,10 +68,9 @@ const SUMMARY = { cameras: [{ camera: "garden_1", display_name: "Garden" }, { ca
     set(0, 0); await run(first); await run(next); await run(next); res.emptyThenMoreClicks = { hidden: btn.hidden, emptyShown: !empty.hidden };
     out.scenarios[name] = res;
   }
-  state.responder = u => (u.includes("labelled=true") ? page(0, 0) : u.includes("summary") ? SUMMARY : {});
-  await run('reLoad("do",true)'); await run('reLoad("do",false)');
-  out.reviewedGridChildren = ids.rDoGrid.children.length;
-  out.reviewedTabHasNoToReview = !("rToGrid" in ids) && !("rToSec" in ids);
+  state.responder = u => (u.includes("summary") ? SUMMARY : page(0, 0));
+  await run("load(true)"); await run("load(false)");
+  out.eventsGridChildren = ids.grid.children.length;
 
   // ---- Filter menu ----
   state.responder = u => (u.includes("summary") ? SUMMARY : page(0, 0));
@@ -83,7 +81,7 @@ const SUMMARY = { cameras: [{ camera: "garden_1", display_name: "Garden" }, { ca
   const m = out.menu = {};
   m.initial = { menuHidden: menu.hidden, expanded: btn.getAttribute("aria-expanded"), stateHidden: stateEl.hidden, text: btn.textContent };
   btn.onclick(); m.open = { menuHidden: menu.hidden, expanded: btn.getAttribute("aria-expanded"), focusOnChecked: B.doc.activeElement && B.doc.activeElement.getAttribute("aria-checked") === "true", labels: labelsOf() };
-  m.groupsEvents = JSON.parse(ev('JSON.stringify(groupsFor("ev").map(g=>g.id))')); m.groupsReviewed = JSON.parse(ev('JSON.stringify(groupsFor("re").map(g=>g.id))'));
+  m.groupsEvents = JSON.parse(ev('JSON.stringify(groupsFor("ev").map(g=>g.id))')); 
   m.groupsSummary = JSON.parse(ev('JSON.stringify(groupsFor("su").map(g=>g.id))')); m.groupsValidate = JSON.parse(ev('JSON.stringify(groupsFor("va").map(g=>g.id))'));
   m.cameraOptions = JSON.parse(ev('JSON.stringify(groupsFor("ev")[0].options)'));
   // keyboard
@@ -102,34 +100,39 @@ const SUMMARY = { cameras: [{ camera: "garden_1", display_name: "Garden" }, { ca
   const pick = (text, nth = 0) => { btn.onclick(); const b = menu.children.filter(c => c.tagName === "BUTTON" && c.textContent === text)[nth]; b.onclick(); };
   state.calls.length = 0; state.hash.length = 0;
   pick("Garden"); await tick(); await tick();
-  m.camera = { filter: ev("F.ev.camera"), menuHidden: menu.hidden, request: state.calls.some(u => u.startsWith("v1/journal?") && u.includes("camera=garden_1")), hash: state.hash[state.hash.length - 1] || "", summary: stateEl.textContent };
+  m.camera = { filter: ev("F.ev.camera"), menuHidden: menu.hidden, request: state.calls.some(u => u.startsWith("v1/journal?") && u.includes("camera=garden_1")), hash: state.hash[state.hash.length - 1] || "", summary: btn.title, chips: stateEl.children.length };
   pick("person"); pick("7 days");
-  m.words = { summary: stateEl.textContent, stateHidden: stateEl.hidden, dotShown: !btn.children[2].hidden, filter: ev("JSON.stringify(F.ev)"), hash: state.hash[state.hash.length - 1],
+  m.words = { summary: btn.title, chips: stateEl.children.map(c => c.children[0].textContent), shared: ev('summaryOf("va")'), stateHidden: stateEl.hidden, dotShown: !btn.children[2].hidden, filter: ev("JSON.stringify(F.ev)"), hash: state.hash[state.hash.length - 1],
               requestHasAll: state.calls.some(u => u.includes("camera=garden_1") && u.includes("group=person") && u.includes("from=")) };
   pick("confirmed");
   m.outcome = { filter: ev("F.ev.outcome"), request: state.calls.some(u => u.includes("outcome=confirmed")) };
   btn.onclick(); const labelsBefore = labelsOf(); m.hasReset = labelsBefore.includes("Reset"); fire(wrap, "keydown", { key: "Escape" });
   pick("Reset"); await tick(); await tick();
-  m.reset = { filter: ev("JSON.stringify(F.ev)"), stateHidden: stateEl.hidden, dotHidden: btn.children[2].hidden, summary: stateEl.textContent, hash: state.hash[state.hash.length - 1] };
+  m.reset = { filter: ev("JSON.stringify(F.ev)"), stateHidden: stateEl.hidden, dotHidden: btn.children[2].hidden, summary: btn.title, hash: state.hash[state.hash.length - 1] };
+  // each active filter is a chip with its own remove button
+  pick("Garden"); pick("person"); await tick();
+  stateEl.children[0].children[1].onclick(); await tick(); await tick();
+  m.chipRemove = { filter: ev("JSON.stringify(F.ev)"), chips: stateEl.children.map(c => c.children[0].textContent), hash: state.hash[state.hash.length - 1] };
+  pick("Reset"); await tick();
   // date fields override the period
   btn.onclick(); const dates = menu.children.filter(c => c.tagName === "LABEL"); dates[0].children[1].value = "2026-10-01"; dates[0].children[1].onchange();
-  m.dates = { filter: ev("F.ev.from"), summary: stateEl.textContent }; fire(wrap, "keydown", { key: "Escape" }); pick("Reset");
+  m.dates = { filter: ev("F.ev.from"), summary: btn.title }; fire(wrap, "keydown", { key: "Escape" }); pick("Reset");
   // summary tab: its default period is 7 days (not shown), another choice is
-  m.summaryDefault = ev('summaryOf("su")'); ev('F.su.period="14d"'); m.summaryChoice = ev('summaryOf("su")'); ev('F.su.period="7d"');
-  // the Reviewed counts line is ONE compact line
-  await run("reAll()"); m.countsLine = ids.rTot.textContent;
+  m.summaryDefault = ev('summaryOf("su")'); ev('F.su.period="14d"'); m.summaryChoice = ev('summaryOf("su")'); ev('F.su.period="all"');
+  // the Events recap: one compact row of metrics
+  await run("recap()"); m.recap = ids.evRecap.children.map(c => c.children.map(x => x.textContent).join(" "));
   // validate and summary requests use their own filters
   ev('F.va.camera="door_2";F.va.category="vehicle"'); state.calls.length = 0; await run("vLoad(null,false)");
   m.validateRequest = state.calls.find(u => u.startsWith("v1/journal/next")) || "";
   ev('F.va.camera="";F.va.category=""');
 
   // ---- hash persistence: a reload keeps the filters and the tab ----
-  const B2 = boot("#t=re&re.camera=door_2&re.label=missed&re.period=14d&su.category=animal&ev.from=2026-10-01&ev.period=bogus&va.from=garbage");
+  const B2 = boot("#t=re&re.camera=door_2&re.label=missed&su.category=animal&ev.from=2026-10-01&ev.period=bogus&va.to=garbage");
   B2.state.responder = u => (u.includes("summary") ? SUMMARY : page(0, 0));
   B2.script(); await tick(); await tick();
   const c2 = code => vm.runInContext(code, B2.ctx);
-  out.hash = { tab: c2("TAB"), re: JSON.parse(c2("JSON.stringify(F.re)")), su: JSON.parse(c2("JSON.stringify(F.su)")), ev: JSON.parse(c2("JSON.stringify(F.ev)")), va: JSON.parse(c2("JSON.stringify(F.va)")),
-    reviewedShown: !B2.ids.reView.hidden, eventsShown: !B2.ids.evView.hidden, summaryText: c2('summaryOf("re")'),
-    request: B2.state.calls.some(u => u.includes("labelled=true") && u.includes("camera=door_2") && u.includes("label=missed")) };
+  out.hash = { tab: c2("TAB"), ev: JSON.parse(c2("JSON.stringify(F.ev)")), same: c2("F.ev===F.va&&F.va===F.su"), eventsShown: !B2.ids.evView.hidden,
+    summaryText: c2('summaryOf("ev")'), summaryOfSummaryTab: c2('summaryOf("su")'),
+    request: B2.state.calls.some(u => u.startsWith("v1/journal?") && u.includes("camera=door_2") && u.includes("label=missed")) };
   console.log(JSON.stringify(out));
 })().catch(e => { console.error(e); process.exit(1) });
