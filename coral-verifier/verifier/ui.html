@@ -242,12 +242,15 @@ async function openDetail(id){
   const lb=E("div","lbl");for(const l of["correct","false_alarm","missed","wrong_class"]){const b=E("button",l===m.label?"on":"",l.replace("_"," "));b.onclick=async()=>{
     await post(`${API}/${eid(id)}/label`,{label:l,note:note.value||null});openDetail(id)};lb.appendChild(b)}
   d.appendChild(E("h3","","Label"));d.appendChild(lb);d.appendChild(note);
+  if(m.label){                                                                   // a mistaken validation: clear it, the event is back in Validate
+    const rm=btn("unval","Remove validation","close",async()=>{await post(`${API}/${eid(id)}/label`,{label:null});openDetail(id)});d.appendChild(E("div","lbl")).appendChild(rm);
+    if(m.label==="false_alarm"&&(m.groups||[]).some(g=>g==="person"||g==="animal"))d.appendChild(E("div","mut","Its known look-alike is forgotten too."))}
   d.appendChild(E("h3","","Timeline"));const tl=E("table");for(const e of m.timeline||[]){const r=tl.insertRow();if(isMotionEv(e.text))r.className="mot";r.insertCell().textContent=fmtT(e.t_ms);r.insertCell().textContent=e.text}d.appendChild(tl);
   d.appendChild(E("h3","","Detections"));const dt=E("div","scroll");d.appendChild(dt);
   const tb=E("table");const hr=tb.insertRow();["frame","class","group","score","flags"].forEach(x=>{const c=document.createElement("th");c.textContent=x;hr.appendChild(c)});dt.appendChild(tb);
   for(const f of fs){j(`${API}/${eid(id)}/${f.name}.json`).then(s=>{for(const x of s.detections){const r=tb.insertRow();
     r.insertCell().textContent=f.name;r.insertCell().textContent=x.cls;r.insertCell().textContent=x.group;r.insertCell().textContent=x.score+(x.first_score!=null?" (was "+x.first_score+")":"");
-    r.insertCell().textContent=[x.weak&&"weak",x.masked&&"masked",x.second_look,x.second_look_doubt&&"doubt"].filter(Boolean).join(", ")}})}}
+    r.insertCell().textContent=[x.weak&&"weak",x.masked&&"masked",x.second_look,x.second_look_doubt&&"doubt",excluded(x),x.in_vehicle&&"in vehicle"].filter(Boolean).join(", ")}})}}
 
 /* ---------- validate (annotation mode): no question, just what the frames show; the server derives the label from it (truth) ---------- */
 const TRUTH=[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"],["empty","Empty","e"]];
