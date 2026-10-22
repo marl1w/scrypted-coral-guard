@@ -94,7 +94,7 @@ textarea{width:100%;min-height:56px;margin-top:10px}
 .vbtns{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
 .vbtns button{justify-content:center;padding:20px 10px;font-size:20px;border-radius:28px;min-height:64px}
 .vbtns button svg{width:26px;height:26px}
-.vbtns.four{grid-template-columns:repeat(4,1fr);gap:8px}
+.vbtns.four{grid-template-columns:repeat(4,1fr) 1.3fr;gap:8px}           /* desktop: the five answers in one row */
 .vbtns.four button{padding:14px 4px;font-size:18px;border:2px solid var(--fg);background:transparent;color:var(--fg)}
 .vbtns.four button.pri{background:var(--dark-primary-color);border-color:var(--dark-primary-color);color:#fff;box-shadow:0 2px 4px rgba(0,0,0,.25)}
 .vmeta{margin-top:10px;align-items:center}
@@ -129,14 +129,16 @@ svg.chart text{fill:var(--mut);font-size:9px}
    below; Skip, Previous and the note are desktop-only (the keyboard shortcuts stay) */
 @media (max-width:600px){
   #vaView .bar{padding:6px 12px}
-  #vBody{padding:0 12px 92px}
+  #vBody{padding:0 12px 150px}
   #vaView .frames{grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
   #vaView .frames>div:nth-child(2){grid-column:1/3;order:-1}
   #vaView .frames .mut{font-size:11px}
   .vbar{padding:8px 12px calc(8px + env(safe-area-inset-bottom))}
   .vbar .vbtns{margin:0;gap:10px}
   .vbar .vbtns button{padding:10px;min-height:54px;font-size:18px}
-  .vbar .vbtns.four{gap:6px}.vbar .vbtns.four button{padding:10px 2px;font-size:16px}
+  .vbar .vbtns.four{gap:6px;grid-template-columns:repeat(6,1fr)}.vbar .vbtns.four button{padding:10px 2px;font-size:16px;grid-column:span 2}
+  .vbar .vbtns.four .t-person_vehicle,.vbar .vbtns.four .t-empty{grid-column:span 3}                /* phones: Person Car Animal / Person + Car Empty */
+  .vbar .vbtns.four .t-empty{order:1}
   .vbar .vsub,#vNote,.kh{display:none}
 }
 </style>
@@ -206,7 +208,7 @@ function motionText(m){const o=m&&m.motion;if(!o)return null;const n=(v,w)=>v?` 
   return `occupied ${fmtS(o.occupied_s)} \u00b7 motion ${fmtS(o.motion_s)}`+n(o.still_releases,"still release")+n(o.reraises,"re-raise")}
 function isMotionEv(t){return /^motion (released|re-raised)/.test(t||"")}
 function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.outcome||""),m.outcome||m.status));
-  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.truth)c.appendChild(E("span","chip","is: "+(m.truth==="vehicle"?"car":m.truth)));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
+  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.truth)c.appendChild(E("span","chip","is: "+m.truth.replace("vehicle","car").replace("+"," + ")));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
 function card(m){
   const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",dn(m)));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
   c.appendChild(E("div","mut",fmtT(m.start_ms)));if(m.motion&&m.motion.motion_s!==m.motion.occupied_s)c.appendChild(E("div","mut",motionText(m)));const ch=chips(m);c.appendChild(ch);
@@ -253,7 +255,7 @@ async function openDetail(id){
     r.insertCell().textContent=[x.weak&&"weak",x.masked&&"masked",x.second_look,x.second_look_doubt&&"doubt",excluded(x),x.in_vehicle&&"in vehicle"].filter(Boolean).join(", ")}})}}
 
 /* ---------- validate (annotation mode): no question, just what the frames show; the server derives the label from it (truth) ---------- */
-const TRUTH=[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"],["empty","Empty","e"]];
+const TRUTH=[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"],["empty","Empty","e"],["person+vehicle","Person + Car","b"]];   // b = both
 const V={cur:null,pre:null,hist:[],remaining:0,last:null};
 function vq(after){const p=fparams("va");if(after)p.set("after",after);return p}
 const vFetch=after=>j(`${API}/next?${vq(after)}`);
@@ -269,7 +271,7 @@ function vRender(){
   if(!m){b.appendChild(E("div","empty","Nothing left to review"));return}
   const ch=E("div","chips vmeta");ch.appendChild(E("span","mut",dn(m)+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));b.appendChild(ch);
   const bar=E("div","vbar"),det=vDetected(m);                                // fixed at the bottom, so frames and answer share one screen
-  const row=E("div","vbtns four");for(const[t,l,k]of TRUTH){const x=btn(t===det?"pri":"",l,t===m.truth?"check":null,()=>vAnswer(t));if(t===det)x.appendChild(E("span","kh","\u00a0\u00b7 Y"));x.title="Key "+(t===det?"Y or ":"")+k.toUpperCase();row.appendChild(x)}bar.appendChild(row);
+  const row=E("div","vbtns four");for(const[t,l,k]of TRUTH){const x=btn((t===det?"pri ":"")+"t-"+t.replace("+","_"),l,t===m.truth?"check":null,()=>vAnswer(t));if(t===det)x.appendChild(E("span","kh","\u00a0\u00b7 Y"));x.title="Key "+(t===det?"Y or ":"")+k.toUpperCase();row.appendChild(x)}bar.appendChild(row);
   const sub=E("div","vsub");sub.appendChild(btn("","Skip (S)","next",vSkip));sub.appendChild(btn("","Previous","prev",vBack));bar.appendChild(sub);b.appendChild(bar);
   const shown=framesOf(m).slice(0,3);
   const fr=E("div","frames");for(const f of shown){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,null,()=>exChip(ch)));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
@@ -279,7 +281,8 @@ async function vAnswer(truth){
   await post(`${API}/${eid(m.id)}/label`,{truth,note:n&&n.value?n.value:null});
   V.hist.push(m.id);await vLoad(m.id,!m.label)}
 function vDetected(m){                                                         // what Coral Guard decided: empty for a veto, else the episode's first group
-  if(m.outcome==="vetoed"&&m.kind!=="unflagged")return"empty";return(m.groups||[]).find(g=>g in COL)||null}
+  if(m.outcome==="vetoed"&&m.kind!=="unflagged")return"empty";const g=m.groups||[];
+  return g.includes("person")&&g.includes("vehicle")?"person+vehicle":g.find(x=>x in COL)||null}
 function vSkip(){if(V.cur)vLoad(V.cur.id,false)}
 async function vBack(){const id=V.hist.pop();if(!id)return;const m=await j(`${API}/${eid(id)}`);V.cur=m;V.pre=null;vRender();vPrefetch(m)}
 document.addEventListener("keydown",e=>{

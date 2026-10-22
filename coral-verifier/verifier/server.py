@@ -192,7 +192,7 @@ class App:
         if meta.get("label") == "wrong_class":
             note = meta.get("label_note") or ""
             truth = meta.get("truth") or (note[4:].split(" ")[0] if note.startswith("is: ") else None)
-            return [g for g in groups if g != truth]
+            return [g for g in groups if g not in (truth or "").split("+")]
         return []
 
     def learn_lookalike(self, meta):

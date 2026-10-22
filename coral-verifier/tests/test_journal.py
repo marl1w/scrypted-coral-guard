@@ -367,6 +367,9 @@ def test_truth_answer_derives_the_label_from_the_episode():
     unflagged = {"outcome": "vetoed", "kind": "unflagged", "groups": ["animal", "person"]}
     assert [f(unflagged, t) for t in ("person", "vehicle", "animal", "empty")] == ["correct", "wrong_class", "correct", "false_alarm"]
     assert f({"outcome": "aborted", "kind": "camera", "groups": []}, "vehicle") == "correct"
+    both = "person+vehicle"                                                                              # Person + Car
+    assert (f(person, both), f(veto, both), f({"outcome": "released", "kind": "camera", "groups": ["vehicle"]}, both)) == ("correct", "missed", "correct")
+    assert f({"outcome": "released", "kind": "camera", "groups": ["animal"]}, both) == "wrong_class"
 
 
 def test_truth_label_is_stored_and_a_plain_label_clears_it(tmp_path):
@@ -467,7 +470,7 @@ def test_http_next_summary_filters_and_ui_markup():
         assert st == 200 and sm["totals"]["events"] == 1 and sm["totals"]["precision"] == 1.0 and sm["cameras"][0]["camera"] == "a" and sm["days"]
         assert b.req("GET", "/v1/journal/summary?tz=5000")[0] == 400 and b.req("GET", "/v1/journal/summary?from=nan")[0] == 400
         st, html, ct = raw(b, "GET", "/")
-        for needle in (b"Validate", b"Reviewed", b'["person","Person","p"]', b'["vehicle","Car","c"]', b'["animal","Animal","a"]', b'["empty","Empty","e"]', b"{truth,note", b"Remove validation", b"{label:null}", b"Review events to see accuracy", b"next?"):
+        for needle in (b"Validate", b"Reviewed", b'["person","Person","p"]', b'["vehicle","Car","c"]', b'["animal","Animal","a"]', b'["empty","Empty","e"]', b'["person+vehicle","Person + Car","b"]', b"{truth,note", b"Remove validation", b"{label:null}", b"Review events to see accuracy", b"next?"):
             assert needle in html, needle
         assert b"innerHTML" not in html and b"document.write" not in html and b"eval(" not in html                  # untrusted text only through textContent
     finally:

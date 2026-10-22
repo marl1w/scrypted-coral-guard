@@ -13,7 +13,7 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
 MODES, KINDS = ("shadow", "gate"), ("camera", "unflagged")
 OUTCOMES = ("confirmed", "vetoed", "aborted", "released", "parked")          # client-settable; the service itself adds "stale"
 LABELS = ("correct", "false_alarm", "missed", "wrong_class")
-TRUTHS = ("person", "vehicle", "animal", "empty")                           # what the frames really show (Validate's four buttons)
+TRUTHS = ("person", "vehicle", "animal", "empty", "person+vehicle")         # what the frames really show (Validate's answers; "+" = both)
 ACTIONS = ("start", "update", "end")
 GROUPS = ("person", "vehicle", "animal")
 
@@ -65,13 +65,14 @@ class Journal:
     def label_for(m, truth):
         """The label implied by what the frames really show (`truth`, one of TRUTHS), whatever the camera and the model said.
         A vetoed camera episode is right only when empty (anything there was missed); every other episode is a false alarm when empty,
-        correct when the truth is one of its groups (or it has none), else the wrong class."""
+        correct when one of the truth's classes is one of its groups (or it has none), else the wrong class. The truth itself is kept on
+        the episode, so "person+vehicle" on a person alert still records the car."""
         if m.get("outcome") == "vetoed" and m.get("kind") != "unflagged":
             return "correct" if truth == "empty" else "missed"
         if truth == "empty":
             return "false_alarm"
         groups = [g for g in (m.get("groups") or []) if g in GROUPS]
-        return "correct" if not groups or truth in groups else "wrong_class"
+        return "correct" if not groups or set(truth.split("+")) & set(groups) else "wrong_class"
 
     @staticmethod
     def valid_id(eid):

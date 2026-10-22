@@ -284,3 +284,7 @@ The review page's event detail has a "Remove validation" button when the event i
 ## 0.3.39 notes
 
 Known look-alikes are also learnt from `wrong_class` labels, for the person/animal groups the answer says were not there (all of the episode's person/animal groups but the true one: `truth`, or an older "is: <class>" note). A bird the model called a person and the user answered Animal stays a person look-alike where it stood; before, only `false_alarm` taught one and relabelling it as the true class forgot it. The start-up backfill reads both labels.
+
+## 0.3.40 notes
+
+`truth` also accepts `"person+vehicle"` (a person and a moving vehicle both there): a vetoed camera episode is `missed`; any other episode is `correct` when the person or the vehicle is one of its groups (or it has none), else `wrong_class`. The truth is kept, so a person alert answered Person + Car still records the car. Look-alikes are never learnt for a group named in the truth. Validate shows a fifth answer, Person + Car (key B; the primary one when the episode has both groups): one row of five on wide screens, Person / Car / Animal and Person + Car / Empty on phones.

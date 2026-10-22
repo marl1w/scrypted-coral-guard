@@ -187,6 +187,7 @@ def test_a_wrong_class_answer_still_teaches_the_groups_that_were_not_there():
     assert W({"label": "wrong_class", "label_note": "is: animal - bird", "groups": ["person", "animal"]}) == ["person"]
     assert W({"label": "wrong_class", "truth": "vehicle", "groups": ["animal"]}) == ["animal"]
     assert W({"label": "correct", "groups": ["person"]}) == [] and W({"label": "missed", "groups": ["person"]}) == []
+    assert W({"label": "wrong_class", "truth": "person+vehicle", "groups": ["person", "animal"]}) == ["animal"]   # a real person is never learnt
     b = Box(items=[["person", 3.0, 16, 16, 16, [2, 2, 2, 2]]])
     try:
         JS = {"Content-Type": "application/json"}
