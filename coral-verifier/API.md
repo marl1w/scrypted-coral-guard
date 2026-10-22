@@ -280,3 +280,7 @@ Validate answers. `POST /v1/journal/{id}/label` also accepts `{truth: "person"|"
 ## 0.3.38 notes
 
 The review page's event detail has a "Remove validation" button when the event is labelled: it posts `{label: null}`, so a mistaken validation is undone and the event is back in Validate (for a person/animal false alarm the page says its known look-alike is forgotten too). The detail's detection table lists the `look-alike`, `known place` and `in vehicle` marks.
+
+## 0.3.39 notes
+
+Known look-alikes are also learnt from `wrong_class` labels, for the person/animal groups the answer says were not there (all of the episode's person/animal groups but the true one: `truth`, or an older "is: <class>" note). A bird the model called a person and the user answered Animal stays a person look-alike where it stood; before, only `false_alarm` taught one and relabelling it as the true class forgot it. The start-up backfill reads both labels.

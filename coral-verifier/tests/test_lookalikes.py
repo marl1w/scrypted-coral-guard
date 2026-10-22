@@ -177,3 +177,30 @@ def test_marks_on_a_doubtful_copy_reach_the_journal_detection():
     s.update(T0, live, gray=scene(seed=4, person_in_front=True))
     SV.marks_back([doubt, plain], live)
     assert doubt["lookalike_place"] is True and doubt["score"] == 0.7 and "lookalike_place" not in plain
+
+
+def test_a_wrong_class_answer_still_teaches_the_groups_that_were_not_there():
+    import server as SV
+    W = SV.App.wrong_groups
+    assert W({"label": "false_alarm", "groups": ["person", "vehicle"]}) == ["person"]
+    assert W({"label": "wrong_class", "truth": "animal", "groups": ["person"]}) == ["person"]                # a bird called a person
+    assert W({"label": "wrong_class", "label_note": "is: animal - bird", "groups": ["person", "animal"]}) == ["person"]
+    assert W({"label": "wrong_class", "truth": "vehicle", "groups": ["animal"]}) == ["animal"]
+    assert W({"label": "correct", "groups": ["person"]}) == [] and W({"label": "missed", "groups": ["person"]}) == []
+    b = Box(items=[["person", 3.0, 16, 16, 16, [2, 2, 2, 2]]])
+    try:
+        JS = {"Content-Type": "application/json"}
+        eid = "look-ep-0002"
+        b.req("POST", "/v1/cameras/door/episodes", json.dumps({"id": eid, "action": "start", "t_ms": T0, "mode": "gate", "kind": "camera", "groups": ["person"]}).encode(), JS)
+        for i in range(2):
+            assert b.frame("door", T0 + i * 1000, data=textured_jpeg())[0] == 200
+        b.app.journal.drain()
+        b.req("POST", "/v1/cameras/door/episodes", json.dumps({"id": eid, "action": "end", "t_ms": T0 + 3000, "outcome": "confirmed"}).encode(), JS)
+        st, r = b.req("POST", f"/v1/journal/{eid}/label", json.dumps({"truth": "animal"}).encode(), JS)
+        assert st == 200 and r["label"] == "wrong_class"
+        assert b.app.learn_lookalike(b.app._learn_q.get(timeout=5))
+        assert b.req("GET", "/v1/cameras/door/lookalikes")[1]["lookalikes"][0]["episode"] == eid
+        b.app.registry.lookalike_remove("door", eid)
+        assert b.app.backfill_lookalikes() == 1                                     # earlier wrong-class labels are learnt at start too
+    finally:
+        b.close()

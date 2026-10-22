@@ -181,14 +181,29 @@ class App:
     def save_lookalikes(self):
         self._save_store(self.looks_dir, self.registry.lookalikes_dirty(), "look-alikes")
 
+    @staticmethod
+    def wrong_groups(meta):
+        """The person/animal groups of an episode that the user's label says were NOT there: all of them for `false_alarm`, all but the true
+        one for `wrong_class` (the Validate answer `truth`, or an older "is: <class>" note), none otherwise. A bird the model called a
+        person and the user answered Animal is still a person look-alike."""
+        groups = [g for g in (meta.get("groups") or []) if g in ("person", "animal")]
+        if meta.get("label") == "false_alarm":
+            return groups
+        if meta.get("label") == "wrong_class":
+            note = meta.get("label_note") or ""
+            truth = meta.get("truth") or (note[4:].split(" ")[0] if note.startswith("is: ") else None)
+            return [g for g in groups if g != truth]
+        return []
+
     def learn_lookalike(self, meta):
-        """A user label: `false_alarm` on a person/animal episode keeps the box that raised it (best frame, strongest box of the episode's
-        group) as a known look-alike; any other label removes the episode's entry. Reads the journal's files, never the live frames."""
+        """A user label saying a person/animal episode's group was not there (wrong_groups) keeps the box that raised it (best frame,
+        strongest box of those groups) as a known look-alike; any other label removes the episode's entry. Reads the journal's files, never
+        the live frames."""
         eid, cam = meta.get("id"), meta.get("camera")
         if not eid or not cam:
             return False
-        groups = [g for g in (meta.get("groups") or []) if g in ("person", "animal")]
-        if meta.get("label") != "false_alarm" or not groups:
+        groups = self.wrong_groups(meta)
+        if not groups:
             if self.registry.lookalike_remove(cam, eid):
                 log.info("look-alike of episode %s removed (relabelled)", eid)
             return False
@@ -215,17 +230,20 @@ class App:
         return ok
 
     def backfill_lookalikes(self):
-        """Learns the false alarms the user labelled before (once per start; already known episodes are skipped)."""
-        off, n = 0, 0
-        while True:
-            page = self.journal.list(label="false_alarm", limit=200, offset=off)
-            items = page.get("items") or []
-            for m in items:
-                if not self.registry.lookalike_known(m.get("camera"), m.get("id")):
-                    n += bool(self.learn_lookalike(m))
-            off += len(items)
-            if not items or off >= page.get("total", 0):
-                return n
+        """Learns the false alarms and wrong classes the user labelled before (once per start; already known episodes are skipped)."""
+        n = 0
+        for label in ("false_alarm", "wrong_class"):
+            off = 0
+            while True:
+                page = self.journal.list(label=label, limit=200, offset=off)
+                items = page.get("items") or []
+                for m in items:
+                    if not self.registry.lookalike_known(m.get("camera"), m.get("id")):
+                        n += bool(self.learn_lookalike(m))
+                off += len(items)
+                if not items or off >= page.get("total", 0):
+                    break
+        return n
 
     def start_background(self, every_s=30.0):
         """Saver of the per-camera stores and the look-alike learner (started by main(); tests call the methods themselves)."""
