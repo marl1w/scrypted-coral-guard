@@ -372,6 +372,32 @@ def test_truth_answer_derives_the_label_from_the_episode():
     assert f({"outcome": "released", "kind": "camera", "groups": ["animal"]}, both) == "wrong_class"
 
 
+def test_content_answers_any_combination_and_a_parked_car_is_scenery(tmp_path):
+    import journal as JR
+    assert [JR.canon_truth(t) for t in ("animal+vehicle", "vehicle+person+animal", "empty", "person+person", "ghost", "", None)] == \
+        ["vehicle+animal", "person+vehicle+animal", "empty", None, None, None, None]
+    f = Journal.label_for
+    veto = {"outcome": "vetoed", "kind": "camera", "groups": []}
+    assert f(veto, "vehicle", car_moved=False) == "correct" and f(veto, "vehicle", car_moved=True) == "missed"        # parked car: the veto was right
+    assert f(veto, "vehicle+animal", car_moved=False) == "missed" and f(veto, "person+vehicle", car_moved=False) == "missed"
+    assert f({"outcome": "confirmed", "kind": "camera", "groups": ["animal"]}, "vehicle+animal") == "correct"
+    car, parked = [0.1, 0.5, 0.4, 0.9], [0.6, 0.2, 0.9, 0.5]
+    assert JR.boxes_moved([[parked], [parked], [[0.6, 0.21, 0.9, 0.5]]]) is False                             # the same box in every frame
+    assert JR.boxes_moved([[parked, car], [parked, [0.3, 0.5, 0.6, 0.9]]]) is True                             # one car drove on
+    assert JR.boxes_moved([[parked], [parked, car]]) is True and JR.boxes_moved([[parked]]) is True            # a car arrived; one frame: unknown
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    ep(j, "a", "pk-000001", "start", 1000); ep(j, "a", "pk-000001", "end", 2000, outcome="vetoed")
+    st = j.eps["pk-000001"]
+    for i, name in enumerate(("first", "last")):                                                                  # two stored frames, the car never moves
+        open(os.path.join(st["dir"], name + ".json"), "w").write(json.dumps({"t_ms": 1000 + i, "detections": [{"cls": "car", "group": "vehicle", "score": 0.9, "box": parked}]}))
+        st["meta"]["frames"].append({"name": name, "role": name, "t_ms": 1000 + i})
+    assert j.set_label("pk-000001", None, None, "animal+vehicle")[1]["label"] == "missed"                       # the cat counts
+    assert j.set_label("pk-000001", None, None, "vehicle")[1]["label"] == "correct"                               # the parked car alone does not
+    st["meta"]["label"] = "missed"; j._save_meta(st); j.stop()                                                     # a label from the earlier rule
+    m = Journal(str(tmp_path), clock=clk).get("pk-000001")                                                        # derived again at start, the answer kept
+    assert (m["label"], m["truth"], m["labels"][-1].get("rederived")) == ("correct", "vehicle", True)
+
+
 def test_truth_label_is_stored_and_a_plain_label_clears_it(tmp_path):
     clk = Clock(); j = Journal(str(tmp_path), clock=clk)
     ep(j, "a", "tru-00001", "start", 1000, groups=["person"]); ep(j, "a", "tru-00001", "end", 2000, outcome="confirmed")
@@ -470,7 +496,7 @@ def test_http_next_summary_filters_and_ui_markup():
         assert st == 200 and sm["totals"]["events"] == 1 and sm["totals"]["precision"] == 1.0 and sm["cameras"][0]["camera"] == "a" and sm["days"]
         assert b.req("GET", "/v1/journal/summary?tz=5000")[0] == 400 and b.req("GET", "/v1/journal/summary?from=nan")[0] == 400
         st, html, ct = raw(b, "GET", "/")
-        for needle in (b"Validate", b"Reviewed", b'["person","Person","p"]', b'["vehicle","Car","c"]', b'["animal","Animal","a"]', b'["empty","Empty","e"]', b'["person+vehicle","Person + Car","b"]', b"{truth,note", b"Remove validation", b"{label:null}", b"Review events to see accuracy", b"next?"):
+        for needle in (b"Validate", b"Reviewed", b'[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"]]', b'"Confirm"', b'"Empty"', b"{truth,note", b"Remove validation", b"{label:null}", b"Review events to see accuracy", b"next?"):
             assert needle in html, needle
         assert b"innerHTML" not in html and b"document.write" not in html and b"eval(" not in html                  # untrusted text only through textContent
     finally:

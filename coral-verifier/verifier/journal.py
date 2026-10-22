@@ -13,7 +13,31 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
 MODES, KINDS = ("shadow", "gate"), ("camera", "unflagged")
 OUTCOMES = ("confirmed", "vetoed", "aborted", "released", "parked")          # client-settable; the service itself adds "stale"
 LABELS = ("correct", "false_alarm", "missed", "wrong_class")
-TRUTHS = ("person", "vehicle", "animal", "empty", "person+vehicle")         # what the frames really show (Validate's answers; "+" = both)
+CLASSES = ("person", "vehicle", "animal")                                   # what the frames really show: any of these joined by "+", or "empty"
+
+
+def canon_truth(t):
+    """A Validate answer in its canonical form ("empty", or classes in CLASSES order joined by "+"), or None when invalid."""
+    if t == "empty":
+        return t
+    parts = t.split("+") if isinstance(t, str) else []
+    if not parts or len(set(parts)) != len(parts) or not set(parts) <= set(CLASSES):
+        return None
+    return "+".join(c for c in CLASSES if c in parts)
+
+
+def boxes_moved(frames, iou_same=0.7):
+    """Did any box move across an episode's stored frames? frames: one list of boxes per frame. A box with no near-identical box (IoU >=
+    iou_same) in some other frame moved, appeared or left. Fewer than two frames: unknown, taken as moved (it stays a miss to look at)."""
+    def iou(a, b):
+        ix, iy = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+        if ix <= 0 or iy <= 0:
+            return 0.0
+        i = ix * iy
+        return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i)
+    if len(frames) < 2:
+        return True
+    return any(not any(iou(b, x) >= iou_same for x in other) for i, f in enumerate(frames) for b in f for j, other in enumerate(frames) if i != j)
 ACTIONS = ("start", "update", "end")
 GROUPS = ("person", "vehicle", "animal")
 
@@ -62,17 +86,55 @@ class Journal:
         return {"key": "event", "text": "Is this a real event?", "group": None, "others": [], "yes": "correct", "no": "false_alarm"}
 
     @staticmethod
-    def label_for(m, truth):
-        """The label implied by what the frames really show (`truth`, one of TRUTHS), whatever the camera and the model said.
-        A vetoed camera episode is right only when empty (anything there was missed); every other episode is a false alarm when empty,
-        correct when one of the truth's classes is one of its groups (or it has none), else the wrong class. The truth itself is kept on
-        the episode, so "person+vehicle" on a person alert still records the car."""
+    def label_for(m, truth, car_moved=True):
+        """The event label implied by what the frames really show (`truth`: "empty" or classes joined by "+"), whatever the camera and the
+        model said. The user labels content; the event logic is applied here. A vetoed camera episode was missed when a person or an animal
+        was there, or a car that moved (`car_moved`: across the stored frames); a parked car alone is scenery, so the veto was right. Every
+        other episode is a false alarm when empty, correct when one of the truth's classes is one of its groups (or it has none), else the
+        wrong class. The truth itself is kept on the episode."""
+        cls = set() if truth == "empty" else set(truth.split("+"))
         if m.get("outcome") == "vetoed" and m.get("kind") != "unflagged":
-            return "correct" if truth == "empty" else "missed"
+            return "missed" if cls & {"person", "animal"} or ("vehicle" in cls and car_moved) else "correct"
         if truth == "empty":
             return "false_alarm"
         groups = [g for g in (m.get("groups") or []) if g in GROUPS]
-        return "correct" if not groups or set(truth.split("+")) & set(groups) else "wrong_class"
+        return "correct" if not groups or cls & set(groups) else "wrong_class"
+
+    def _car_moved(self, st):
+        """Did a car move in this episode's stored frames (vehicle boxes at the strong floor or more)?"""
+        frames = []
+        for f in st["meta"]["frames"]:
+            try:
+                with open(os.path.join(st["dir"], f["name"] + ".json")) as fh:
+                    dets = json.load(fh).get("detections") or []
+            except (OSError, ValueError):
+                continue
+            frames.append([d["box"] for d in dets if d.get("group") == "vehicle" and not d.get("weak") and d.get("second_look") != "rejected"
+                           and isinstance(d.get("box"), list) and len(d["box"]) == 4])
+        return boxes_moved(frames)
+
+    def _derive(self, st, truth):
+        m = st["meta"]
+        veto_car = m.get("outcome") == "vetoed" and m.get("kind") != "unflagged" and "vehicle" in truth.split("+")
+        return self.label_for(m, truth, self._car_moved(st) if veto_car else True)
+
+    def _rederive(self):
+        """Labels derived from an earlier rule are derived again from the user's answers (the answers never change). Returns the count."""
+        n = 0
+        for st in self.eps.values():
+            m = st["meta"]
+            if not m.get("truth") or m.get("auto") or canon_truth(m["truth"]) is None:
+                continue
+            new = self._derive(st, canon_truth(m["truth"]))
+            if new != m.get("label"):
+                m["label"] = new
+                m["labels"] = (m["labels"] + [{"label": new, "note": m.get("label_note"), "t_ms": int(self.clock()), "truth": m["truth"], "rederived": True}])[-20:]
+                try:
+                    self._save_meta(st)
+                    n += 1
+                except OSError:
+                    pass
+        return n
 
     @staticmethod
     def valid_id(eid):
@@ -101,6 +163,9 @@ class Journal:
             self.enabled = False
         if self.enabled:
             self._purge_legacy()
+            n = self._rederive()
+            if n:
+                log.info("journal: %d labels derived again from the answers", n)
             self._worker = threading.Thread(target=self._run, name="journal", daemon=True)
             self._worker.start()
             if self.lim["auto_validate"]:
@@ -741,8 +806,10 @@ class Journal:
         return self._call(self._set_label, eid, label, note, truth) if self.enabled else (503, {"error": "journal unavailable"})
 
     def _set_label(self, eid, label, note, truth=None):
-        if truth is not None and truth not in TRUTHS:
-            return 400, {"error": "truth must be " + "|".join(TRUTHS)}
+        if truth is not None:
+            truth = canon_truth(truth)
+            if truth is None:
+                return 400, {"error": "truth must be empty or " + "|".join(CLASSES) + " joined by +"}
         if truth is None and label is not None and label not in LABELS:
             return 400, {"error": "label must be " + "|".join(LABELS) + " or null"}
         try:
@@ -756,7 +823,7 @@ class Journal:
                 return 404, {"error": "unknown episode"}
             m = st["meta"]
             if truth is not None:
-                label = self.label_for(m, truth)                              # the server derives it: the client only says what is there
+                label = self._derive(st, truth)                               # the server derives it: the client only says what is there
                 m["truth"] = truth
             else:
                 m.pop("truth", None)                                          # a plain label says nothing about what was there

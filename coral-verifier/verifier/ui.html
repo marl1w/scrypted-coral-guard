@@ -94,9 +94,10 @@ textarea{width:100%;min-height:56px;margin-top:10px}
 .vbtns{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
 .vbtns button{justify-content:center;padding:20px 10px;font-size:20px;border-radius:28px;min-height:64px}
 .vbtns button svg{width:26px;height:26px}
-.vbtns.four{grid-template-columns:repeat(4,1fr) 1.3fr;gap:8px}           /* desktop: the five answers in one row */
+.vbtns.four{grid-template-columns:repeat(4,1fr) 1.4fr;gap:8px}           /* desktop: Person Car Animal Empty Confirm in one row */
 .vbtns.four button{padding:14px 4px;font-size:18px;border:2px solid var(--fg);background:transparent;color:var(--fg)}
 .vbtns.four button.pri{background:var(--dark-primary-color);border-color:var(--dark-primary-color);color:#fff;box-shadow:0 2px 4px rgba(0,0,0,.25)}
+.vbtns.four button.tg.on{border-color:var(--primary-color);color:var(--primary-color);background:rgba(3,169,244,.16)}   /* a selected toggle */
 .vmeta{margin-top:10px;align-items:center}
 .chip.ex{color:var(--warn)}
 .recap{display:flex;flex-wrap:wrap;gap:6px 18px;padding:2px 16px 10px;align-items:baseline;max-width:1400px;margin:0 auto;box-sizing:border-box}
@@ -137,8 +138,7 @@ svg.chart text{fill:var(--mut);font-size:9px}
   .vbar .vbtns{margin:0;gap:10px}
   .vbar .vbtns button{padding:10px;min-height:54px;font-size:18px}
   .vbar .vbtns.four{gap:6px;grid-template-columns:repeat(6,1fr)}.vbar .vbtns.four button{padding:10px 2px;font-size:16px;grid-column:span 2}
-  .vbar .vbtns.four .t-person_vehicle,.vbar .vbtns.four .t-empty{grid-column:span 3}                /* phones: Person Car Animal / Person + Car Empty */
-  .vbar .vbtns.four .t-empty{order:1}
+  .vbar .vbtns.four .t-empty,.vbar .vbtns.four .t-ok{grid-column:span 3}                           /* phones: Person Car Animal / Empty Confirm */
   .vbar .vsub,#vNote,.kh{display:none}
 }
 </style>
@@ -208,7 +208,7 @@ function motionText(m){const o=m&&m.motion;if(!o)return null;const n=(v,w)=>v?` 
   return `occupied ${fmtS(o.occupied_s)} \u00b7 motion ${fmtS(o.motion_s)}`+n(o.still_releases,"still release")+n(o.reraises,"re-raise")}
 function isMotionEv(t){return /^motion (released|re-raised)/.test(t||"")}
 function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.outcome||""),m.outcome||m.status));
-  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.truth)c.appendChild(E("span","chip","is: "+m.truth.replace("vehicle","car").replace("+"," + ")));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
+  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.truth)c.appendChild(E("span","chip","is: "+m.truth.split("+").map(x=>x==="vehicle"?"car":x).join(" + ")));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
 function card(m){
   const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",dn(m)));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
   c.appendChild(E("div","mut",fmtT(m.start_ms)));if(m.motion&&m.motion.motion_s!==m.motion.occupied_s)c.appendChild(E("div","mut",motionText(m)));const ch=chips(m);c.appendChild(ch);
@@ -255,8 +255,8 @@ async function openDetail(id){
     r.insertCell().textContent=[x.weak&&"weak",x.masked&&"masked",x.second_look,x.second_look_doubt&&"doubt",excluded(x),x.in_vehicle&&"in vehicle"].filter(Boolean).join(", ")}})}}
 
 /* ---------- validate (annotation mode): no question, just what the frames show; the server derives the label from it (truth) ---------- */
-const TRUTH=[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"],["empty","Empty","e"],["person+vehicle","Person + Car","b"]];   // b = both
-const V={cur:null,pre:null,hist:[],remaining:0,last:null};
+const CLS=[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"]];   // what is in the frames: any combination, or Empty
+const V={cur:null,pre:null,hist:[],remaining:0,last:null,sel:new Set(),touched:false};
 function vq(after){const p=fparams("va");if(after)p.set("after",after);return p}
 const vFetch=after=>j(`${API}/next?${vq(after)}`);
 function vPrefetch(m){V.pre=null;vFetch(m.id).then(n=>{V.pre={after:m.id,r:n};if(n.item)framesOf(n.item).forEach(f=>{new Image().src=`${API}/${eid(n.item.id)}/${f.name}.jpg`})}).catch(()=>{})}
@@ -270,25 +270,37 @@ function vRender(){
   const b=$("#vBody");b.replaceChildren();$("#vProg").textContent=V.remaining+" left";const m=V.cur;
   if(!m){b.appendChild(E("div","empty","Nothing left to review"));return}
   const ch=E("div","chips vmeta");ch.appendChild(E("span","mut",dn(m)+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));b.appendChild(ch);
-  const bar=E("div","vbar"),det=vDetected(m);                                // fixed at the bottom, so frames and answer share one screen
-  const row=E("div","vbtns four");for(const[t,l,k]of TRUTH){const x=btn((t===det?"pri ":"")+"t-"+t.replace("+","_"),l,t===m.truth?"check":null,()=>vAnswer(t));if(t===det)x.appendChild(E("span","kh","\u00a0\u00b7 Y"));x.title="Key "+(t===det?"Y or ":"")+k.toUpperCase();row.appendChild(x)}bar.appendChild(row);
+  const bar=E("div","vbar");                                                  // fixed at the bottom, so frames and answer share one screen
+  const row=E("div","vbtns four");row.id="vRow";bar.appendChild(row);
+  V.touched=false;V.sel=new Set(m.truth&&m.truth!=="empty"?m.truth.split("+"):[]);vButtons();
+  if(!m.truth)vSeen(m).then(c=>{if(V.cur===m&&!V.touched){V.sel=c;vButtons()}});        // pre-set with what Coral's boxes show
   const sub=E("div","vsub");sub.appendChild(btn("","Skip (S)","next",vSkip));sub.appendChild(btn("","Previous","prev",vBack));bar.appendChild(sub);b.appendChild(bar);
   const shown=framesOf(m).slice(0,3);
   const fr=E("div","frames");for(const f of shown){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,null,()=>exChip(ch)));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
   const note=E("textarea");note.id="vNote";note.placeholder="Note (optional)";note.value=m.label_note||"";b.appendChild(note)}
+function vButtons(){                                                           // Person / Car / Animal toggles, Empty, Confirm
+  const row=$("#vRow");if(!row)return;row.replaceChildren();
+  for(const[c,l,k]of CLS){const on=V.sel.has(c);const x=btn("tg t-"+c+(on?" on":""),l,on?"check":null,()=>vToggle(c));x.title="Key "+k.toUpperCase();x.setAttribute("aria-pressed",String(on));row.appendChild(x)}
+  const em=btn("tg t-empty"+(V.sel.size?"":" on"),"Empty",V.sel.size?null:"check",()=>{V.touched=true;V.sel.clear();vButtons()});em.title="Key E";em.setAttribute("aria-pressed",String(!V.sel.size));row.appendChild(em);
+  const ok=btn("pri t-ok","Confirm",null,vConfirm);ok.appendChild(E("span","kh","\u00a0\u00b7 Y"));ok.title="Key Y or Enter";row.appendChild(ok)}
+function vToggle(c){V.touched=true;if(V.sel.has(c))V.sel.delete(c);else V.sel.add(c);vButtons()}
+const vTruth=()=>CLS.map(x=>x[0]).filter(c=>V.sel.has(c)).join("+")||"empty";
+function vConfirm(){vAnswer(vTruth())}
+async function vSeen(m){                                                        // classes with a clear box in the stored frames (not rejected, not a known look-alike, not too small/big)
+  const out=new Set();
+  await Promise.all(framesOf(m).slice(0,3).map(f=>j(`${API}/${eid(m.id)}/${f.name}.json`).then(s=>{for(const d of s.detections||[])
+    if(d.group in COL&&d.score>=0.5&&d.second_look!=="rejected"&&!excluded(d)&&!d.too_small&&!d.too_big&&!d.weak)out.add(d.group)}).catch(()=>{})));
+  return out}
 async function vAnswer(truth){
   const m=V.cur;if(!m)return;const n=$("#vNote");
   await post(`${API}/${eid(m.id)}/label`,{truth,note:n&&n.value?n.value:null});
   V.hist.push(m.id);await vLoad(m.id,!m.label)}
-function vDetected(m){                                                         // what Coral Guard decided: empty for a veto, else the episode's first group
-  if(m.outcome==="vetoed"&&m.kind!=="unflagged")return"empty";const g=m.groups||[];
-  return g.includes("person")&&g.includes("vehicle")?"person+vehicle":g.find(x=>x in COL)||null}
 function vSkip(){if(V.cur)vLoad(V.cur.id,false)}
 async function vBack(){const id=V.hist.pop();if(!id)return;const m=await j(`${API}/${eid(id)}`);V.cur=m;V.pre=null;vRender();vPrefetch(m)}
 document.addEventListener("keydown",e=>{
   if(TAB!=="va"||$("#detail").classList.contains("on")||/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName||"")))return;
-  const k=e.key.toLowerCase(),t=TRUTH.find(x=>x[2]===k),det=V.cur&&vDetected(V.cur);
-  if(k==="y"){if(det)vAnswer(det)}else if(t)vAnswer(t[0]);else if(k==="s"||k==="arrowright")vSkip();else if(k==="arrowleft")vBack()});
+  const k=e.key.toLowerCase(),t=CLS.find(x=>x[2]===k);if(!V.cur)return;
+  if(k==="y"||k==="enter"){e.preventDefault();vConfirm()}else if(t)vToggle(t[0]);else if(k==="e"){V.touched=true;V.sel.clear();vButtons()}else if(k==="s"||k==="arrowright")vSkip();else if(k==="arrowleft")vBack()});
 
 function more(sel,got,limit,off,total){$(sel).hidden=got<limit||off>=total||total===0}      // no button when the list is empty, short, or fully loaded
 
