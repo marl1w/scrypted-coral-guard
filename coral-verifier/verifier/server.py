@@ -722,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("object expected")
                 except (json.JSONDecodeError, RecursionError, ValueError):
                     return self._send(400, {"error": "invalid JSON object"})
-                st, out = j.set_label(rest[0], obj.get("label"), obj.get("note"))
+                st, out = j.set_label(rest[0], obj.get("label"), obj.get("note"), obj.get("truth"))
                 return self._send(st, out)
             if len(rest) == 2 and method == "GET" and "." in rest[1]:
                 name, ext = rest[1].rsplit(".", 1)

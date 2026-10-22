@@ -17,7 +17,7 @@
 :root{--bg:var(--primary-background-color);--card:var(--card-background-color);--fg:var(--primary-text-color);--mut:var(--secondary-text-color);--line:var(--divider-color);
  --acc:var(--primary-color);--ok:var(--success-color);--bad:var(--error-color);--warn:var(--warning-color);--chip:var(--chip-background-color)}
 *{box-sizing:border-box}
-[hidden]{display:none!important}                       /* a class with its own display (.more, .follow) must never override the hidden attribute */
+[hidden]{display:none!important}                       /* a class with its own display (.more) must never override the hidden attribute */
 body{margin:0;font:14px/1.45 Roboto,Noto,"Helvetica Neue",system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg);-webkit-font-smoothing:antialiased}
 :focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}
 header{background:var(--app-header-background-color);color:var(--app-header-text-color);position:sticky;top:0;z-index:5;box-shadow:0 2px 4px rgba(0,0,0,.2)}
@@ -87,16 +87,15 @@ textarea{width:100%;min-height:56px;margin-top:10px}
 .menu label.date{display:grid;gap:2px;padding:0 14px 6px}
 .menu input[type=date]{min-height:40px}
 /* validate */
-.vq{font-size:28px;font-weight:500;margin:18px 0 4px;line-height:1.2}
 .vbtns{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
 .vbtns button{justify-content:center;padding:20px 10px;font-size:20px;border-radius:28px;min-height:64px}
-.vbtns .good{background:var(--dark-primary-color);color:#fff;border-color:var(--dark-primary-color);box-shadow:0 2px 4px rgba(0,0,0,.25)}
-.vbtns .wrong{background:transparent;color:var(--fg);border:2px solid var(--fg)}
 .vbtns button svg{width:26px;height:26px}
+.vbtns.four{grid-template-columns:repeat(4,1fr);gap:8px}
+.vbtns.four button{padding:14px 4px;font-size:18px;border:2px solid var(--fg);background:transparent;color:var(--fg)}
+.vbtns.four button.on{background:var(--dark-primary-color);border-color:var(--dark-primary-color);color:#fff}
+.vmeta{margin-top:10px}
 .vsub{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 12px}
 .prog{font-weight:500}
-.follow{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;z-index:6;box-shadow:0 -2px 6px rgba(0,0,0,.15)}
-.follow[hidden]{display:none}
 /* dashboard */
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:18px;overflow:hidden}
 .seg button{border:0;border-radius:0;padding:6px 14px}
@@ -109,14 +108,13 @@ textarea{width:100%;min-height:56px;margin-top:10px}
 .legend{display:flex;flex-wrap:wrap;gap:12px;margin:6px 0;font-size:12px;color:var(--mut)}
 svg.chart{width:100%;height:auto}
 svg.chart text{fill:var(--mut);font-size:9px}
-@media (max-width:520px){.vbtns button{font-size:17px}.vq{font-size:23px}.appbar{height:52px}}
+@media (max-width:520px){.vbtns button{font-size:17px}.appbar{height:52px}}
 .chip.auto{color:var(--acc)}
-/* phones: question, all three frames and Yes / No on one screen. Best full width on top, first and last side by side
+/* phones: all three frames and the four answers on one screen. Best full width on top, first and last side by side
    below; Skip, Previous and the note are desktop-only (the keyboard shortcuts stay) */
 @media (max-width:600px){
   #vaView .bar{padding:6px 12px}
   #vBody{padding:0 12px 92px}
-  .vq{font-size:21px;margin:8px 0 2px}
   #vaView .frames{grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
   #vaView .frames>div:nth-child(2){grid-column:1/3;order:-1}
   #vaView .frames .mut{font-size:11px}
@@ -124,6 +122,7 @@ svg.chart text{fill:var(--mut);font-size:9px}
     padding:8px 12px calc(8px + env(safe-area-inset-bottom))}
   .vbar .vbtns{margin:0;gap:10px}
   .vbar .vbtns button{padding:10px;min-height:54px;font-size:18px}
+  .vbar .vbtns.four{gap:6px}.vbar .vbtns.four button{padding:10px 2px;font-size:16px}
   .vbar .vsub,#vNote{display:none}
 }
 </style>
@@ -157,7 +156,6 @@ svg.chart text{fill:var(--mut);font-size:9px}
   <main id="suBody"></main>
 </div>
 
-<div id="follow" class="follow" hidden></div>
 <div id="detail"></div>
 <script>
 "use strict";
@@ -197,7 +195,7 @@ function motionText(m){const o=m&&m.motion;if(!o)return null;const n=(v,w)=>v?` 
   return `occupied ${fmtS(o.occupied_s)} \u00b7 motion ${fmtS(o.motion_s)}`+n(o.still_releases,"still release")+n(o.reraises,"re-raise")}
 function isMotionEv(t){return /^motion (released|re-raised)/.test(t||"")}
 function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.outcome||""),m.outcome||m.status));
-  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
+  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.truth)c.appendChild(E("span","chip","is: "+(m.truth==="vehicle"?"car":m.truth)));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
 function card(m){
   const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",dn(m)));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
   c.appendChild(E("div","mut",fmtT(m.start_ms)));if(m.motion&&m.motion.motion_s!==m.motion.occupied_s)c.appendChild(E("div","mut",motionText(m)));c.appendChild(chips(m));
@@ -233,7 +231,8 @@ async function openDetail(id){
     r.insertCell().textContent=f.name;r.insertCell().textContent=x.cls;r.insertCell().textContent=x.group;r.insertCell().textContent=x.score+(x.first_score!=null?" (was "+x.first_score+")":"");
     r.insertCell().textContent=[x.weak&&"weak",x.masked&&"masked",x.second_look,x.second_look_doubt&&"doubt"].filter(Boolean).join(", ")}})}}
 
-/* ---------- validate (annotation mode): ONE plain question per event, the server derives it (item.question) ---------- */
+/* ---------- validate (annotation mode): no question, just what the frames show; the server derives the label from it (truth) ---------- */
+const TRUTH=[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"],["empty","Empty","e"]];
 const V={cur:null,pre:null,hist:[],remaining:0,last:null};
 function vq(after){const p=fparams("va");if(after)p.set("after",after);return p}
 const vFetch=after=>j(`${API}/next?${vq(after)}`);
@@ -247,31 +246,22 @@ async function vLoad(after,labelled){
 function vRender(){
   const b=$("#vBody");b.replaceChildren();$("#vProg").textContent=V.remaining+" left";const m=V.cur;
   if(!m){b.appendChild(E("div","empty","Nothing left to review"));return}
-  const q=m.question||{text:"Is this a real event?",group:null,yes:"correct",no:"false_alarm"};
-  b.appendChild(E("div","vq",q.text));if((q.others||[]).length)b.appendChild(E("div","mut","Also: "+q.others.join(", ")));b.appendChild(E("div","mut",dn(m)+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));
-  const bar=E("div","vbar");                                                  // phones: fixed at the bottom, so question, frame and answer share one screen
-  const row=E("div","vbtns");row.appendChild(btn("good","Yes (Y)","check",()=>vAnswer(true)));row.appendChild(btn("wrong","No (N)","close",()=>vAnswer(false)));bar.appendChild(row);
+  b.appendChild(E("div","mut vmeta",dn(m)+" - "+fmtT(m.start_ms)+" - "+fmtD(m.start_ms,m.end_ms)));
+  const bar=E("div","vbar");                                                  // phones: fixed at the bottom, so frames and answer share one screen
+  const row=E("div","vbtns four");for(const[t,l,k]of TRUTH){const x=btn(t===m.truth?"on":"",l,null,()=>vAnswer(t));x.title="Key "+k.toUpperCase();row.appendChild(x)}bar.appendChild(row);
   const sub=E("div","vsub");sub.appendChild(btn("","Skip (S)","next",vSkip));sub.appendChild(btn("","Previous","prev",vBack));bar.appendChild(sub);b.appendChild(bar);
   const shown=framesOf(m).slice(0,3);
-  const fr=E("div","frames");for(const f of shown){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,q.group||"none"));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
+  const fr=E("div","frames");for(const f of shown){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,null));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
   const note=E("textarea");note.id="vNote";note.placeholder="Note (optional)";note.value=m.label_note||"";b.appendChild(note)}
-async function vAnswer(yes){
-  const m=V.cur;if(!m)return;const q=m.question,n=$("#vNote");const label=yes?q.yes:q.no;
-  await post(`${API}/${eid(m.id)}/label`,{label,note:n&&n.value?n.value:null});
-  V.hist.push(m.id);V.last={id:m.id,q,yes,note:n&&n.value?n.value:null};followUp();await vLoad(m.id,!m.label)}
-function followUp(){                                                           // only after a No: "What is it?" refines the label of the event just answered
-  const f=$("#follow");f.replaceChildren();const l=V.last;if(!l||l.yes){f.hidden=true;return}
-  f.hidden=false;const vb=document.querySelector("#vaView .vbar");                 // phones: above the fixed answer bar, not over it
-  f.style.bottom=vb&&getComputedStyle(vb).position==="fixed"?vb.offsetHeight+"px":"";f.appendChild(E("span","mut","What is it?"));
-  for(const c of["person","vehicle","animal","nothing","other"]){const b=E("button","",c);b.onclick=async()=>{
-    const wrong=["person","vehicle","animal"].includes(c)&&c!==l.q.group;
-    await post(`${API}/${eid(l.id)}/label`,{label:wrong?"wrong_class":l.q.no,note:("is: "+c+(l.note?" - "+l.note:""))});f.hidden=true};f.appendChild(b)}
-  const x=E("button","","\u2715");x.onclick=()=>{f.hidden=true};f.appendChild(x)}
+async function vAnswer(truth){
+  const m=V.cur;if(!m)return;const n=$("#vNote");
+  await post(`${API}/${eid(m.id)}/label`,{truth,note:n&&n.value?n.value:null});
+  V.hist.push(m.id);await vLoad(m.id,!m.label)}
 function vSkip(){if(V.cur)vLoad(V.cur.id,false)}
 async function vBack(){const id=V.hist.pop();if(!id)return;const m=await j(`${API}/${eid(id)}`);V.cur=m;V.pre=null;vRender();vPrefetch(m)}
 document.addEventListener("keydown",e=>{
   if(TAB!=="va"||$("#detail").classList.contains("on")||/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName||"")))return;
-  const k=e.key.toLowerCase();if(k==="y")vAnswer(true);else if(k==="n")vAnswer(false);else if(k==="s"||k==="arrowright")vSkip();else if(k==="arrowleft")vBack()});
+  const k=e.key.toLowerCase(),t=TRUTH.find(x=>x[2]===k);if(t)vAnswer(t[0]);else if(k==="s"||k==="arrowright")vSkip();else if(k==="arrowleft")vBack()});
 
 /* ---------- reviewed tab ---------- */
 const R={do:{off:0}};

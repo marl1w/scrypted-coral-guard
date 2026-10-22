@@ -358,6 +358,28 @@ def test_question_mapping_per_outcome_kind_and_group():
     assert q({"outcome": "vetoed", "kind": "unflagged", "groups": ["person"]})["key"] == "missed_person"                                   # an unflagged event is never "really empty"
 
 
+def test_truth_answer_derives_the_label_from_the_episode():
+    f = Journal.label_for
+    person = {"outcome": "confirmed", "kind": "camera", "groups": ["person"]}
+    assert [f(person, t) for t in ("person", "vehicle", "animal", "empty")] == ["correct", "wrong_class", "wrong_class", "false_alarm"]
+    veto = {"outcome": "vetoed", "kind": "camera", "groups": ["person"], "inconclusive": True}
+    assert [f(veto, t) for t in ("person", "vehicle", "animal", "empty")] == ["missed", "missed", "missed", "correct"]
+    unflagged = {"outcome": "vetoed", "kind": "unflagged", "groups": ["animal", "person"]}
+    assert [f(unflagged, t) for t in ("person", "vehicle", "animal", "empty")] == ["correct", "wrong_class", "correct", "false_alarm"]
+    assert f({"outcome": "aborted", "kind": "camera", "groups": []}, "vehicle") == "correct"
+
+
+def test_truth_label_is_stored_and_a_plain_label_clears_it(tmp_path):
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    ep(j, "a", "tru-00001", "start", 1000, groups=["person"]); ep(j, "a", "tru-00001", "end", 2000, outcome="confirmed")
+    assert j.set_label("tru-00001", None, None, "empty") == (200, {"id": "tru-00001", "label": "false_alarm", "label_note": None, "truth": "empty"})
+    assert j.set_label("tru-00001", None, None, "ghost")[0] == 400 and j.set_label("tru-00001", None, None)[0] == 400
+    m = Journal(str(tmp_path), clock=clk).get("tru-00001")
+    assert (m["label"], m["truth"], m["labels"][-1]["truth"]) == ("false_alarm", "empty", "empty")
+    j.set_label("tru-00001", "correct", None)
+    assert "truth" not in j.get("tru-00001") and j.get("tru-00001")["label"] == "correct"
+
+
 def test_next_unlabelled_oldest_first_after_filters_and_remaining(tmp_path):
     clk = Clock(); j = Journal(str(tmp_path), clock=clk)
     mk(j, clk, "nx-000001", "a", 1000, "confirmed", ["person"])
@@ -432,13 +454,15 @@ def test_http_next_summary_filters_and_ui_markup():
         assert b.req("GET", "/v1/journal/next?camera=b&outcome=vetoed")[1]["remaining"] == 1 and b.req("GET", "/v1/journal/next?after=../x")[0] == 400
         assert b.req("GET", "/v1/journal/web-q-0001")[1]["question"]["no"] == "missed"
         b.req("POST", "/v1/journal/web-q-0000/label", json.dumps({"label": "correct"}).encode(), JS)
+        assert b.req("POST", "/v1/journal/web-q-0000/label", json.dumps({"truth": "ghost"}).encode(), JS)[0] == 400
+        assert b.req("GET", "/v1/journal/web-q-0000")[1]["label"] == "correct"
         assert [m["id"] for m in b.req("GET", "/v1/journal?labelled=false&status=closed")[1]["items"]] == ["web-q-0001"]
         assert b.req("GET", "/v1/journal?labelled=maybe")[0] == 400 and b.req("GET", "/v1/journal?status=weird")[0] == 400
         st, sm = b.req("GET", "/v1/journal/summary?from=0&tz=120&camera=a")
         assert st == 200 and sm["totals"]["events"] == 1 and sm["totals"]["precision"] == 1.0 and sm["cameras"][0]["camera"] == "a" and sm["days"]
         assert b.req("GET", "/v1/journal/summary?tz=5000")[0] == 400 and b.req("GET", "/v1/journal/summary?from=nan")[0] == 400
         st, html, ct = raw(b, "GET", "/")
-        for needle in (b"Validate", b"Reviewed", b"Yes (Y)", b"No (N)", b"What is it?", b"Review events to see accuracy", b"next?"):
+        for needle in (b"Validate", b"Reviewed", b'["person","Person","p"]', b'["vehicle","Car","c"]', b'["animal","Animal","a"]', b'["empty","Empty","e"]', b"{truth,note", b"Review events to see accuracy", b"next?"):
             assert needle in html, needle
         assert b"innerHTML" not in html and b"document.write" not in html and b"eval(" not in html                  # untrusted text only through textContent
     finally:

@@ -13,6 +13,7 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
 MODES, KINDS = ("shadow", "gate"), ("camera", "unflagged")
 OUTCOMES = ("confirmed", "vetoed", "aborted", "released", "parked")          # client-settable; the service itself adds "stale"
 LABELS = ("correct", "false_alarm", "missed", "wrong_class")
+TRUTHS = ("person", "vehicle", "animal", "empty")                           # what the frames really show (Validate's four buttons)
 ACTIONS = ("start", "update", "end")
 GROUPS = ("person", "vehicle", "animal")
 
@@ -59,6 +60,18 @@ class Journal:
         if g in ("person", "animal"):
             return {"key": g + "_present", "text": "Is there a person?" if g == "person" else "Is there an animal?", "group": g, "others": others, "yes": "correct", "no": "false_alarm"}
         return {"key": "event", "text": "Is this a real event?", "group": None, "others": [], "yes": "correct", "no": "false_alarm"}
+
+    @staticmethod
+    def label_for(m, truth):
+        """The label implied by what the frames really show (`truth`, one of TRUTHS), whatever the camera and the model said.
+        A vetoed camera episode is right only when empty (anything there was missed); every other episode is a false alarm when empty,
+        correct when the truth is one of its groups (or it has none), else the wrong class."""
+        if m.get("outcome") == "vetoed" and m.get("kind") != "unflagged":
+            return "correct" if truth == "empty" else "missed"
+        if truth == "empty":
+            return "false_alarm"
+        groups = [g for g in (m.get("groups") or []) if g in GROUPS]
+        return "correct" if not groups or truth in groups else "wrong_class"
 
     @staticmethod
     def valid_id(eid):
@@ -723,11 +736,13 @@ class Journal:
             p = os.path.join(st["dir"], f"{name}.{ext}")
         return p if os.path.isfile(p) else None
 
-    def set_label(self, eid, label, note):
-        return self._call(self._set_label, eid, label, note) if self.enabled else (503, {"error": "journal unavailable"})
+    def set_label(self, eid, label, note, truth=None):
+        return self._call(self._set_label, eid, label, note, truth) if self.enabled else (503, {"error": "journal unavailable"})
 
-    def _set_label(self, eid, label, note):
-        if label not in LABELS:
+    def _set_label(self, eid, label, note, truth=None):
+        if truth is not None and truth not in TRUTHS:
+            return 400, {"error": "truth must be " + "|".join(TRUTHS)}
+        if truth is None and label not in LABELS:
             return 400, {"error": "label must be " + "|".join(LABELS)}
         try:
             if note is not None:
@@ -739,10 +754,15 @@ class Journal:
             if st is None:
                 return 404, {"error": "unknown episode"}
             m = st["meta"]
+            if truth is not None:
+                label = self.label_for(m, truth)                              # the server derives it: the client only says what is there
+                m["truth"] = truth
+            else:
+                m.pop("truth", None)                                          # a plain label says nothing about what was there
             m["label"], m["label_note"] = label, note
             m.pop("auto", None)                                               # the user's own answer replaces an automatic one
             m.pop("auto_pending", None)
-            m["labels"] = (m["labels"] + [{"label": label, "note": note, "t_ms": int(self.clock())}])[-20:]
+            m["labels"] = (m["labels"] + [{"label": label, "note": note, "t_ms": int(self.clock()), **({"truth": truth} if truth else {})}])[-20:]
             try:
                 self._save_meta(st)
             except OSError:
@@ -754,7 +774,7 @@ class Journal:
                     self.on_label(dict(m))                                    # known look-alikes (the server only queues it)
                 except Exception:
                     log.exception("on_label failed")
-            return 200, {"id": eid, "label": label, "label_note": note}
+            return 200, {"id": eid, "label": label, "label_note": note, "truth": truth}
 
     def summary(self, t_from=None, t_to=None, camera=None, tz_offset_min=0, group=None):
         """Dashboard numbers. Period (episode start, epoch ms) and camera filters. Returns the per camera x group `rows` (counts by outcome and label), the

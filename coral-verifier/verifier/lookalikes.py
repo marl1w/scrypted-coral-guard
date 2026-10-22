@@ -6,8 +6,14 @@ group) is kept with its look (shape.signature): a statue, a plant, a coat on a c
 it is marked `lookalike` and never reaches the trackers. A real person in front of it changes the outline, so the match fails and the
 person counts. Only the user's labels teach it (never the service's own verdicts), and relabelling the episode removes its entry.
 Vehicles are left out: a vehicle false alarm is often a parked car, which must stay visible.
+
+Known places (0.3.36): an object that moves in the wind (laundry on a rack, a plant) never looks the same twice (0.2-0.8 against its own
+earlier looks), so the look match alone never catches it. Its place is kept too: a detection at a known place that does not match the look
+still counts only when someone ARRIVED there, i.e. a confident detection of the same group outside every known place, next to this one,
+within the last LOOKALIKE["entry_s"]. The laundry is born at its place and stays there; a person walks in from elsewhere.
 """
 import base64
+from collections import deque
 
 import numpy as np
 
@@ -32,6 +38,25 @@ class Lookalikes:
     def __init__(self):
         self.items = []
         self.dirty = False
+        self.seen = deque(maxlen=64)       # (t_ms, group, box) of confident detections outside every known place (not saved)
+
+    def saw(self, t, group, box):
+        """A confident detection outside every known place of its group: someone who may be arriving at one."""
+        self.seen.append((t, group, tuple(box)))
+
+    def arrived(self, t, group, places):
+        """True when a detection of `group` was seen next to one of `places` (each box grown by LOOKALIKE["near"] of its size on every side)
+        within the last LOOKALIKE["entry_s"]."""
+        lim = LOOKALIKE["entry_s"] * 1000.0
+        while self.seen and t - self.seen[0][0] > lim:
+            self.seen.popleft()
+        for e in places:
+            x0, y0, x1, y1 = e["box"]
+            mx, my = (x1 - x0) * LOOKALIKE["near"], (y1 - y0) * LOOKALIKE["near"]
+            if any(g == group and 0 <= t - ts <= lim and b[0] < x1 + mx and b[2] > x0 - mx and b[1] < y1 + my and b[3] > y0 - my
+                   for ts, g, b in self.seen):
+                return True
+        return False
 
     def add(self, eid, group, box, sig):
         if group not in GROUPS or sig is None:

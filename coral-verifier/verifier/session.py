@@ -734,19 +734,32 @@ class Session:
             out.append(d)
         return out
 
-    def _drop_lookalikes(self, detections, gray):
-        """Person/animal boxes that match a known look-alike (lookalikes.py) are marked `lookalike` (the look match) and left out."""
+    def _drop_lookalikes(self, t, detections, gray):
+        """Person/animal boxes that match a known look-alike (lookalikes.py) are marked `lookalike` (the look match) and left out; at a known
+        place without a look match they are marked `lookalike_place` and left out too, unless someone was seen arriving there."""
         la = self.lookalikes
-        if gray is None or la is None or not la.items or not self.cfg.lookalikes:
+        if la is None or not la.items or not self.cfg.lookalikes:
             return detections
-        out = []
-        for d in detections:
+        start = {"person": self.cfg.start_thr, "animal": self.cfg.animal_start_thr}
+        at = []
+        for d in detections:                                                  # arrivals first: someone walking in on this very frame counts
             g = "person" if d["cls"] == "person" else ("animal" if d["cls"] in ANIMALS else None)
-            m = la.match(g, tuple(d["box"]), gray) if g is not None else None
-            if m is not None:
-                d["lookalike"] = round(m, 3)
-                self.lookalike_hits += 1
-                continue
+            places = la.near(g, tuple(d["box"])) if g is not None else []
+            if g is not None and not places and d["score"] >= start[g] and not d.get("second_look_doubt"):
+                la.saw(t, g, d["box"])
+            at.append((d, g, places))
+        out = []
+        for d, g, places in at:
+            if places:
+                m = la.match(g, tuple(d["box"]), gray) if gray is not None else None
+                if m is not None:
+                    d["lookalike"] = round(m, 3)
+                    self.lookalike_hits += 1
+                    continue
+                if not la.arrived(t, g, places):
+                    d["lookalike_place"] = True
+                    self.lookalike_hits += 1
+                    continue
             out.append(d)
         return out
 
@@ -763,7 +776,7 @@ class Session:
             self.wall = wall_now
         detections = person_animal_overlap(detections)
         detections = self._drop_in_vehicle(t, detections)
-        detections = self._drop_lookalikes(detections, gray)
+        detections = self._drop_lookalikes(t, detections, gray)
         pdets = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person"]
         vdets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in VEHICLES and not d.get("weak") and d["score"] >= (DETECT_THR["vehicle"][d["cls"]] if d["cls"] == "bicycle" else self.cfg.vehicle_thr)]
         adets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in ANIMALS and not d.get("same_object") and d["score"] >= self.cfg.animal_cont_thr]

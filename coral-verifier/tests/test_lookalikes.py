@@ -60,9 +60,48 @@ def test_the_detection_is_marked_for_the_journal():
     assert d["lookalike"] >= 0.85
 
 
-def test_a_person_in_front_of_it_counts():
-    sn = run(session(), 4, person_in_front=True)
+def test_a_person_who_walks_in_front_of_it_counts():
+    s = session()
+    s.update(T0, [person((0.3, 0.3, 0.45, 0.8))], gray=scene(seed=1))                # arriving from the left
+    for i in range(1, 5):
+        s.update(T0 + i * 1000, [person()], gray=scene(seed=i, person_in_front=True))
+    sn = s.snapshot()
     assert sn["person"]["present"] and sn["session"]["lookalikes"] == 0
+
+
+def test_a_different_look_at_the_place_without_an_arrival_never_confirms():
+    """Laundry in the wind: never the same look twice, never seen arriving."""
+    sn = run(session(), 6, person_in_front=True)
+    assert sn["person"]["state"] == "idle" and sn["session"]["lookalikes"] == 6
+    d = person()
+    session().update(T0, [d], gray=scene(seed=3, person_in_front=True))
+    assert d["lookalike_place"] is True and "lookalike" not in d
+
+
+def test_an_arrival_is_too_old_after_entry_s_and_must_be_the_same_group_and_confident():
+    s = session()
+    s.update(T0, [person((0.3, 0.3, 0.45, 0.8))], gray=scene(seed=1))
+    d = person()
+    s.update(T0 + 16000, [d], gray=scene(seed=2, person_in_front=True))
+    assert d.get("lookalike_place") is True                                          # 16 s later: no longer an arrival
+    for arrival in ({"cls": "dog", "score": 0.9, "box": [0.3, 0.3, 0.45, 0.8]}, person((0.3, 0.3, 0.45, 0.8), score=0.5)):
+        s = session()
+        s.update(T0, [arrival], gray=scene(seed=1))
+        d = person()
+        s.update(T0 + 1000, [d], gray=scene(seed=2, person_in_front=True))
+        assert d.get("lookalike_place") is True                                      # a dog or a weak box is not a person arriving
+    s = session()
+    s.update(T0, [person((0.85, 0.3, 0.99, 0.8))], gray=scene(seed=1))               # confident, but far from the place
+    d = person()
+    s.update(T0 + 1000, [d], gray=scene(seed=2, person_in_front=True))
+    assert d.get("lookalike_place") is True
+
+
+def test_the_place_rule_needs_no_frame():
+    s = session()
+    for i in range(4):
+        s.update(T0 + i * 1000, [person()])
+    assert s.snapshot()["person"]["state"] == "idle"
 
 
 def test_elsewhere_or_other_group_counts():
@@ -74,12 +113,8 @@ def test_elsewhere_or_other_group_counts():
     assert known().match("animal", BOX, scene()) is None
 
 
-def test_switched_off_or_no_frame_changes_nothing():
+def test_switched_off_changes_nothing():
     assert run(session(lookalikes=False), 4)["person"]["present"]
-    s = session()
-    for i in range(4):
-        s.update(T0 + i * 1000, [person()])
-    assert s.snapshot()["person"]["present"]
 
 
 def test_relabel_removes_and_export_restores():

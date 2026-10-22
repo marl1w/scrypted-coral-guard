@@ -109,6 +109,8 @@ LOOKALIKE = {
     "iou": 0.5,               # a detection is at a look-alike's place when it overlaps its box this much
     "thr": 0.85,              # look match that makes it the same object (stricter than the vehicle shape hold)
     "max": 64,                # per camera; the oldest go first
+    "entry_s": 15.0,          # known places (0.3.36): a detection at one counts only if someone was seen arriving this recently
+    "near": 1.0,              # "next to a place": within this many box sizes of it on every side
 }
 # Known parking spots (0.3.31): spot matching and learning constants (spots.py).
 SPOTS = {
