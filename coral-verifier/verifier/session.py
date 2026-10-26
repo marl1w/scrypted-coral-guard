@@ -29,6 +29,7 @@ GATE = 1.5            # centre-distance gate (in units of the track's longest bo
 MATCH_IOU_VEHICLE = 0.3
 STILL_IOU = 0.7
 PARKED_BREAK_IOU = 0.5
+SPLIT_LEFT = 0.5         # a parked car has left its place when less than this share of its parked box lies inside the box that split from it
 MAX_TRACK_DETS = 12
 MAX_TRACKS = 32          # per tracker: bounds memory and the O(n*m) matching on pathological scenes (never reached by real ones)
 TICK_MERGE_MS = 750
@@ -420,7 +421,7 @@ class FastConfirm:
 
 
 class _VTrack:
-    __slots__ = ("id", "cls", "box", "last", "born_t", "anchor", "stable_since", "parked", "hist", "moving", "ref", "covered_since")
+    __slots__ = ("id", "cls", "box", "last", "born_t", "anchor", "stable_since", "parked", "hist", "moving", "ref", "covered_since", "split")
 
 
 class VehicleTracker:
@@ -449,22 +450,34 @@ class VehicleTracker:
     def step(self, t, dets, gray=None, others=(), weak=()):
         """dets: [(cls, score, box)]. gray: the frame reduced by shape.gray_small (None = no shape hold for this frame). others: boxes of
         every other detection of this frame (people, animals, weak vehicles), which can cover a vehicle. weak: (cls, score, box) of the
-        weak vehicles (WEAK_VEHICLE_THR to vehicle_thr), which only keep a vehicle parked in a trusted spot."""
+        weak vehicles (WEAK_VEHICLE_THR to vehicle_thr), which only keep a vehicle parked in a trusted spot.
+
+        A parked track never takes a box that would end its parking (IoU with its parked box <= PARKED_BREAK_IOU, e.g. one box the detector
+        drew over two parked cars): if a parked track with no box of its own overlaps a new box (or lies mostly inside it), the new box starts
+        a SPLIT track tied to it, so one odd frame cannot make a parked car "moving". While tied, a split track is never moving, never parks
+        and learns no spot or look. The tie ends when the parked track gets no box and less than SPLIT_LEFT of its parked box lies inside
+        the split box (the car left its place, ~2 s later than before 0.3.42; a box over two cars always holds the car under it): the parked
+        track ends, the split one goes on as that car. Both seen in one frame are two vehicles: the tie ends, the parked track stays."""
         c = self.cfg
         trks = self.tracks = [tr for tr in self.tracks if self._alive(tr, t)]
         used = set()
         matched = {}
-        for i, j in greedy_iou([tr.box for tr in trks], [d[2] for d in dets], MATCH_IOU_VEHICLE):
+        pairs = []
+        for i, tr in enumerate(trks):
+            for j, d in enumerate(dets):
+                v = iou(tr.box, d[2])
+                if v >= MATCH_IOU_VEHICLE and not (tr.parked and iou(d[2], tr.anchor) <= PARKED_BREAK_IOU):
+                    pairs.append((-v, i, j))
+        for i, j in _greedy(pairs):
             tr = trks[i]; d = dets[j]; used.add(j); matched[id(tr)] = j
             tr.cls, tr.box, tr.last = d[0], d[2], t
             tr.moving = self._moved(tr, t, d[2])
-            thr = PARKED_BREAK_IOU if tr.parked else STILL_IOU
-            if iou(d[2], tr.anchor) > thr:
-                if not tr.parked and (t - tr.stable_since) > c.parked_after_s * 1000.0:
+            if iou(d[2], tr.anchor) > (PARKED_BREAK_IOU if tr.parked else STILL_IOU):
+                if not tr.parked and tr.split is None and (t - tr.stable_since) > c.parked_after_s * 1000.0:
                     tr.parked = True
                     self._parked_now(tr, t, gray)
             else:
-                tr.anchor, tr.stable_since, tr.parked = d[2], t, False
+                tr.anchor, tr.stable_since = d[2], t
         for j, d in enumerate(dets):
             if j in used:
                 continue
@@ -472,9 +485,12 @@ class VehicleTracker:
             tr.cls, tr.box, tr.anchor, tr.last, tr.born_t, tr.stable_since, tr.parked = d[0], d[2], d[2], t, t, t, False
             tr.hist, tr.moving = [(t, d[2])], False                     # a new track is "still" (unknown) until it actually moves or parks
             tr.ref, tr.covered_since = None, None
+            tr.split = max((p for p in trks if p.parked and id(p) not in matched                 # a parked track with no box of its own that this
+                            and (iou(p.box, d[2]) >= MATCH_IOU_VEHICLE or _inside(p.box, d[2]) >= SPLIT_LEFT)),    # box overlaps or holds
+                           key=lambda p: _inside(p.box, d[2]), default=None)
             matched[id(tr)] = j
             spots = self._spots()
-            if spots is not None and gray is not None:
+            if spots is not None and gray is not None and tr.split is None:
                 sp = spots.at(d[2])
                 if sp is not None and sp.matches(SH.signature(gray, d[2]), c.shape_thr):
                     tr.parked = True                                     # a known car back in its trusted spot: parked at once
@@ -482,6 +498,14 @@ class VehicleTracker:
                     spots.seen(sp, t, f"{int(tr.born_t)}:{tr.id}")
                     self.shape_stats["spot_parked"] += 1
             trks.append(tr)
+        for tr in [tr for tr in trks if tr.split is not None]:
+            p, seen = tr.split, id(tr) in matched
+            if seen and p in trks and id(p) not in matched and _inside(p.anchor, tr.box) < SPLIT_LEFT:
+                trks.remove(p)                                           # the parked car left its place: its track ends, this one is that car
+            if p not in trks or (seen and id(p) in matched):
+                tr.split = None                                          # gone, or both seen at once: two vehicles, an ordinary track
+            else:
+                tr.moving = False                                        # still tied to a parked car: a box over it never moves
         spots = self._spots()
         if spots is not None and weak:
             for tr in trks:
@@ -510,7 +534,7 @@ class VehicleTracker:
         keep = []
         for tr in trks:
             j = matched.get(id(tr))
-            if tr.moving:                                                                   # a moving vehicle has no fixed look
+            if tr.moving or tr.split is not None:                                           # a moving vehicle has no fixed look, a split box none of its own
                 tr.ref = tr.covered_since = None
                 keep.append(tr)
                 continue

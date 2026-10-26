@@ -1,6 +1,6 @@
 {
   "name": "scrypted-coral-guard",
-  "version": "0.3.41",
+  "version": "0.3.42",
   "description": "Scrypted plugin that verifies a camera's motion with a Google Coral (Edge TPU) person/vehicle detector, gates it, and holds it while someone is still there. Works only with the Coral verifier service.",
   "license": "Apache-2.0",
   "scripts": {
