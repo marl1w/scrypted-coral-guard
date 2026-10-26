@@ -17,6 +17,7 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 import math, re, threading, time
 
 import shape as SH
+from geom import iou, inside
 import spots as SP
 import lookalikes as LA
 
@@ -195,22 +196,6 @@ def bound_t(t, now_ms):
 def secs(a_ms, b_ms):
     """Whole seconds between two frame times (rounded, so +-0.5 s sender jitter does not change a tick count)."""
     return math.floor((a_ms - b_ms) / 1000.0 + 0.5)
-
-
-def iou(a, b):
-    ix = min(a[2], b[2]) - max(a[0], b[0]); iy = min(a[3], b[3]) - max(a[1], b[1])
-    if ix <= 0 or iy <= 0:
-        return 0.0
-    i = ix * iy
-    u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i
-    return i / u if u > 0 else 0.0
-
-
-def _inside(a, b):
-    """Share of box a lying inside box b."""
-    iw, ih = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
-    aa = (a[2] - a[0]) * (a[3] - a[1])
-    return iw * ih / aa if iw > 0 and ih > 0 and aa > 0 else 0.0
 
 
 def _cd(tb, db):
@@ -486,8 +471,8 @@ class VehicleTracker:
             tr.hist, tr.moving = [(t, d[2])], False                     # a new track is "still" (unknown) until it actually moves or parks
             tr.ref, tr.covered_since = None, None
             tr.split = max((p for p in trks if p.parked and id(p) not in matched                 # a parked track with no box of its own that this
-                            and (iou(p.box, d[2]) >= MATCH_IOU_VEHICLE or _inside(p.box, d[2]) >= SPLIT_LEFT)),    # box overlaps or holds
-                           key=lambda p: _inside(p.box, d[2]), default=None)
+                            and (iou(p.box, d[2]) >= MATCH_IOU_VEHICLE or inside(p.box, d[2]) >= SPLIT_LEFT)),    # box overlaps or holds
+                           key=lambda p: inside(p.box, d[2]), default=None)
             matched[id(tr)] = j
             spots = self._spots()
             if spots is not None and gray is not None and tr.split is None:
@@ -500,7 +485,7 @@ class VehicleTracker:
             trks.append(tr)
         for tr in [tr for tr in trks if tr.split is not None]:
             p, seen = tr.split, id(tr) in matched
-            if seen and p in trks and id(p) not in matched and _inside(p.anchor, tr.box) < SPLIT_LEFT:
+            if seen and p in trks and id(p) not in matched and inside(p.anchor, tr.box) < SPLIT_LEFT:
                 trks.remove(p)                                           # the parked car left its place: its track ends, this one is that car
             if p not in trks or (seen and id(p) in matched):
                 tr.split = None                                          # gone, or both seen at once: two vehicles, an ordinary track
@@ -712,7 +697,7 @@ class Session:
         self.fast = FastConfirm()
         self._force = None            # (tick time, box, how): a fast confirmation re-applied whenever that tick is re-stepped (same-tick merge)
         self.confirmed_by = None      # "fast_move" | "fast_claim" | "ticks" for the current confirmation, None while not confirmed
-        self.would_b = None           # rule B (logged only): frame time at which camera-AI person + one non-still box >= FAST_B_THR would have confirmed
+        self.would_b = None           # rule B (live since 0.3.18; diagnostic): frame time at which its condition (camera-AI person + one non-still box >= FAST_B_THR) first held
 
     def _apply_force(self):
         """Confirm the tentative tick track under the fast-confirmed box (same tick only). Returns True when a track was confirmed now."""
@@ -751,7 +736,7 @@ class Session:
         out = []
         for d in detections:
             if d["cls"] == "person":
-                if movers and any(_inside(d["box"], vb) >= PERSON_IN_VEHICLE for vb in movers):
+                if movers and any(inside(d["box"], vb) >= PERSON_IN_VEHICLE for vb in movers):
                     d["in_vehicle"] = True
                     continue
                 d.pop("in_vehicle", None)

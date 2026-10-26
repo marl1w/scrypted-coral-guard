@@ -13,7 +13,7 @@ import session as S
 import detect as D
 import shape as SH
 import secondlook as SL
-from journal import Journal
+from journal import Journal, GROUPS
 from coral import CoralManager, Job
 
 def _read_version():
@@ -41,6 +41,14 @@ MAX_JSON_BYTES = 64 * 1024
 RATE_PER_S = 8      # sustained frames/s per camera: a 6 fps confirm burst (0.3.12) plus the normal pacing fits
 RATE_BURST = 20     # pre-roll (up to 6 frames) plus a 1.5 s burst at 6 fps, with margin
 REPLY_MIN_SCORE = 0.2          # detections below this are omitted from replies unless verbose=1
+JOB_WAIT_S = 10.0
+IDLE_S = 15.0                  # keep-alive connection idle limit
+FIRST_BYTE_S = 2.0             # a NEW connection must start its request within this (idle sockets are cut)
+RESERVED_HEALTH_SLOTS = 4      # connections beyond max_connections that only GET /v1/health may use
+CAM_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+MODEL_FILES = {320: "yolov9-s-relu6-best_320_int8_edgetpu.tflite", 512: "yolov9-s-relu6-tpumax_512_int8_edgetpu.tflite"}
+TRACKER_KEYS = ("start_thr", "cont_thr", "confirm_n", "confirm_m", "hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s", "vehicle_thr", "animal_start_thr", "animal_cont_thr", "zoom_out", "second_look", "name", "fast_confirm", "fast_n", "fast_window_ms", "fast_move")
+log = logging.getLogger("verifier")
 
 
 def marks_back(dets, live):
@@ -52,14 +60,6 @@ def marks_back(dets, live):
             for k in ("lookalike", "lookalike_place", "in_vehicle"):
                 if k in v:
                     d[k] = v[k]
-JOB_WAIT_S = 10.0
-IDLE_S = 15.0                  # keep-alive connection idle limit
-FIRST_BYTE_S = 2.0             # a NEW connection must start its request within this (idle sockets are cut)
-RESERVED_HEALTH_SLOTS = 4      # connections beyond max_connections that only GET /v1/health may use
-CAM_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
-MODEL_FILES = {320: "yolov9-s-relu6-best_320_int8_edgetpu.tflite", 512: "yolov9-s-relu6-tpumax_512_int8_edgetpu.tflite"}
-TRACKER_KEYS = ("start_thr", "cont_thr", "confirm_n", "confirm_m", "hold_s", "still_s", "still_hold_s", "max_hold_s", "parked_after_s", "session_ttl_s", "vehicle_thr", "animal_start_thr", "animal_cont_thr", "zoom_out", "second_look", "name", "fast_confirm", "fast_n", "fast_window_ms", "fast_move")
-log = logging.getLogger("verifier")
 
 
 class OptionsError(Exception):
@@ -716,7 +716,7 @@ class Handler(BaseHTTPRequestHandler):
                 if lab not in (None, "", "true", "false"):
                     raise ValueError("labelled must be true or false")
                 grp = one("group")
-                if grp not in (None, "", "person", "vehicle", "animal"):
+                if grp not in (None, "", *GROUPS):
                     raise ValueError("group must be person, vehicle or animal")
                 st_ = one("status")
                 if st_ not in (None, "", "ongoing", "closed"):
@@ -728,7 +728,7 @@ class Handler(BaseHTTPRequestHandler):
                 if after and not Journal.valid_id(after):
                     raise ValueError("bad after id")
                 grp = one("group")
-                if grp not in (None, "", "person", "vehicle", "animal"):
+                if grp not in (None, "", *GROUPS):
                     raise ValueError("group must be person, vehicle or animal")
                 return self._send(200, j.next_unlabelled(after or None, one("camera") or None, one("outcome") or None, grp or None, num("from"), num("to")))
             if rest == ["summary"] and method == "GET":
@@ -736,7 +736,7 @@ class Handler(BaseHTTPRequestHandler):
                 if tz is not None and abs(tz) > 840:
                     raise ValueError("tz must be minutes east of UTC within +-840")
                 return self._send(200, j.summary(num("from"), num("to"), one("camera") or None, 0 if tz is None else int(tz),
-                                                  one("group") if one("group") in ("person", "vehicle", "animal") else None))
+                                                  one("group") if one("group") in GROUPS else None))
             if len(rest) == 1 and method == "GET":
                 m = j.get(rest[0])
                 return self._send(200, m) if m else self._send(404, {"error": "unknown episode"})

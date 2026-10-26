@@ -191,8 +191,6 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     readonly status = new CameraStatus();
     private lastPresent = false;
     private streamUp = false;
-    private streamGpu = false;
-    private lastState: StatusState | undefined;
     private tickTimer: NodeJS.Timeout;
     private frames: FrameStream | undefined;
     /** generation of the ffmpeg process: its frame and exit callbacks check it. */
@@ -208,9 +206,6 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private hwFallbacks = 0;
     private lastEpisodePostAt = 0;
     private gate: PixelGate | undefined;
-    private gateBusy = false;
-    private lastGatePost = 0;
-    private lastUnflagged = 0;
     private nextHeartbeatAt = 0;
     private heartbeatBusy = false;
     private hbTicks: boolean[] = [];
@@ -261,8 +256,6 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** the camera has no MotionSensor of its own: motion comes only from Coral Guard */
     readonly sensorless: boolean;
     private readonly ifaces: string[] | undefined;
-    /** the camera's own ObjectDetector class names (getObjectTypes), once known. */
-    private cameraClasses: string[] | undefined;
     /** verified groups already announced in the current confirmation, and when the last verified event went out. */
     private emittedGroups: string[] = [];
     private lastDetectionAt = 0;
@@ -301,10 +294,6 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 return;
             this.onObjectsDetected(data);
         });
-        if (this.ownsDetector)
-            Promise.resolve().then(() => (this.mixinDevice as any)?.getObjectTypes?.()).then((t: ObjectDetectionTypes | undefined) => {
-                if (Array.isArray(t?.classes)) this.cameraClasses = t!.classes!.map(c => String(c));
-            }, () => { /* keep the default names */ });
         this.tickTimer = setInterval(() => this.onTick(), 1000);
         plugin.register(this);
         plugin.ensurePresence(this.id, this.name || this.id, this.detectGroups());
@@ -403,7 +392,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (!p?.present) this.lastPersonBox = personDet?.box;
         if (enabled.includes('vehicle'))
             for (const v of r.vehicle?.tracks || [])
-                items.push({ group: 'vehicle', cls: v.cls, state: v.state ?? (v.parked ? 'parked' : 'moving'), sinceMs: v.since_ms, box: v.box, detected: !!v.box && dets.some(d => groupOf(d) === 'vehicle' && iou(d.box, v.box!) > 0.3), holdLeftMs: (v.state ?? (v.parked ? 'parked' : 'moving')) === 'moving' ? left(r.vehicle?.hold_until_ms) : undefined });
+                items.push({ group: 'vehicle', cls: v.cls, state: v.state, sinceMs: v.since_ms, box: v.box, detected: !!v.box && dets.some(d => groupOf(d) === 'vehicle' && iou(d.box, v.box!) > 0.3), holdLeftMs: v.state === 'moving' ? left(r.vehicle?.hold_until_ms) : undefined });
         if (enabled.includes('animal') && r.animal?.present)
             for (const a of r.animal.tracks || [])
                 items.push({ group: 'animal', cls: a.cls, state: 'held', sinceMs: a.since_ms, lastSeenMs: a.last_seen_ms, box: a.box, detected: !!a.box && dets.some(d => groupOf(d) === 'animal' && iou(d.box, a.box!) > 0.3), holdLeftMs: left(r.animal.hold_until_ms) });
@@ -583,9 +572,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private jId: string | undefined;
     private jKind: 'camera' | 'unflagged' = 'camera';
     private jConfirmed = false;
-    private journalOff = false;
     private journal(action: 'start' | 'update' | 'end', extra: Partial<EpisodeEvent> = {}) {
-        if (this.journalOff || !this.jId || typeof (this.plugin.client as any).episodeEvent !== 'function')
+        if (!this.jId || typeof (this.plugin.client as any).episodeEvent !== 'function')
             return;
         const ev: EpisodeEvent = { id: this.jId, action, t_ms: Date.now(), mode: this.mode, kind: this.jKind, ...(action === 'start' ? { detect: this.detectGroups() } : {}), ...extra };
         if (action === 'start') this.jOpen.add(ev.id);
@@ -593,12 +581,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (action !== 'end')
             this.saveOpenEpisode({ id: ev.id, kind: ev.kind ?? 'camera', confirmed: this.jConfirmed || extra.outcome === 'confirmed', at: Date.now() });
         // strictly in order per camera: an update or end must never overtake its start (the service would drop it)
-        this.jChain = this.jChain.then(() => this.journalOff ? undefined : this.plugin.client.episodeEvent(this.verifierId, ev)).then(() => {
+        this.jChain = this.jChain.then(() => this.plugin.client.episodeEvent(this.verifierId, ev)).then(() => {
             if (action === 'end') this.saveOpenEpisode(undefined); // only once the end has reached the service
-        }, (e: any) => {
-            if (e?.status === 404 && !this.journalOff)
-                this.journalOff = true; // older service: no journal, silently
-        });
+        }, () => { /* silent: a refused start (too many ongoing, busy) makes only that episode's later calls 404; the next episode journals again */ });
     }
 
     /** the open journal episode, kept in the camera's storage: a restart that cuts the episode (a deploy kills the process before its end
@@ -838,7 +823,6 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.status.setEnabled(state !== 'disabled');
         if (state !== 'disabled')
             this.status.setState(state);
-        this.lastState = state;
     }
 
     /** Write motionDetected and later check the write really became the shared state. */
@@ -1058,7 +1042,6 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.warmAttempt = 0;
                 if (!this.streamUp) {
                     this.streamUp = true;
-                    this.streamGpu = hwaccel;
                     this.status.setStream({ name: this.streamName || undefined, connected: true, decode: hwaccel ? 'gpu' : 'cpu', warm: this.warm, gpuFailed: !hwaccel && this.hwDisabled, gpuFallbacks: this.hwFallbacks });
                 }
                 if (!this.scanActive) {
@@ -1146,14 +1129,6 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     }
 
     /**
-     * Continuous monitoring: the pixel gate watches the warm stream. A 'blob' or 'fraction' opening
-     * outside any camera episode is only a reason to ASK the service, never to raise motion.
-     * Gate mode: it starts a synthetic episode (same state machine as a camera trigger: reset, pre-roll
-     * from the ring, ~1 fps frames while the gate stays open and 4 s after, hold/release by the service);
-     * motion is raised only when the service confirms a person. Shadow: one frame is posted, a confirmed
-     * person is logged and counted, motion is never touched.
-     */
-    /**
      * Heartbeat (continuous tracking): an idle camera posts its fresh warm frame about every heartbeatMs (2 s, jittered
      * per camera, low priority, never a reset, one in flight) so the service's tracker follows a standing person, an animal or a
      * vehicle. The replies are judged with the SAME rules as an episode (person.confirmed/present, animal.confirmed, a vehicle
@@ -1169,7 +1144,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (now < this.nextHeartbeatAt)
             return;
         if (!this.paced || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || this.episode.scanning || this.scanActive
-            || this.gateBusy || this.heartbeatBusy || this.busyGen !== undefined)
+            || this.heartbeatBusy || this.busyGen !== undefined)
             return; // camera raw motion does NOT stop it: a closed (released) episode keeps being analysed and can re-open
         this.nextHeartbeatAt = now + D.heartbeatMs - 100; // frames come every ~500 ms: the first one due
         this.heartbeatBusy = true;
@@ -1224,7 +1199,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
 
     private heartbeatEligible(): boolean {
         return this.paced && this.mode !== 'off' && !this.plugin.config.killSwitch && !this.episode.degraded && !this.episode.scanning
-            && !this.scanActive && !this.gateBusy && !this.heartbeatBusy && this.busyGen === undefined && !this.released;
+            && !this.scanActive && !this.heartbeatBusy && this.busyGen === undefined && !this.released;
     }
 
     private syncSnapTimer() {
@@ -1317,6 +1292,14 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             this.fastGen = undefined;
     }
 
+    /**
+     * Continuous monitoring: the pixel gate watches the warm stream. A 'blob' or 'fraction' opening
+     * outside any camera episode is only a reason to ASK the service, never to raise motion.
+     * Gate mode: it starts a synthetic episode (same state machine as a camera trigger: reset, pre-roll
+     * from the ring, ~1 fps frames while the gate stays open and 4 s after, hold/release by the service);
+     * motion is raised only when the service confirms a person. Shadow: one frame is posted, a confirmed
+     * person is logged and counted, motion is never touched.
+     */
     private onGray(frame: Uint8Array) {
         const gate = this.gate;
         if (!gate || this.released || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || !this.paced)
@@ -1767,7 +1750,6 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         Promise.resolve((this.mixinDevice as any)?.getSettings?.()).then((s: any) => { this.viewInfo = viewInfoOf(Array.isArray(s) ? s : []); }, () => undefined);
     }
 
-    /** the stream id to request, undefined = the default stream */
     /** the chosen stream failed: analyse the default stream for now and retry the chosen one later (never for good). */
     private enterFallback(msg: string) {
         this.streamFallback = true;
@@ -1818,6 +1800,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.plugin.client.reset(this.verifierId, true).catch(() => undefined);
     }
 
+    /** the stream id to request, undefined = the default stream */
     private chosenStream(): string | undefined {
         const v = String(this.storageSettings.values.stream || 'default');
         return v === 'default' || this.streamFallback ? undefined : v;

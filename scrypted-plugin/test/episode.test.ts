@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { backoffMs, formatSummary, Episode, EpisodeConfig, Effects, EpisodeSummary, latencyStats, percentile, summarize } from '../src/episode';
+import { backoffMs, formatSummary, Episode, EpisodeConfig, Effects, EpisodeSummary } from '../src/episode';
 import type { FrameReply } from '../src/client';
 import { candidate, confirmed, holding, idle, vehicle } from './mock-server';
 
@@ -417,15 +417,6 @@ test('backoff doubles and caps at 60 s', () => {
     assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7, 20].map(a => backoffMs(a)), [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
 });
 
-test('summarize: empty and aggregate', () => {
-    assert.equal(summarize([]), 'No episodes yet.');
-    const e = mk();
-    const fx = [e.raw(true, 0), e.reply(R(confirmed), 1000), e.raw(false, 2000), e.reply(R(idle), 5000)];
-    fx.push(e.raw(true, 10000), e.reply(R(idle), 10500), e.tick(16000));
-    const text = summarize(summaries(fx));
-    assert.match(text, /2 episodes: 1 vetoed, 1 confirmed/);
-});
-
 // ---- pre-roll bursts -----------------------------------------------------------------------
 
 test('pre-roll burst: replies for past frames confirm within ms of the trigger and report a negative frame offset', () => {
@@ -496,19 +487,6 @@ test('latency metrics: veto keeps posted/verdict and the first reply timings', (
     assert.equal(s.confirmedAfterMs, undefined);
     assert.equal(s.verdictAfterMs, 160);
     assert.equal(s.service?.total_ms, 40);
-});
-
-test('latency stats: p50/p95 over episodes, aborted ones excluded', () => {
-    const list = [100, 200, 300, 400, 1000].map((c, i) => ({ mode: 'gate', startedAt: i, outcome: 'released', closedAt: i, heldBeyondRawS: 0, skipped: 0, postedAfterMs: c / 10, verdictAfterMs: c / 2, confirmedAfterMs: c }) as EpisodeSummary);
-    list.push({ ...list[0], outcome: 'aborted', confirmedAfterMs: 99999 });
-    const l = latencyStats(list);
-    assert.equal(l.n, 5);
-    assert.equal(l.confirmed.p50, 300);
-    assert.equal(l.confirmed.p95, 1000);
-    assert.equal(l.verdict.p50, 150);
-    assert.equal(l.posted.p50, 30);
-    assert.match(summarize(list), /confirmed 300\/1000/);
-    assert.equal(percentile([], 0.5), undefined);
 });
 
 // ---- review fixes ------------------------------------------------------------------------------
@@ -619,14 +597,12 @@ test('Shadow = Gate decisions: the same inputs give the same summaries and would
     assert.equal(s.filter(Array.isArray)[8][1], false, 'Shadow: a raw-only trigger is vetoed, wouldPublish false while published stays raw');
 });
 
-test('vehicle guard on the service reply shape: tracks with boxes (0.3.24) and states without boxes (up to 0.3.23)', () => {
+test('vehicle guard on the service reply shape: only a detection on a moving track ticks', () => {
     const { vehicleView } = require('../src/episode') as typeof import('../src/episode');
     const box = [0.1, 0.1, 0.5, 0.5];
     // exactly what VehicleTracker.snapshot sends (session.py)
-    const r = (state: string, withBox: boolean) => ({ person: { state: 'idle', confirmed: false, present: false }, vehicle: { moving: state === 'moving', hold_until_ms: 9000, tracks: [{ id: 0, cls: 'car', state, parked: state === 'parked', since_ms: 0, ...(withBox ? { box } : {}) }] }, detections: [{ cls: 'car', group: 'vehicle', score: 0.9, box }] }) as any;
-    for (const withBox of [true, false]) {
-        assert.equal(vehicleView(r('moving', withBox)).tick, true, `moving, box ${withBox}`);
-        assert.equal(vehicleView(r('still', withBox)).tick, false, `still, box ${withBox}`);
-        assert.equal(vehicleView(r('parked', withBox)).tick, false, `parked, box ${withBox}`);
-    }
+    const r = (state: string) => ({ person: { state: 'idle', confirmed: false, present: false }, vehicle: { moving: state === 'moving', hold_until_ms: 9000, tracks: [{ id: 0, cls: 'car', state, parked: state === 'parked', since_ms: 0, box }] }, detections: [{ cls: 'car', group: 'vehicle', score: 0.9, box }] }) as any;
+    assert.equal(vehicleView(r('moving')).tick, true, 'moving');
+    assert.equal(vehicleView(r('still')).tick, false, 'still');
+    assert.equal(vehicleView(r('parked')).tick, false, 'parked');
 });

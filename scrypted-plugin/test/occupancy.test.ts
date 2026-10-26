@@ -130,14 +130,6 @@ test('vehicle that stops (still/parked) behaves like still: a still person keeps
     assert.equal(e.occupied, true);
 });
 
-test('an older service without tracks_detail keeps motion held (treated as moving)', () => {
-    const e = mk();
-    e.raw(true, 0);
-    e.reply(R({ person: { state: 'confirmed', confirmed: true, present: true } }), 1000);
-    e.reply(R({ person: { state: 'holding', confirmed: true, present: true } }), 300000);
-    assert.equal(e.motion, true);
-});
-
 test('shadow: motion and occupancy mirror raw; the still release is only reported (wouldPublish)', () => {
     const e = mk({ mode: 'shadow' });
     e.raw(true, 0);

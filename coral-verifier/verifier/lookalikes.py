@@ -12,24 +12,13 @@ earlier looks), so the look match alone never catches it. Its place is kept too:
 still counts only when someone ARRIVED there, i.e. a confident detection of the same group outside every known place, next to this one,
 within the last LOOKALIKE["entry_s"]. The laundry is born at its place and stays there; a person walks in from elsewhere.
 """
-import base64
 from collections import deque
-
-import numpy as np
 
 import shape as SH
 from defaults import LOOKALIKE
+from geom import iou
 
 GROUPS = ("person", "animal")
-
-
-def _iou(a, b):
-    ix = min(a[2], b[2]) - max(a[0], b[0])
-    iy = min(a[3], b[3]) - max(a[1], b[1])
-    if ix <= 0 or iy <= 0:
-        return 0.0
-    inter = ix * iy
-    return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
 
 
 class Lookalikes:
@@ -80,7 +69,7 @@ class Lookalikes:
 
     def near(self, group, box):
         """Entries of `group` at the place of `box` (no image work: callers compute a signature only when this is not empty)."""
-        return [e for e in self.items if e["group"] == group and _iou(box, e["box"]) >= LOOKALIKE["iou"]]
+        return [e for e in self.items if e["group"] == group and iou(box, e["box"]) >= LOOKALIKE["iou"]]
 
     def match(self, group, box, gray):
         """Best look match (>= LOOKALIKE["thr"]) of a detection with the known look-alikes at its place, or None."""
@@ -98,14 +87,14 @@ class Lookalikes:
 
     def export(self):
         return [{"eid": e["eid"], "group": e["group"], "box": [round(v, 4) for v in e["box"]],
-                 "sig": base64.b64encode(e["sig"].astype(np.float16).tobytes()).decode("ascii")} for e in self.items]
+                 "sig": SH.encode(e["sig"])} for e in self.items]
 
     @classmethod
     def restore(cls, data):
         out = cls()
         for d in data or []:
             try:
-                sig = np.frombuffer(base64.b64decode(d["sig"]), np.float16).astype(np.float32)
+                sig = SH.decode(d["sig"])
                 box = tuple(float(v) for v in d["box"])
                 if sig.size == SH.SIG_W * SH.SIG_H and len(box) == 4 and d["group"] in GROUPS:
                     out.items.append({"eid": str(d["eid"]), "group": d["group"], "box": box, "sig": sig})

@@ -9,6 +9,7 @@ Measured on 2.5 h of recordings of one camera (2026-10-17/18): the same parked c
 those hours), ~0.87 under a passing hard shadow and 0.82 across the IR -> colour switch; an empty parking spot against the parked car <= 0.30.
 Edges, not raw pixels: a uniform brightness or exposure change keeps the outline.
 """
+import base64
 import math
 
 import cv2
@@ -61,3 +62,12 @@ def covered(box, others, frac):
         if ix > 0 and iy > 0 and ix * iy >= frac * area:
             return True
     return False
+
+
+def encode(sig):
+    """A signature as stored in the per-camera JSON stores (float16, base64)."""
+    return base64.b64encode(sig.astype(np.float16).tobytes()).decode("ascii")
+
+
+def decode(s):
+    return np.frombuffer(base64.b64decode(s), np.float16).astype(np.float32)

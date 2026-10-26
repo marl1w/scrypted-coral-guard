@@ -1545,7 +1545,7 @@ test('journal: a camera episode posts start, confirmed update and end with one i
     }
 });
 
-test('journal: an old service (404) is tolerated silently and no longer called; a vetoed episode ends vetoed', async () => {
+test('journal: a refused call (404 unknown episode) is tolerated silently and never switches the journal off; a vetoed episode ends vetoed', async () => {
     (ctl as any).journal404 = true;
     try {
         const h = make({ settings: { mode: 'Gate', confirmTimeoutS: 1 } });
@@ -1554,8 +1554,13 @@ test('journal: an old service (404) is tolerated silently and no longer called; 
         await sleep(30);
         h.raw(false);
         await sleep(1500);
-        assert.equal(h.calls.episodes.length, 1, 'no further journal calls after the 404');
+        assert.ok(h.calls.episodes.some(e => e.action === 'end'), 'the episode end is still sent after a refused start');
         assert.ok(!ctl.logs.some(l => l[0] === 'warn' && /episodes|journal/.test(String(l[1]))));
+        (ctl as any).journal404 = false;
+        const before = h.calls.episodes.length;
+        h.raw(true);
+        await eventually(() => h.calls.episodes.slice(before).some(e => e.action === 'start'), 2000, 'the next episode is journalled');
+        h.raw(false);
         await h.mixin.release();
     } finally { (ctl as any).journal404 = false; }
     const v = make({ settings: { mode: 'Gate', confirmTimeoutS: 1 } });

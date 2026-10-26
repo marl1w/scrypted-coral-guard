@@ -9,29 +9,9 @@ A trusted spot changes two things in the vehicle tracker: a new vehicle whose lo
 (also right after a restart), and a weak vehicle box (between WEAK_VEHICLE_THR and vehicle_thr) at the same place keeps a vehicle parked
 there. Spots belong to the camera, not to the session: a reset or an expired session keeps them.
 """
-import base64
-
-import numpy as np
-
 import shape as SH
 from defaults import SPOTS
-
-
-def iou(a, b):
-    ix = min(a[2], b[2]) - max(a[0], b[0])
-    iy = min(a[3], b[3]) - max(a[1], b[1])
-    if ix <= 0 or iy <= 0:
-        return 0.0
-    inter = ix * iy
-    return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
-
-
-def _enc(sig):
-    return base64.b64encode(sig.astype(np.float16).tobytes()).decode("ascii")
-
-
-def _dec(s):
-    return np.frombuffer(base64.b64decode(s), np.float16).astype(np.float32)
+from geom import iou
 
 
 class Spot:
@@ -95,7 +75,7 @@ class Spots:
 
     def export(self):
         return [{"box": [round(v, 4) for v in sp.box], "occasions": sp.occasions, "last_t": int(sp.last_t),
-                 "looks": [_enc(lk) for lk in sp.looks]} for sp in self.items]
+                 "looks": [SH.encode(lk) for lk in sp.looks]} for sp in self.items]
 
     def describe(self):
         """For GET .../spots: the export without the looks themselves."""
@@ -110,7 +90,7 @@ class Spots:
                 sp = Spot()
                 sp.box = tuple(float(v) for v in d["box"])
                 sp.occasions, sp.last_t, sp.last_track = int(d["occasions"]), float(d["last_t"]), None
-                sp.looks = [lk for lk in (_dec(x) for x in d.get("looks", [])) if lk.size == SH.SIG_W * SH.SIG_H]
+                sp.looks = [lk for lk in (SH.decode(x) for x in d.get("looks", [])) if lk.size == SH.SIG_W * SH.SIG_H]
                 if len(sp.box) == 4:
                     out.items.append(sp)
             except (KeyError, TypeError, ValueError):

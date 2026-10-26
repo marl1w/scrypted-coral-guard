@@ -5,6 +5,7 @@ snapshot per snapshot_every_s of frame time (capped). JPEG bytes are stored exac
 import json, logging, math, os, queue, re, shutil, threading, time
 from collections import deque
 from defaults import JOURNAL as J
+from geom import iou
 import autovalidate
 
 log = logging.getLogger("journal")
@@ -13,7 +14,9 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
 MODES, KINDS = ("shadow", "gate"), ("camera", "unflagged")
 OUTCOMES = ("confirmed", "vetoed", "aborted", "released", "parked")          # client-settable; the service itself adds "stale"
 LABELS = ("correct", "false_alarm", "missed", "wrong_class")
-CLASSES = ("person", "vehicle", "animal")                                   # what the frames really show: any of these joined by "+", or "empty"
+GROUPS = ("person", "vehicle", "animal")
+CLASSES = GROUPS                                                            # what the frames really show: any of these joined by "+", or "empty"
+MOTION_KEYS = ("occupied_s", "motion_s", "still_releases", "reraises")
 
 
 def canon_truth(t):
@@ -29,17 +32,10 @@ def canon_truth(t):
 def boxes_moved(frames, iou_same=0.7):
     """Did any box move across an episode's stored frames? frames: one list of boxes per frame. A box with no near-identical box (IoU >=
     iou_same) in some other frame moved, appeared or left. Fewer than two frames: unknown, taken as moved (it stays a miss to look at)."""
-    def iou(a, b):
-        ix, iy = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
-        if ix <= 0 or iy <= 0:
-            return 0.0
-        i = ix * iy
-        return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i)
     if len(frames) < 2:
         return True
     return any(not any(iou(b, x) >= iou_same for x in other) for i, f in enumerate(frames) for b in f for j, other in enumerate(frames) if i != j)
 ACTIONS = ("start", "update", "end")
-GROUPS = ("person", "vehicle", "animal")
 
 
 def _atomic(path, data):
@@ -381,7 +377,7 @@ class Journal:
             if motion is not None:
                 if not isinstance(motion, dict):
                     raise ValueError("motion must be an object")
-                motion = {k: int(_num(motion.get(k, 0), "motion." + k)) for k in ("occupied_s", "motion_s", "still_releases", "reraises")}
+                motion = {k: int(_num(motion.get(k, 0), "motion." + k)) for k in MOTION_KEYS}
                 if any(v < 0 for v in motion.values()):
                     raise ValueError("motion values must be >= 0")
             detect = body.get("detect")
@@ -426,17 +422,14 @@ class Journal:
                     if len(ongoing) >= self.lim["max_ongoing"] or ongoing.count(camera) >= self.lim["max_ongoing_per_camera"]:
                         return 429, {"error": "too many ongoing episodes"}
                     st = self._create(camera, eid, self._clamp(t_ms, now), mode or "shadow", kind or "camera", groups or [], note, now)
-                    if st is not None:
-                        st["meta"]["display_name"] = display_name or self.default_name(camera)
                     if st is None:
                         return 500, {"error": "journal write failed"}
+                    st["meta"]["display_name"] = display_name or self.default_name(camera)
             elif st is None or st["meta"]["camera"] != camera:
                 return 404, {"error": "unknown episode"}
             elif st["meta"]["status"] == "closed":
                 return 409, {"error": "episode already ended"}
-            m = st["meta"]
-            if action != "start":                       # a repeated start is idempotent: it only merges what it carries
-                pass
+            m = st["meta"]                              # a repeated start is idempotent: it only merges what it carries
             if mode:
                 m["mode"] = mode
             if kind:
@@ -551,7 +544,7 @@ class Journal:
         a["timeline"] = (a["timeline"] + [row] + b["timeline"])[-200:]
         a["groups"], a["end_ms"], a["outcome"] = groups, max(a["end_ms"], b["end_ms"] or a["end_ms"]), b["outcome"]
         if a.get("motion") or b.get("motion"):
-            a["motion"] = {k: int((a.get("motion") or {}).get(k, 0)) + int((b.get("motion") or {}).get(k, 0)) for k in ("occupied_s", "motion_s", "still_releases", "reraises")}
+            a["motion"] = {k: int((a.get("motion") or {}).get(k, 0)) + int((b.get("motion") or {}).get(k, 0)) for k in MOTION_KEYS}
         ids = [b["id"]] + list(b.get("merged_ids") or [])
         a["merged_ids"] = (a.get("merged_ids") or []) + ids
         for k, v in list(self.alias.items()):
@@ -734,31 +727,30 @@ class Journal:
             self._maintain()
 
     # ---------------- review ----------------
-    def _view(self, st):
-        return dict(st["meta"])
+    def _match(self, m, camera, outcome, group, t_from, t_to):
+        """The filters list() and next_unlabelled() share."""
+        return ((not camera or m["camera"] == camera) and (not outcome or self._outcome_ok(m, outcome)) and (not group or group in m["groups"])
+                and (t_from is None or m["start_ms"] >= t_from) and (t_to is None or m["start_ms"] <= t_to))
 
     def list(self, camera=None, outcome=None, label=None, t_from=None, t_to=None, limit=50, offset=0, labelled=None, status=None, group=None):
         self._kick()
         with self.lock:
             rows = [dict(st["meta"]) for st in self.eps.values()]            # copy under the lock, filter and sort outside
-        if True:
-            rows = [m for m in rows if (not camera or m["camera"] == camera) and (not outcome or self._outcome_ok(m, outcome)) and (not group or group in m["groups"])
-                    and (not label or (m["label"] == label if label != "none" else m["label"] is None))
-                    and (labelled is None or (m["label"] is not None) == labelled) and (not status or m["status"] == status)
-                    and (t_from is None or m["start_ms"] >= t_from) and (t_to is None or m["start_ms"] <= t_to)]
-            rows.sort(key=lambda m: m["start_ms"], reverse=True)
-            limit = max(1, min(int(limit), self.lim["max_list"]))
-            offset = max(0, int(offset))
-            return {"total": len(rows), "offset": offset, "items": rows[offset:offset + limit]}
+        rows = [m for m in rows if self._match(m, camera, outcome, group, t_from, t_to)
+                and (not label or (m["label"] == label if label != "none" else m["label"] is None))
+                and (labelled is None or (m["label"] is not None) == labelled) and (not status or m["status"] == status)]
+        rows.sort(key=lambda m: m["start_ms"], reverse=True)
+        limit = max(1, min(int(limit), self.lim["max_list"]))
+        offset = max(0, int(offset))
+        return {"total": len(rows), "offset": offset, "items": rows[offset:offset + limit]}
 
     def next_unlabelled(self, after=None, camera=None, outcome=None, group=None, t_from=None, t_to=None):
         """Annotation mode: the OLDEST closed episode without a label (optionally only after episode `after` in start order, filtered by camera/outcome).
         Returns {item, remaining}: `remaining` counts all matching unlabelled closed episodes (the returned one included)."""
         with self.lock:
             rows = [dict(st["meta"]) for st in self.eps.values()
-                    if st["meta"]["status"] == "closed" and st["meta"]["label"] is None and not self._waiting_auto(st["meta"]) and (not camera or st["meta"]["camera"] == camera)
-                    and (not outcome or self._outcome_ok(st["meta"], outcome)) and (not group or group in st["meta"]["groups"])
-                    and (t_from is None or st["meta"]["start_ms"] >= t_from) and (t_to is None or st["meta"]["start_ms"] <= t_to)]
+                    if st["meta"]["status"] == "closed" and st["meta"]["label"] is None and not self._waiting_auto(st["meta"])
+                    and self._match(st["meta"], camera, outcome, group, t_from, t_to)]
             ref = self.eps.get(after) if after and ID_RE.match(after) else None
             ref_key = None if ref is None else (ref["meta"]["start_ms"], ref["meta"]["id"])
         rows.sort(key=lambda m: (m["start_ms"], m["id"]))

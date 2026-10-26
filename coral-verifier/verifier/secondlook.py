@@ -6,24 +6,13 @@ for ttl_s: later frames reuse its result by box overlap (no invoke). Result per 
 inside the original box replaces the score (`first_score` keeps the original, `second_look` = confirmed|lowered); nothing found = `not_found` (the detection is kept unchanged, e.g. half-occluded parked cars); found again below reject_factor x the keep floor
 while the first score was below the confirm threshold = `rejected` (dropped from the trackers)."""
 from defaults import SECOND_LOOK as _SL, DETECT_THR, WEAK_VEHICLE_CLASSES
+from geom import iou, area
 
 MATCH_IOU = 0.3
 
 
 def group_of(d):
     return d.get("group") or ("person" if d["cls"] == "person" else ("vehicle" if d["cls"] in DETECT_THR["vehicle"] else "animal"))
-
-
-def iou(a, b):
-    iw, ih = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
-    if iw <= 0 or ih <= 0:
-        return 0.0
-    i = iw * ih
-    return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i)
-
-
-def area(b):
-    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
 
 
 def confirm_thr(g, cfg):

@@ -142,8 +142,6 @@ DETECT_THR = {
     "vehicle": {"bicycle": 0.5, "car": TRACKER["vehicle_thr"], "motorcycle": TRACKER["vehicle_thr"], "bus": TRACKER["vehicle_thr"], "truck": TRACKER["vehicle_thr"]},
     "animal": {n: TRACKER["animal_cont_thr"] for n in ("bird", "cat", "dog", "horse", "sheep", "cow", "bear")},
 }
-# Animal state machine: the person tick logic run independently on animal detections (never shares state with the person tracker).
-# Animal decode/reply floor is the continuation threshold (DETECT_THR["animal"] = ANIMAL["cont_thr"]).
 # Tiling of wide frames. tiles=auto: width/height <= `auto_aspect` is one pass; wider frames run HYBRID = the WHOLE frame (letterboxed) plus two overlapping
 # `two_tile_frac` (55 %) half tiles = 3 invokes. Tile detections never beat the whole-frame pass on big objects: a tile detection is dropped when more than
 # `hybrid_contain` of its area lies inside a same-group whole-frame detection, or when it is taller than `hybrid_big_frac` of the frame height and overlaps
@@ -182,6 +180,8 @@ PERSON_ANIMAL_OVERLAP = 0.8
 # is the driver or a passenger: it never reaches the person tracker (marked "in_vehicle" in the journal, left out of replies). Parked and still
 # vehicles are not used, so someone walking past a parked car counts.
 PERSON_IN_VEHICLE = 0.8
+# Animal state machine: the person tick logic run independently on animal detections (never shares state with the person tracker).
+# Animal decode/reply floor is the continuation threshold (DETECT_THR["animal"] = ANIMAL["cont_thr"]).
 ANIMAL = {"start_thr": TRACKER["animal_start_thr"], "cont_thr": TRACKER["animal_cont_thr"], "confirm_n": 2, "confirm_m": 3, "hold_s": 6.0, "still_hold_s": 6.0}
 
 

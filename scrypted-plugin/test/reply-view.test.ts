@@ -31,14 +31,12 @@ test('view: persons above 0.65, weak candidate kept apart, vehicles and animals 
     assert.equal(v.boxes.length, 4);
 });
 
-test('parked: per-detection flag, else overlapping track, else only an unambiguous track list', () => {
-    const tracks = [{ id: 1, cls: 'car', parked: true, since_ms: 1, box: [0.1, 0.1, 0.5, 0.5] }, { id: 2, cls: 'car', parked: false, since_ms: 1, box: [0.6, 0.1, 0.9, 0.5] }];
-    assert.equal(isParked({ box: [0.12, 0.1, 0.5, 0.5], cls: 'car' }, tracks), true);
-    assert.equal(isParked({ box: [0.62, 0.1, 0.9, 0.5], cls: 'car' }, tracks), false);
-    assert.equal(isParked({ box: [0, 0, 1, 1], cls: 'car', parked: true }, undefined), true);
-    assert.equal(isParked({ box: [0, 0, 1, 1], cls: 'car' }, [{ id: 1, cls: 'car', parked: true, since_ms: 1 }]), true);
-    assert.equal(isParked({ box: [0, 0, 1, 1], cls: 'car' }, [{ id: 1, cls: 'car', parked: true, since_ms: 1 }, { id: 2, cls: 'car', parked: false, since_ms: 1 }]), false);
-    assert.equal(isParked({ box: [0, 0, 1, 1], cls: 'car' }, undefined), false);
+test('parked: the best overlapping track decides; no vehicle tracks in the reply keeps the detection eligible', () => {
+    const tracks = [{ id: 1, cls: 'car', parked: true, state: 'parked', since_ms: 1, box: [0.1, 0.1, 0.5, 0.5] }, { id: 2, cls: 'car', parked: false, state: 'moving', since_ms: 1, box: [0.6, 0.1, 0.9, 0.5] }];
+    assert.equal(isParked({ box: [0.12, 0.1, 0.5, 0.5] }, tracks), true);
+    assert.equal(isParked({ box: [0.62, 0.1, 0.9, 0.5] }, tracks), false);
+    assert.equal(isParked({ box: [0, 0, 1, 1] }, undefined), false);
+    assert.equal(isParked({ box: [0, 0, 1, 1] }, []), false);
 });
 
 test('weak vehicles (service flag): drawn dashed as possible, counted apart, never in the vehicle count; old services without the flag are unchanged', () => {
@@ -51,15 +49,13 @@ test('weak vehicles (service flag): drawn dashed as possible, counted apart, nev
     assert.equal(v.boxes[0].weak, true);
 });
 
-test('track states: only a vehicle on a moving track is eligible; still/parked/unmatched are not and are labelled; no state keeps the old rule', () => {
+test('track states: only a vehicle on a moving track is eligible; still/parked/unmatched are not and are labelled', () => {
     const box = [0.1, 0.1, 0.5, 0.5];
     const tr = (state: string, parked = false) => [{ id: 1, cls: 'car', parked, state, since_ms: 0, box }];
-    assert.equal(isParked({ box, cls: 'car' }, tr('moving')), false);
-    assert.equal(isParked({ box, cls: 'car' }, tr('still')), true, 'a still car never confirms');
-    assert.equal(isParked({ box, cls: 'car', parked: false }, tr('still')), true, 'state wins over the detection flag');
-    assert.equal(isParked({ box, cls: 'car' }, tr('parked', true)), true);
-    assert.equal(isParked({ box: [0.6, 0.6, 0.9, 0.9], cls: 'car' }, tr('moving')), true, 'no matching moving track');
-    assert.equal(isParked({ box, cls: 'car' }, [{ id: 1, cls: 'car', parked: false, since_ms: 0, box }]), false, 'old service: non-parked stays eligible');
+    assert.equal(isParked({ box }, tr('moving')), false);
+    assert.equal(isParked({ box }, tr('still')), true, 'a still car never confirms');
+    assert.equal(isParked({ box }, tr('parked', true)), true);
+    assert.equal(isParked({ box: [0.6, 0.6, 0.9, 0.9] }, tr('moving')), true, 'no matching moving track');
     const v = viewOfReply({ person: { state: 'idle', confirmed: false, present: false }, vehicle: { tracks: tr('still') }, detections: [{ cls: 'car', score: 0.62, box }] } as any, { person: 0.65, vehicle: 0.5, animal: 0.5 });
     assert.equal(v.boxes[0].still, true);
     assert.ok(!v.boxes[0].parked);

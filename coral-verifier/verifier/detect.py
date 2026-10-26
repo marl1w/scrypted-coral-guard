@@ -89,7 +89,7 @@ MAX_SIDE = 16384
 
 
 def decode_jpeg(data, size=512, tiles="auto", reduce=False, max_pixels=MAX_IMAGE_PIXELS):
-    """bytes -> (BGR uint8 image, resolved tiles "1"|"2"). JPEG ONLY: the body must start with FFD8 and carry a parsable SOF marker whose
+    """bytes -> (BGR uint8 image, resolved tiles "1"|"2"|"3"|"hybrid"). JPEG ONLY: the body must start with FFD8 and carry a parsable SOF marker whose
     dimensions are checked against the pixel cap BEFORE any cv2 decode (decompression-bomb guard). Raises ValueError otherwise."""
     if not data or data[:2] != b"\xff\xd8":
         raise ValueError("body must be a JPEG")

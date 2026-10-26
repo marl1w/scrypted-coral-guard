@@ -16,46 +16,26 @@ const iou = (a: number[], b: number[]): number => {
     return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter);
 };
 
-/** Is this vehicle detection a parked one? Per-detection flag, else a track with a box that overlaps, else all-or-nothing from the tracks. */
 /**
- * Track state of a vehicle detection when the service reports track states: the state of the best overlapping track,
- * 'still' when none overlaps (only a matching 'moving' track makes it eligible). undefined = old service (no state).
- * Services up to 0.3.23 sent states without boxes, so no detection ever matched and every vehicle looked still: without any track
- * box the answer comes from the states alone ('moving' when a track moves, else the shared state of the others).
+ * Track state of a vehicle detection: the state of the best overlapping track (IoU > 0.3), 'still' when none overlaps (only a
+ * matching 'moving' track makes it eligible). undefined when the reply has no vehicle tracks.
  */
 export function vehicleState(d: { box: number[] }, tracks: NonNullable<FrameReply['vehicle']>['tracks']): string | undefined {
-    if (!tracks || !tracks.some(t => typeof t.state === 'string'))
+    if (!tracks || !tracks.length)
         return undefined;
-    if (!tracks.some(t => Array.isArray(t.box) && t.box.length === 4))
-        return tracks.some(t => t.state === 'moving') ? 'moving' : tracks.every(t => t.state === 'parked') ? 'parked' : 'still';
     let best: { v: number; state: string } | undefined;
     for (const t of tracks) {
         if (!Array.isArray(t.box) || t.box.length !== 4 || !Array.isArray(d.box) || d.box.length !== 4) continue;
         const v = iou(d.box, t.box);
-        if (v > 0.3 && (!best || v > best.v)) best = { v, state: String(t.state ?? (t.parked ? 'parked' : 'still')) };
+        if (v > 0.3 && (!best || v > best.v)) best = { v, state: String(t.state) };
     }
     return best ? best.state : 'still';
 }
 
-/** Is this vehicle detection ineligible (parked, or not on a 'moving' track when the service reports track states)? */
-export function isParked(d: { box: number[]; cls: string; parked?: boolean }, tracks: NonNullable<FrameReply['vehicle']>['tracks']): boolean {
+/** Is this vehicle detection ineligible (not on a 'moving' track)? With no vehicle tracks in the reply it is eligible. */
+export function isParked(d: { box: number[] }, tracks: NonNullable<FrameReply['vehicle']>['tracks']): boolean {
     const st = vehicleState(d, tracks);
-    if (st !== undefined)
-        return st !== 'moving';
-    if (typeof d.parked === 'boolean')
-        return d.parked;
-    if (!tracks || !tracks.length)
-        return false;
-    const withBox = tracks.filter(t => Array.isArray(t.box) && t.box.length === 4);
-    if (withBox.length) {
-        let best: { v: number; parked: boolean } | undefined;
-        for (const t of withBox) {
-            const v = iou(d.box, t.box!);
-            if (v > 0.3 && (!best || v > best.v)) best = { v, parked: !!t.parked };
-        }
-        if (best) return best.parked;
-    }
-    return tracks.every(t => t.parked); // no per-box information: only an unambiguous answer
+    return st !== undefined && st !== 'moving';
 }
 
 export function viewOfReply(reply: FrameReply, th: ViewThresholds): { frame: Omit<FrameEvent, 'atMs'>; boxes: Box[]; present: boolean } {

@@ -158,7 +158,7 @@ export class Episode {
     private confirmPath?: string;
     /** best fast-confirm evidence seen while pending (diagnostics for the log line). */
     private fastBest?: { n: number; moved: number; strong: number };
-    /** rule B (logged only): ms after the episode start at which it would have confirmed. */
+    /** rule B (live since 0.3.18; diagnostic): ms after the episode start at which its condition first held. */
     private wouldBAfter?: number;
     private confirmFrames?: number;
     private holdOver = false;
@@ -240,19 +240,15 @@ export class Episode {
         const ids: string[] = [];
         let moving = false;
         if (on('person') && r.person?.present) {
-            const td = r.person.tracks_detail;
-            if (Array.isArray(td) && td.length) {
-                for (const t of td) {
-                    ids.push(`p${t.id}`);
-                    if (!t.stationary) moving = true;
-                }
+            for (const t of r.person.tracks_detail || []) {
+                ids.push(`p${t.id}`);
+                if (!t.stationary) moving = true;
             }
-            else moving = true; // older service: no per-track stillness, keep motion held
         }
         if (on('vehicle') && vehHold) {
             moving = true; // a vehicle holds only while a non-parked, moving detection arrives
             for (const t of r.vehicle?.tracks || [])
-                if ((t.state ?? (t.parked ? 'parked' : 'moving')) === 'moving') ids.push(`v${t.id}`);
+                if (t.state === 'moving') ids.push(`v${t.id}`);
         }
         if (on('animal') && r.animal?.present) {
             moving = true;
@@ -555,7 +551,7 @@ export class Episode {
         const presentNow = (on('person') && !!r.person?.present) || (on('vehicle') && vehiclePresent) || (on('animal') && !!r.animal?.present);
         const mv = this.movement(r, on, veh.hold);
         if (this.state === 'pending') {
-            // rule B (logged only): first moment it would have confirmed
+            // rule B (diagnostic): first moment its condition held
             if (this.wouldBAfter === undefined && typeof r.person?.would_b_ms === 'number')
                 this.wouldBAfter = Math.max(0, now - this.pendingSince);
             // diagnostics: the strongest fast-confirm evidence seen before confirmation
@@ -704,48 +700,4 @@ export function formatSummary(s: EpisodeSummary): string {
     if (s.note)
         parts.push(s.note);
     return parts.join(' | ');
-}
-
-export function percentile(values: number[], p: number): number | undefined {
-    if (!values.length)
-        return undefined;
-    const v = values.slice().sort((a, b) => a - b);
-    return v[Math.min(v.length - 1, Math.max(0, Math.ceil(p * v.length) - 1))];
-}
-
-export interface LatencyStats {
-    n: number;
-    posted: { p50?: number; p95?: number };
-    verdict: { p50?: number; p95?: number };
-    confirmed: { p50?: number; p95?: number };
-}
-
-/** p50 / p95 (ms) of trigger->first frame posted, ->first verdict, ->confirmed over the given episodes. */
-export function latencyStats(list: EpisodeSummary[]): LatencyStats {
-    const real = list.filter(s => s.outcome !== 'aborted');
-    const pick = (f: (s: EpisodeSummary) => number | undefined) => {
-        const v = real.map(f).filter((x): x is number => x !== undefined);
-        return { p50: percentile(v, 0.5), p95: percentile(v, 0.95) };
-    };
-    return {
-        n: real.length,
-        posted: pick(s => s.postedAfterMs),
-        verdict: pick(s => s.verdictAfterMs),
-        confirmed: pick(s => s.confirmedAfterMs),
-    };
-}
-
-const ms = (v?: number) => v === undefined ? 'n/a' : `${Math.round(v)}`;
-
-/** One-paragraph rolling summary (last 50 episodes) for the settings description. */
-export function summarize(list: EpisodeSummary[]): string {
-    const real = list.filter(s => s.outcome !== 'aborted');
-    if (!real.length)
-        return 'No episodes yet.';
-    const vetoed = real.filter(s => s.outcome === 'vetoed').length;
-    const held = real.reduce((a, s) => a + s.heldBeyondRawS, 0);
-    const l = latencyStats(real);
-    const last = formatSummary(list[list.length - 1]);
-    return `Last ${real.length} episodes: ${vetoed} vetoed, ${real.length - vetoed} confirmed, ${held.toFixed(0)}s total held beyond raw. `
-        + `Latency from raw trigger, p50/p95 ms: first frame posted ${ms(l.posted.p50)}/${ms(l.posted.p95)}, first verdict ${ms(l.verdict.p50)}/${ms(l.verdict.p95)}, confirmed ${ms(l.confirmed.p50)}/${ms(l.confirmed.p95)}. Latest: ${last}`;
 }

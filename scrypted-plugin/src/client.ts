@@ -31,7 +31,7 @@ export interface PersonState {
     confirmed_by?: string | null;
     /** fast-confirm diagnostics of this frame: strong person boxes, best track's frames in the window, its shift (box heights). */
     fast?: { hi: number; n: number; moved: number } | null;
-    /** rule B (logged only): frame time at which the camera AI person + one weak Coral box would have confirmed. */
+    /** rule B (live since 0.3.18; diagnostic): frame time at which its condition (camera AI person + one weak Coral box) first held. */
     would_b_ms?: number | null;
 }
 
@@ -39,7 +39,7 @@ export interface VehicleState {
     /** a non-parked vehicle is present (parked ones never count). */
     moving: boolean;
     hold_until_ms?: number | null;
-    tracks?: { id: number; cls: string; parked: boolean; /** newer service: 'moving' | 'still' | 'parked' (new tracks start 'still') */ state?: string; since_ms: number; box?: number[] }[];
+    tracks?: { id: number; cls: string; parked: boolean; /** 'moving' | 'still' | 'parked' (new tracks start 'still') */ state: string; since_ms: number; box: number[] }[];
 }
 
 export interface AnimalState {
@@ -57,7 +57,7 @@ export interface FrameReply {
     infer_ms?: number;
     total_ms?: number;
     /** group is absent on an old service: derive it from cls (see groupOf). parked/track_id are optional per-detection extras. */
-    detections?: { cls: string; score: number; box: number[]; group?: string; parked?: boolean; track_id?: number; /** display-only candidate flag from the service (vehicles 0.3-0.5): never decides anything */ weak?: boolean }[];
+    detections?: { cls: string; score: number; box: number[]; group?: string; track_id?: number; /** display-only candidate flag from the service (vehicles 0.3-0.5): never decides anything */ weak?: boolean }[];
     person: PersonState;
     vehicle?: VehicleState;
     /** absent on an old service. */
