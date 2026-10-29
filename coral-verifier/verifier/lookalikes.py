@@ -11,6 +11,11 @@ Known places (0.3.36): an object that moves in the wind (laundry on a rack, a pl
 earlier looks), so the look match alone never catches it. Its place is kept too: a detection at a known place that does not match the look
 still counts only when someone ARRIVED there, i.e. a confident detection of the same group outside every known place, next to this one,
 within the last LOOKALIKE["entry_s"]. The laundry is born at its place and stays there; a person walks in from elsewhere.
+
+0.3.44: a strong detection (LOOKALIKE["strong"] or more) is never left out for its place alone, only for
+its look: one wrong Empty answer had made a doorway a known place and hid a real person there at 0.89. Look-only entries (`look_only`) are
+learnt from blocked camera episodes the user answered Empty (a grill, a sofa scored as a person) and never act as places. A box covering
+more than LOOKALIKE["max_area"] of the frame is never learnt.
 """
 from collections import deque
 
@@ -19,6 +24,23 @@ from defaults import LOOKALIKE
 from geom import iou
 
 GROUPS = ("person", "animal")
+
+
+def capped(items):
+    """At most LOOKALIKE["max"] entries learnt from false alarms / wrong classes and LOOKALIKE["max_look_only"] look-only ones, the oldest of
+    each kind going first: the many Empty answers never push out what the user's own false alarms taught."""
+    out, n = [], {False: 0, True: 0}
+    for e in reversed(items):
+        k = bool(e.get("look_only"))
+        if n[k] < LOOKALIKE["max_look_only" if k else "max"]:
+            n[k] += 1
+            out.append(e)
+    return out[::-1]
+
+
+def learnable(box):
+    """A box small enough to be one object: a whole-frame box (an insect on the lens, a car called a person) is never learnt."""
+    return (box[2] - box[0]) * (box[3] - box[1]) <= LOOKALIKE["max_area"]
 
 
 class Lookalikes:
@@ -47,12 +69,12 @@ class Lookalikes:
                 return True
         return False
 
-    def add(self, eid, group, box, sig):
-        if group not in GROUPS or sig is None:
+    def add(self, eid, group, box, sig, look_only=False):
+        if group not in GROUPS or sig is None or not learnable(box):
             return False
         self.items = [e for e in self.items if e["eid"] != eid]
-        self.items.append({"eid": eid, "group": group, "box": tuple(float(v) for v in box), "sig": sig})
-        del self.items[:-LOOKALIKE["max"]]                         # the oldest go first
+        self.items.append({"eid": eid, "group": group, "box": tuple(float(v) for v in box), "sig": sig, "look_only": bool(look_only)})
+        self.items = capped(self.items)
         self.dirty = True
         return True
 
@@ -71,6 +93,14 @@ class Lookalikes:
         """Entries of `group` at the place of `box` (no image work: callers compute a signature only when this is not empty)."""
         return [e for e in self.items if e["group"] == group and iou(box, e["box"]) >= LOOKALIKE["iou"]]
 
+    @staticmethod
+    def places(entries, d=None):
+        """The entries among `entries` that act as known places: never a look-only entry; none at all for a strong detection `d` (a second-look
+        "confirmed" is no strength: it only means the zoomed pass scored at least as high)."""
+        if d is not None and d["score"] >= LOOKALIKE["strong"]:
+            return []
+        return [e for e in entries if not e.get("look_only")]
+
     def match(self, group, box, gray):
         """Best look match (>= LOOKALIKE["thr"]) of a detection with the known look-alikes at its place, or None."""
         cand = self.near(group, box)
@@ -83,11 +113,12 @@ class Lookalikes:
         return best if best >= LOOKALIKE["thr"] else None
 
     def describe(self):
-        return [{"episode": e["eid"], "group": e["group"], "box": [round(v, 4) for v in e["box"]]} for e in self.items]
+        return [{"episode": e["eid"], "group": e["group"], "box": [round(v, 4) for v in e["box"]], **({"look_only": True} if e.get("look_only") else {})}
+                for e in self.items]
 
     def export(self):
         return [{"eid": e["eid"], "group": e["group"], "box": [round(v, 4) for v in e["box"]],
-                 "sig": SH.encode(e["sig"])} for e in self.items]
+                 "sig": SH.encode(e["sig"]), **({"look_only": True} if e.get("look_only") else {})} for e in self.items]
 
     @classmethod
     def restore(cls, data):
@@ -96,9 +127,10 @@ class Lookalikes:
             try:
                 sig = SH.decode(d["sig"])
                 box = tuple(float(v) for v in d["box"])
-                if sig.size == SH.SIG_W * SH.SIG_H and len(box) == 4 and d["group"] in GROUPS:
-                    out.items.append({"eid": str(d["eid"]), "group": d["group"], "box": box, "sig": sig})
+                if sig.size == SH.SIG_W * SH.SIG_H and len(box) == 4 and d["group"] in GROUPS and learnable(box):
+                    out.items.append({"eid": str(d["eid"]), "group": d["group"], "box": box, "sig": sig, "look_only": bool(d.get("look_only"))})
             except (KeyError, TypeError, ValueError):
                 continue
-        del out.items[:-LOOKALIKE["max"]]
+        out.items = capped(out.items)
+        out.dirty = len(out.items) != len(data or [])              # an entry dropped (too big, malformed, over the cap): the file is rewritten
         return out

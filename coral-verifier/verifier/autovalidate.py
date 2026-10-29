@@ -11,13 +11,36 @@ Two guards make a match safe:
   (boxes rejected by the second look do not count); a still person or a parked car the user may want to label is never
   auto-validated;
 - references are only episodes the USER labelled `correct` (never auto-labelled ones, so a match never chains) whose
-  frames pass the same emptiness test."""
+  frames pass the same emptiness test.
+
+0.3.44: emptiness counts only the groups the camera detects (the episode's `detect`): a grill scored as a car no longer keeps a
+person-only camera's empty episodes in Validate. Boxes Coral left out (left_out) do not count, and the journal never picks its best frame
+for them, so a weaker person in another frame is the one stored. On a camera that does not detect vehicles, empty frames are enough and no matching
+scene is needed: light changes (infrared switching, lamps, sun) never look the same twice, and on labelled days every person or animal
+the camera missed still had a box there (a parked car, which emptiness cannot see, is why vehicle cameras keep the scene match)."""
 import json, logging, os, queue, threading
 
 import fingerprint as fpmod
 
 log = logging.getLogger("autovalidate")
 ROLES = ("first", "best", "last")
+
+
+EMPTY = "empty"                     # _check's verdict for empty frames on a camera without vehicles (no reference episode)
+
+
+def left_out(d):
+    """A detection Coral itself left out of the trackers as a known object: rejected by the second look, a known look-alike by its LOOK, too
+    small, too big, or of a group the camera does not detect. The journal never picks a best frame for it, and it never makes a frame not
+    empty. A box left out only for its known PLACE still counts: the place rule's own mistakes (someone standing where laundry hangs) must
+    stay in Validate, where a wrong answer can be undone."""
+    return (d.get("second_look") == "rejected" or d.get("lookalike") is not None or d.get("too_small")
+            or d.get("too_big") or d.get("not_detected"))
+
+
+def detected(m):
+    """The groups the episode's camera detects (all three for episodes stored before `detect` existed)."""
+    return set(m.get("detect") or ("person", "vehicle", "animal"))
 
 
 def eligible(m):
@@ -98,6 +121,7 @@ class AutoValidator:
         if m["id"] in self.cache:
             return self.cache[m["id"]]
         clean, fps = True, []
+        groups = detected(m)
         for f in m.get("frames") or []:
             if f.get("role") not in ROLES:
                 continue
@@ -113,7 +137,7 @@ class AutoValidator:
                     fp = fpmod.fingerprint(fh.read())
             except (OSError, ValueError):
                 return False, []
-            if any(x.get("score", 0) >= self.det_min and x.get("second_look") != "rejected" for x in dets):
+            if any(self._counts(x, groups) for x in dets):
                 clean = False
             if fp is None:
                 return False, []
@@ -123,6 +147,10 @@ class AutoValidator:
         if len(self.cache) > 4000:
             self.cache.pop(next(iter(self.cache)))
         return out
+
+    def _counts(self, d, groups):
+        """A detection that makes a frame not empty."""
+        return d.get("group") in groups and not left_out(d) and d.get("score", 0) >= self.det_min
 
     def _ref(self, eid, m=None):
         """(Re)evaluates one episode as a reference: added when the user labelled it empty and its frames are empty for
@@ -149,7 +177,9 @@ class AutoValidator:
         self.checked += 1
         match = None
         clean, fps = self._frames(m)
-        if clean:
+        if clean and "vehicle" not in detected(m):
+            match = EMPTY
+        elif clean:
             refs = self.refs.get(m["camera"], {})
             hits = []
             for fp in fps:

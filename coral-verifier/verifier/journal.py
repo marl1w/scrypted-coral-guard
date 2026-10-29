@@ -581,7 +581,8 @@ class Journal:
         st["cand"] = {}
 
     def _auto_result(self, eid, ref):
-        """The auto-validation's answer (worker): `ref` = the user-validated episode showing the same scene, or None."""
+        """The auto-validation's answer (worker): `ref` = the user-validated episode showing the same scene, autovalidate.EMPTY (empty
+        frames on a camera without vehicles), or None."""
         with self.lock:
             st = self.eps.get(eid)
             if st is None:
@@ -589,9 +590,12 @@ class Journal:
             m = st["meta"]
             m.pop("auto_pending", None)
             if ref and m["label"] is None:
-                r = self.eps.get(ref)
-                when = time.strftime("%d/%m %H:%M", time.localtime(r["meta"]["start_ms"] / 1000.0)) if r else ref[:8]
-                note = f"auto: same empty scene as the event of {when}"
+                if ref == autovalidate.EMPTY:
+                    note = "auto: no person or animal in the frames"
+                else:
+                    r = self.eps.get(ref)
+                    when = time.strftime("%d/%m %H:%M", time.localtime(r["meta"]["start_ms"] / 1000.0)) if r else ref[:8]
+                    note = f"auto: same empty scene as the event of {when}"
                 m["label"], m["label_note"], m["auto"] = "correct", note, {"ref": ref, "t_ms": int(self.clock())}
                 m["labels"] = (m["labels"] + [{"label": "correct", "note": note, "t_ms": int(self.clock()), "auto": True}])[-20:]
             try:
@@ -607,7 +611,7 @@ class Journal:
     def _relevance(dets, groups):
         """Frame relevance for best: a frame showing the episode's first group (the one the review asks about) ranks above any frame
         without it (1 + its score), then the other groups' score; all groups count while the groups are unknown."""
-        ok = [d for d in dets if d.get("second_look") != "rejected"]
+        ok = [d for d in dets if not autovalidate.left_out(d)]                # a box Coral left out never makes a frame the best one
         if groups:
             first = [d.get("score", 0) for d in ok if d.get("group") == groups[0]]
             if first:
@@ -631,7 +635,7 @@ class Journal:
         m = st["meta"]
         for d in dets:                                                       # strongest frame per group, for _rebest
             g, sc = d.get("group"), d.get("score", 0)
-            if g and d.get("second_look") != "rejected" and (g not in st["cand"] or sc > st["cand"][g]["rel"]):
+            if g and not autovalidate.left_out(d) and (g not in st["cand"] or sc > st["cand"][g]["rel"]):
                 st["cand"][g] = {"rel": sc, "t_ms": t_ms, "jpeg": jpeg, "dets": dets}   # rel here = that group's score
         rel = self._relevance(dets, m["groups"])
         if not st["first_done"]:

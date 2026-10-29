@@ -103,6 +103,11 @@ TRACKER = {
     "parking_spots": True,
     # Known look-alikes (0.3.31, see lookalikes.py): person/animal boxes learnt from the user's false_alarm labels are ignored where they stand.
     "lookalikes": True,
+    # Groups the camera detects (0.3.44, the plugin's "Detect" setting): the others are dropped before the trackers, left out of replies and of the
+    # review, and kept in the journal marked `not_detected` (a grill scored as a car on a camera that never sees cars).
+    "detect_person": True,
+    "detect_vehicle": True,
+    "detect_animal": True,
 }
 # Known look-alikes (0.3.31): matching constants (lookalikes.py).
 LOOKALIKE = {
@@ -111,6 +116,10 @@ LOOKALIKE = {
     "max": 64,                # per camera; the oldest go first
     "entry_s": 15.0,          # known places (0.3.36): a detection at one counts only if someone was seen arriving this recently
     "near": 1.0,              # "next to a place": within this many box sizes of it on every side
+    "max_look_only": 64,      # 0.3.44: look-only entries (learnt from Empty answers), capped apart from the false-alarm ones
+    "strong": 0.8,            # 0.3.44: a detection this confident is never left out for its place alone
+    "max_area": 0.25,         # 0.3.44: a box covering more of the frame is never learnt
+    "veto_min": 0.4,          # 0.3.44: a blocked episode answered Empty teaches (look only) its strongest person/animal box at this score or more
 }
 # Known parking spots (0.3.31): spot matching and learning constants (spots.py).
 SPOTS = {

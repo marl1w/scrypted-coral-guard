@@ -12,6 +12,7 @@ import metrics as M
 import session as S
 import detect as D
 import shape as SH
+import lookalikes as LA
 import secondlook as SL
 from journal import Journal, GROUPS
 from coral import CoralManager, Job
@@ -195,6 +196,16 @@ class App:
             return [g for g in groups if g not in (truth or "").split("+")]
         return []
 
+    @staticmethod
+    def empty_groups(meta):
+        """The person/animal groups a BLOCKED camera episode (vetoed) did not show, by the user's own answer: both for Empty, those not in
+        the truth for a parked car alone (0.3.44). Its person/animal box is the grill or the sofa the camera keeps scoring; never an
+        auto-validated answer."""
+        if meta.get("outcome") != "vetoed" or meta.get("kind") == "unflagged" or meta.get("label") != "correct" or meta.get("auto"):
+            return []
+        truth = (meta.get("truth") or "empty").split("+")
+        return [g for g in ("person", "animal") if g not in truth]
+
     def learn_lookalike(self, meta):
         """A user label saying a person/animal episode's group was not there (wrong_groups) keeps the box that raised it (best frame,
         strongest box of those groups) as a known look-alike; any other label removes the episode's entry. Reads the journal's files, never
@@ -202,7 +213,9 @@ class App:
         eid, cam = meta.get("id"), meta.get("camera")
         if not eid or not cam:
             return False
-        groups = self.wrong_groups(meta)
+        groups, look_only = self.wrong_groups(meta), False
+        if not groups:
+            groups, look_only = self.empty_groups(meta), True
         if not groups:
             if self.registry.lookalike_remove(cam, eid):
                 log.info("look-alike of episode %s removed (relabelled)", eid)
@@ -220,29 +233,45 @@ class App:
         if img is None:
             return False
         cand = [d for d in dets if d.get("group") in groups and d.get("second_look") != "rejected" and not d.get("too_small") and not d.get("too_big")
-                and isinstance(d.get("box"), list) and len(d["box"]) == 4]
+                and isinstance(d.get("box"), list) and len(d["box"]) == 4 and not (look_only and float(d.get("score", 0)) < DF.LOOKALIKE["veto_min"])]
         if not cand:
             return False
+        cand = [d for d in cand if LA.learnable(d["box"])]                   # a whole-frame box is never learnt: the next strongest is
+        if not cand:
+            if self.registry.lookalike_remove(cam, eid):
+                log.info("look-alike of episode %s removed (nothing learnable)", eid)
+            return False
         d = max(cand, key=lambda x: float(x.get("score", 0)))
-        ok = self.registry.lookalike_add(cam, eid, d["group"], d["box"], SH.signature(SH.gray_small(img), d["box"]))
+        ok = self.registry.lookalike_add(cam, eid, d["group"], d["box"], SH.signature(SH.gray_small(img), d["box"]), look_only)
         if ok:
-            log.info("look-alike learnt from episode %s (%s)", eid, d["group"])
+            log.info("look-alike learnt from episode %s (%s%s)", eid, d["group"], ", look only" if look_only else "")
         return ok
 
     def backfill_lookalikes(self):
-        """Learns the false alarms and wrong classes the user labelled before (once per start; already known episodes are skipped)."""
-        n = 0
-        for label in ("false_alarm", "wrong_class"):
+        """Learns what the user labelled before (once per start; already known episodes are skipped): false alarms and wrong classes, and
+        blocked episodes answered Empty (empty_groups decides; a list filter on the outcome would skip a veto whose timeline mentions a
+        confirmation). Per camera only the newest of each kind that the store keeps (lookalikes.capped), learnt oldest first, so a restart
+        neither decodes the frames of entries that would be pushed out again nor reorders the store."""
+        per = {}
+        for label in ("false_alarm", "wrong_class", "correct"):
             off = 0
             while True:
                 page = self.journal.list(label=label, limit=200, offset=off)
                 items = page.get("items") or []
                 for m in items:
-                    if not self.registry.lookalike_known(m.get("camera"), m.get("id")):
-                        n += bool(self.learn_lookalike(m))
+                    look_only = not self.wrong_groups(m)
+                    if look_only and not self.empty_groups(m):
+                        continue
+                    per.setdefault((m.get("camera"), look_only), []).append(m)
                 off += len(items)
                 if not items or off >= page.get("total", 0):
                     break
+        n = 0
+        for (cam, look_only), ms in per.items():
+            keep = DF.LOOKALIKE["max_look_only" if look_only else "max"]
+            for m in sorted(ms, key=lambda m: m.get("start_ms") or 0)[-keep:]:
+                if not self.registry.lookalike_known(cam, m.get("id")):
+                    n += bool(self.learn_lookalike(m))
         return n
 
     def start_background(self, every_s=30.0):
@@ -645,17 +674,22 @@ class Handler(BaseHTTPRequestHandler):
             ctx = app.registry.sl_context(cam, now)
             extra = {"preprocess_ms": 0.0, "infer_ms": 0.0, "post_ms": 0.0}
             promoted = None
+            off = [d for d in dets if S.not_detected(d, cfg)]            # a group the camera does not detect never promotes a frame nor takes a re-check
+            dets = [d for d in dets if not S.not_detected(d, cfg)]
             if reduced:                                                  # busy low-priority frame: promote it back to full when its camera is near a status change
                 promoted = SL.promote_reason(dets, cfg, ctx["promo"], t, ctx["tracks"])
                 if promoted:
                     reduced = False
                     if cfg.zoom_out > 0:
-                        dets, tz = engine.add_zoom(frame, dets, cfg.zoom_out, cfg.cont_thr, cfg.vehicle_thr, cfg.animal_cont_thr)
+                        dets, tz = engine.add_zoom(frame, dets + off, cfg.zoom_out, cfg.cont_thr, cfg.vehicle_thr, cfg.animal_cont_thr)   # deduplicated against every box
+                        off = [d for d in dets if S.not_detected(d, cfg)]
+                        dets = [d for d in dets if not S.not_detected(d, cfg)]
                         for k in extra:
                             extra[k] += tz[k]
             if not cfg.second_look:
-                return dets, {**extra, "counts": {}, "promoted": bool(promoted)}
+                return dets + off, {**extra, "counts": {}, "promoted": bool(promoted)}
             out, info = SL.second_look(engine, frame, dets, cfg, ctx["tracks"], ctx["cache"], now, reduced)
+            out = out + off
             for k in extra:
                 info[k] = info.get(k, 0.0) + extra[k]
             info["promoted"] = bool(promoted)
@@ -665,11 +699,13 @@ class Handler(BaseHTTPRequestHandler):
         def finish(dets, st):
             dets = S.person_animal_overlap(dets)                                                        # one object scored as person and animal: boost the person
             for d in dets:
-                if S.too_small(d, cfg):
+                if S.not_detected(d, cfg):
+                    d["not_detected"] = True                                                            # a group the camera does not detect: never tracked, never shown
+                elif S.too_small(d, cfg):
                     d["too_small"] = True                                                               # below the camera's minimum size for its group: never tracked
                 elif S.too_big(d, cfg):
                     d["too_big"] = True                                                                 # a person box over max_area_person: never tracked
-            live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected" and not d.get("too_small") and not d.get("too_big")]      # rejected / too small: never; doubtful person/animal: score capped
+            live = [SL.tracker_view(d, cfg) for d in dets if d.get("second_look") != "rejected" and not d.get("too_small") and not d.get("too_big") and not d.get("not_detected")]      # rejected / too small: never; doubtful person/animal: score capped
             sn = app.registry.update(cam, t, live, time.monotonic(), claim, gray)
             marks_back(dets, live)
             shape_ms = shape_prep_ms + (sn["vehicle"].get("shape") or {}).get("ms", 0.0)

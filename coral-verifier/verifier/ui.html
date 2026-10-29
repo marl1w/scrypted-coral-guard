@@ -94,7 +94,7 @@ textarea{width:100%;min-height:56px;margin-top:10px}
 .vbtns{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
 .vbtns button{justify-content:center;padding:20px 10px;font-size:20px;border-radius:28px;min-height:64px}
 .vbtns button svg{width:26px;height:26px}
-.vbtns.four{grid-template-columns:repeat(4,1fr) 1.4fr;gap:8px}           /* desktop: Person Car Animal Empty Confirm in one row */
+.vbtns.four{grid-template-columns:repeat(4,1fr) 1.4fr;gap:8px}           /* desktop: Person Vehicle Animal Empty Confirm in one row */
 .vbtns.four button{padding:14px 4px;font-size:18px;border:2px solid var(--fg);background:transparent;color:var(--fg)}
 .vbtns.four button.pri{background:var(--dark-primary-color);border-color:var(--dark-primary-color);color:#fff;box-shadow:0 2px 4px rgba(0,0,0,.25)}
 .vbtns.four button.tg.on{border-color:var(--primary-color);color:var(--primary-color);background:rgba(3,169,244,.16)}   /* a selected toggle */
@@ -138,7 +138,7 @@ svg.chart text{fill:var(--mut);font-size:9px}
   .vbar .vbtns{margin:0;gap:10px}
   .vbar .vbtns button{padding:10px;min-height:54px;font-size:18px}
   .vbar .vbtns.four{gap:6px;grid-template-columns:repeat(6,1fr)}.vbar .vbtns.four button{padding:10px 2px;font-size:16px;grid-column:span 2}
-  .vbar .vbtns.four .t-empty,.vbar .vbtns.four .t-ok{grid-column:span 3}                           /* phones: Person Car Animal / Empty Confirm */
+  .vbar .vbtns.four .t-empty,.vbar .vbtns.four .t-ok{grid-column:span 3}                           /* phones: Person Vehicle Animal / Empty Confirm */
   .vbar .vsub,#vNote,.kh{display:none}
 }
 </style>
@@ -191,7 +191,8 @@ function btn(cls,text,ic,fn){const b=E("button",cls);if(ic)b.appendChild(icon(ic
 function mark(d){const s=d.second_look;if(s==="rejected")return"✗";if(d.second_look_doubt||s==="not_found"||s==="not_upgraded"||s==="skipped")return"?";if(s==="confirmed"||s==="lowered")return"✓";return""}
 function boxLayer(dets,focus){                                                // focus: group to highlight, others are dimmed ("none" dims all)
   const o=E("div","ov");
-  for(const d of dets||[]){const [a,b,c,e]=d.box;const ex=excluded(d),col=d.second_look==="rejected"||ex?"#9ca3af":(COL[d.group]||"#fff");
+  for(const d of dets||[]){if(d.not_detected)continue;                          // a group the camera does not detect (0.3.44): never drawn
+    const [a,b,c,e]=d.box;const ex=excluded(d),col=d.second_look==="rejected"||ex?"#9ca3af":(COL[d.group]||"#fff");
     const r=E("div","bx");if(focus&&d.group!==focus)r.style.opacity=".3";r.style.left=(a*100)+"%";r.style.top=(b*100)+"%";r.style.width=((c-a)*100)+"%";r.style.height=((e-b)*100)+"%";
     r.style.borderColor=col;if(d.weak||d.second_look==="rejected"||d.second_look_doubt||ex)r.style.borderStyle="dashed";
     const t=E("span","bl",(d.cls||"")+" "+Number(d.score).toFixed(2)+(mark(d)?" "+mark(d):"")+(ex?" · "+ex:""));t.style.background=col;r.appendChild(t);o.appendChild(r)}
@@ -208,7 +209,7 @@ function motionText(m){const o=m&&m.motion;if(!o)return null;const n=(v,w)=>v?` 
   return `occupied ${fmtS(o.occupied_s)} \u00b7 motion ${fmtS(o.motion_s)}`+n(o.still_releases,"still release")+n(o.reraises,"re-raise")}
 function isMotionEv(t){return /^motion (released|re-raised)/.test(t||"")}
 function chips(m){const c=E("div","chips");c.appendChild(E("span","chip "+(m.outcome||""),m.outcome||m.status));
-  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.truth)c.appendChild(E("span","chip","is: "+m.truth.split("+").map(x=>x==="vehicle"?"car":x).join(" + ")));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
+  (m.groups||[]).forEach(g=>c.appendChild(E("span","chip",g)));c.appendChild(E("span","chip",m.mode+"/"+m.kind));if(m.motion&&m.motion.still_releases)c.appendChild(E("span","chip motion","still release"+(m.motion.reraises?" + re-raise":"")));if(m.label)c.appendChild(E("span","chip "+m.label,m.label));if(m.truth)c.appendChild(E("span","chip","is: "+m.truth.split("+").join(" + ")));if(m.auto)c.appendChild(E("span","chip auto","auto-validated"));return c}
 function card(m){
   const c=E("div","card");const top=E("div","top");top.appendChild(E("span","cam",dn(m)));top.appendChild(E("span","mut",fmtD(m.start_ms,m.end_ms)));c.appendChild(top);
   c.appendChild(E("div","mut",fmtT(m.start_ms)));if(m.motion&&m.motion.motion_s!==m.motion.occupied_s)c.appendChild(E("div","mut",motionText(m)));const ch=chips(m);c.appendChild(ch);
@@ -252,10 +253,10 @@ async function openDetail(id){
   const tb=E("table");const hr=tb.insertRow();["frame","class","group","score","flags"].forEach(x=>{const c=document.createElement("th");c.textContent=x;hr.appendChild(c)});dt.appendChild(tb);
   for(const f of fs){j(`${API}/${eid(id)}/${f.name}.json`).then(s=>{for(const x of s.detections){const r=tb.insertRow();
     r.insertCell().textContent=f.name;r.insertCell().textContent=x.cls;r.insertCell().textContent=x.group;r.insertCell().textContent=x.score+(x.first_score!=null?" (was "+x.first_score+")":"");
-    r.insertCell().textContent=[x.weak&&"weak",x.masked&&"masked",x.second_look,x.second_look_doubt&&"doubt",excluded(x),x.in_vehicle&&"in vehicle"].filter(Boolean).join(", ")}})}}
+    r.insertCell().textContent=[x.weak&&"weak",x.masked&&"masked",x.second_look,x.second_look_doubt&&"doubt",excluded(x),x.in_vehicle&&"in vehicle",x.not_detected&&"not detected by this camera"].filter(Boolean).join(", ")}})}}
 
 /* ---------- validate (annotation mode): no question, just what the frames show; the server derives the label from it (truth) ---------- */
-const CLS=[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"]];   // what is in the frames: any combination, or Empty
+const CLS=[["person","Person","p"],["vehicle","Vehicle","v"],["animal","Animal","a"]];   // what is in the frames: any combination, or Empty
 const V={cur:null,pre:null,hist:[],remaining:0,last:null,sel:new Set(),touched:false};
 function vq(after){const p=fparams("va");if(after)p.set("after",after);return p}
 const vFetch=after=>j(`${API}/next?${vq(after)}`);
@@ -278,7 +279,7 @@ function vRender(){
   const shown=framesOf(m).slice(0,3);
   const fr=E("div","frames");for(const f of shown){const col=E("div");col.appendChild(frameBox(m.id,f,"big",null,null,()=>exChip(ch)));col.appendChild(E("div","mut",f.role));fr.appendChild(col)}b.appendChild(fr);
   const note=E("textarea");note.id="vNote";note.placeholder="Note (optional)";note.value=m.label_note||"";b.appendChild(note)}
-function vButtons(){                                                           // Person / Car / Animal toggles, Empty, Confirm
+function vButtons(){                                                           // Person / Vehicle / Animal toggles, Empty, Confirm
   const row=$("#vRow");if(!row)return;row.replaceChildren();
   for(const[c,l,k]of CLS){const on=V.sel.has(c);const x=btn("tg t-"+c+(on?" on":""),l,on?"check":null,()=>vToggle(c));x.title="Key "+k.toUpperCase();x.setAttribute("aria-pressed",String(on));row.appendChild(x)}
   const em=btn("tg t-empty"+(V.sel.size?"":" on"),"Empty",V.sel.size?null:"check",()=>{V.touched=true;V.sel.clear();vButtons()});em.title="Key E";em.setAttribute("aria-pressed",String(!V.sel.size));row.appendChild(em);
@@ -289,7 +290,7 @@ function vConfirm(){vAnswer(vTruth())}
 async function vSeen(m){                                                        // classes with a clear box in the stored frames (not rejected, not a known look-alike, not too small/big)
   const out=new Set();
   await Promise.all(framesOf(m).slice(0,3).map(f=>j(`${API}/${eid(m.id)}/${f.name}.json`).then(s=>{for(const d of s.detections||[])
-    if(d.group in COL&&d.score>=0.5&&d.second_look!=="rejected"&&!excluded(d)&&!d.too_small&&!d.too_big&&!d.weak)out.add(d.group)}).catch(()=>{})));
+    if(d.group in COL&&d.score>=0.5&&d.second_look!=="rejected"&&!excluded(d)&&!d.too_small&&!d.too_big&&!d.not_detected&&!d.weak)out.add(d.group)}).catch(()=>{})));
   return out}
 async function vAnswer(truth){
   const m=V.cur;if(!m)return;const n=$("#vNote");
@@ -298,7 +299,7 @@ async function vAnswer(truth){
 function vSkip(){if(V.cur)vLoad(V.cur.id,false)}
 async function vBack(){const id=V.hist.pop();if(!id)return;const m=await j(`${API}/${eid(id)}`);V.cur=m;V.pre=null;vRender();vPrefetch(m)}
 document.addEventListener("keydown",e=>{
-  if(TAB!=="va"||$("#detail").classList.contains("on")||/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName||"")))return;
+  if(TAB!=="va"||e.metaKey||e.ctrlKey||e.altKey||$("#detail").classList.contains("on")||/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName||"")))return;   // Cmd/Ctrl+V is paste, not Vehicle
   const k=e.key.toLowerCase(),t=CLS.find(x=>x[2]===k);if(!V.cur)return;
   if(k==="y"||k==="enter"){e.preventDefault();vConfirm()}else if(t)vToggle(t[0]);else if(k==="e"){V.touched=true;V.sel.clear();vButtons()}else if(k==="s"||k==="arrowright")vSkip();else if(k==="arrowleft")vBack()});
 

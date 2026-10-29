@@ -894,6 +894,23 @@ test('heartbeat Gate: a static person confirmed over the heartbeat raises motion
     await h.mixin.release();
 });
 
+test('heartbeat: a person the service only holds (no box in the frame, only known look-alikes) never opens an episode', async () => {
+    const h = hb('Gate');
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    for (let i = 0; i < 3; i++) {
+        frame(s, Date.now() + i * 5);
+        await eventually(() => h.calls.frame.length === i + 1);
+        const grill = [{ cls: 'person', score: 0.5, box: [0.2, 0.4, 0.3, 0.7], lookalike: 0.9 }, { cls: 'person', score: 0.5, box: [0.6, 0.2, 0.7, 0.4], lookalike_place: true }];
+        h.calls.frame[i].d.res({ person: { state: 'holding', confirmed: true, present: true }, detections: i ? grill : [] });   // the grill / laundry the service left out is no person
+        await sleep(20);
+    }
+    assert.equal(h.mixin['episode'].scanning, false, 'no verified scan started');
+    assert.ok(!ctl.logs.some(l => /\(heartbeat\)/.test(String(l[1]))));
+    assert.equal(motion(), false);
+    await h.mixin.release();
+});
+
 test('heartbeat Gate: a parked vehicle never confirms; a moving one does after 2 consecutive replies', async () => {
     const h = hb('Gate');
     await eventually(() => ctl.starts.length === 1);
@@ -1211,6 +1228,17 @@ test('look-alikes: used by default, the switch is posted, the button asks the se
     await h.mixin.release();
 });
 
+test('the Detect setting is posted to the service: a camera that never sees cars never gets car boxes', async () => {
+    const posted: any[] = [];
+    const h = make({ settings: { mode: 'Gate', detect: ['Person', 'Animal'] }, client: {
+        frame: async () => null, reset: async () => ({}), health: async () => ({ ok: true }), check: async () => ({ ok: true }),
+        config: async (_id: string, cfg: any) => { posted.push(cfg); return {}; },
+    } });
+    await eventually(() => posted.length >= 1);
+    assert.deepEqual([posted[0].detect_person, posted[0].detect_vehicle, posted[0].detect_animal], [true, false, true]);
+    await h.mixin.release();
+});
+
 test('thresholds are posted to the service at start; an old service rejecting the new keys gets the person keys only', async () => {
     const posted: any[] = [];
     const h = make({ settings: { mode: 'Shadow' }, client: {
@@ -1218,7 +1246,7 @@ test('thresholds are posted to the service at start; an old service rejecting th
         config: async (_id: string, cfg: any) => { posted.push(cfg); if ('vehicle_thr' in cfg) { const e: any = new Error('bad'); e.status = 400; throw e; } return {}; },
     } });
     await eventually(() => posted.length === 2);
-    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, min_area_person: 0, min_area_vehicle: 0, min_area_animal: 0, max_area_person: 0.85, single_min_h: 0.25, shape_hold: true, parking_spots: true, lookalikes: true, zoom_out: 0, second_look: true, fast_confirm: false, name: 'Cam 1' });
+    assert.deepEqual(posted[0], { start_thr: 0.65, cont_thr: 0.2, vehicle_thr: 0.4, animal_start_thr: 0.6, animal_cont_thr: 0.3, min_area_person: 0, min_area_vehicle: 0, min_area_animal: 0, max_area_person: 0.85, single_min_h: 0.25, shape_hold: true, parking_spots: true, lookalikes: true, detect_person: true, detect_vehicle: true, detect_animal: true, zoom_out: 0, second_look: true, fast_confirm: false, name: 'Cam 1' });
     assert.deepEqual(posted[1], { start_thr: 0.65, cont_thr: 0.2 });
     assert.ok(!ctl.logs.some(l => /tracker config not applied/.test(String(l[1]))));
     await h.mixin.release();

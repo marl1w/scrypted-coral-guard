@@ -496,7 +496,7 @@ def test_http_next_summary_filters_and_ui_markup():
         assert st == 200 and sm["totals"]["events"] == 1 and sm["totals"]["precision"] == 1.0 and sm["cameras"][0]["camera"] == "a" and sm["days"]
         assert b.req("GET", "/v1/journal/summary?tz=5000")[0] == 400 and b.req("GET", "/v1/journal/summary?from=nan")[0] == 400
         st, html, ct = raw(b, "GET", "/")
-        for needle in (b"Validate", b"Reviewed", b'[["person","Person","p"],["vehicle","Car","c"],["animal","Animal","a"]]', b'"Confirm"', b'"Empty"', b"{truth,note", b"Remove validation", b"{label:null}", b"Review events to see accuracy", b"next?"):
+        for needle in (b"Validate", b"Reviewed", b'[["person","Person","p"],["vehicle","Vehicle","v"],["animal","Animal","a"]]', b'"Confirm"', b'"Empty"', b"{truth,note", b"Remove validation", b"{label:null}", b"Review events to see accuracy", b"next?"):
             assert needle in html, needle
         assert b"innerHTML" not in html and b"document.write" not in html and b"eval(" not in html                  # untrusted text only through textContent
     finally:

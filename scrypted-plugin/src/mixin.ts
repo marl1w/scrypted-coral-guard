@@ -129,13 +129,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         },
         shapeHold: {
             title: 'Vehicle shape hold',
-            description: 'Keep a still or parked vehicle the detector misses while the outline inside its box still matches its last look (stops parked cars flickering at night).',
+            description: 'Keep a still or parked vehicle the detector misses while the outline inside its box still matches its last look (stops parked vehicles flickering at night).',
             type: 'boolean',
             defaultValue: true,
         },
         shapeThreshold: {
             title: 'Vehicle shape match',
-            description: 'Outline match (0.1-0.99) that keeps a missed vehicle. Same parked car scores 0.87-1, an empty spot about 0.2. Empty = 0.6.',
+            description: 'Outline match (0.1-0.99) that keeps a missed vehicle. Same parked vehicle scores 0.87-1, an empty spot about 0.2. Empty = 0.6.',
             type: 'string',
             placeholder: '0.6',
         },
@@ -550,7 +550,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** Push the tracker overrides and the plugin-wide thresholds (at start, on a change, after a service restart). */
     postConfig() {
         const person = serviceThresholds(this.thresholds);
-        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, ...this.minAreas(), ...this.shapeConfig(), zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, fast_confirm: this.plugin.fastConfirm ?? true, name: String(this.name || this.id) };
+        const detect = this.detectGroups();
+        const groups = { detect_person: detect.includes('person'), detect_vehicle: detect.includes('vehicle'), detect_animal: detect.includes('animal') };
+        const full: TrackerConfig = { ...DEFAULTS.tracker, ...person, ...this.minAreas(), ...this.shapeConfig(), ...groups, zoom_out: this.zoomOut, second_look: this.plugin.secondLook ?? true, fast_confirm: this.plugin.fastConfirm ?? true, name: String(this.name || this.id) };
         this.configPosted = false;
         if (this.released || this.mode === 'off' || this.plugin.config.killSwitch)
             return;
@@ -1177,7 +1179,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             const present = (enabled.includes('person') && !!reply.person?.present) || (enabled.includes('animal') && !!reply.animal?.present) || (enabled.includes('vehicle') && vehiclePresent);
             this.hbPresentAt = present ? at : 0; // the session holds a present subject: a camera episode must not reset it away
             const seen: string[] = [];
-            if (enabled.includes('person') && (reply.person?.confirmed || reply.person?.present)) seen.push('person');
+            // a person only HELD by the service (gone behind a pillar or indoors, no box in this frame) never opens a new episode
+            const personBox = (reply.detections || []).some(d => groupOf(d) === 'person' && d.score >= this.thresholds.personKeep && d.lookalike === undefined && !d.lookalike_place);
+            if (enabled.includes('person') && (reply.person?.confirmed || reply.person?.present) && personBox) seen.push('person');
             if (enabled.includes('animal') && reply.animal?.confirmed) seen.push('animal');
             if (enabled.includes('vehicle') && this.hbTicks.filter(Boolean).length >= 2) seen.push('vehicle');
             if (!seen.length)

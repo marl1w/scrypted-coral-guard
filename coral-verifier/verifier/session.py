@@ -47,10 +47,18 @@ class TooManyCameras(Exception):
 MIN_AREA_KEYS = ("min_area_person", "min_area_vehicle", "min_area_animal")
 
 
+def group_of(d):
+    return d.get("group") or ("person" if d["cls"] == "person" else ("vehicle" if d["cls"] in VEHICLES or d["cls"] == "bicycle" else "animal"))
+
+
+def not_detected(d, cfg):
+    """True when the camera does not detect the detection's group (detect_<group> off)."""
+    return not getattr(cfg, f"detect_{group_of(d)}", True)
+
+
 def too_small(d, cfg):
     """True when the detection's box covers less of the frame than its group's minimum (min_area_<group>, 0 = off)."""
-    g = d.get("group") or ("person" if d["cls"] == "person" else ("vehicle" if d["cls"] in VEHICLES or d["cls"] == "bicycle" else "animal"))
-    m = getattr(cfg, f"min_area_{g}", 0.0)
+    m = getattr(cfg, f"min_area_{group_of(d)}", 0.0)
     if not m:
         return False
     x0, y0, x1, y1 = d["box"]
@@ -98,6 +106,9 @@ class Config:
     occlusion_hold_s: float = _T["occlusion_hold_s"]
     parking_spots: bool = _T["parking_spots"]
     lookalikes: bool = _T["lookalikes"]
+    detect_person: bool = _T["detect_person"]
+    detect_vehicle: bool = _T["detect_vehicle"]
+    detect_animal: bool = _T["detect_animal"]
 
     def validate(self):
         for k, v in asdict(self).items():
@@ -135,6 +146,8 @@ class Config:
         for k in MIN_AREA_KEYS:
             if not 0 <= getattr(self, k) <= 0.25:
                 raise ValueError(f"{k} must be in [0, 0.25]")
+        if not (self.detect_person or self.detect_vehicle or self.detect_animal):
+            raise ValueError("at least one of detect_person, detect_vehicle, detect_animal must be true")
         if not 0.05 <= self.max_area_person <= 1:
             raise ValueError("max_area_person must be in [0.05, 1]")
         if not 0 <= self.single_min_h <= 1:
@@ -754,18 +767,20 @@ class Session:
         for d in detections:                                                  # arrivals first: someone walking in on this very frame counts
             g = "person" if d["cls"] == "person" else ("animal" if d["cls"] in ANIMALS else None)
             places = la.near(g, tuple(d["box"])) if g is not None else []
-            if g is not None and not places and d["score"] >= start[g] and not d.get("second_look_doubt"):
+            m = la.match(g, tuple(d["box"]), gray) if places and gray is not None else None
+            # a look-only entry (the sofa) is no place: walking past it is an arrival, but the sofa itself (its look matches) never is
+            if g is not None and not la.places(places) and m is None and d["score"] >= start[g] and not d.get("second_look_doubt"):
                 la.saw(t, g, d["box"])
-            at.append((d, g, places))
+            at.append((d, g, places, m))
         out = []
-        for d, g, places in at:
+        for d, g, places, m in at:
             if places:
-                m = la.match(g, tuple(d["box"]), gray) if gray is not None else None
                 if m is not None:
                     d["lookalike"] = round(m, 3)
                     self.lookalike_hits += 1
                     continue
-                if not la.arrived(t, g, places):
+                places = la.places(places, d)
+                if places and not la.arrived(t, g, places):
                     d["lookalike_place"] = True
                     self.lookalike_hits += 1
                     continue
@@ -1028,9 +1043,9 @@ class Registry:
             if s is not None:
                 s.vehicle.spots = sp
 
-    def lookalike_add(self, camera, eid, group, box, sig):
+    def lookalike_add(self, camera, eid, group, box, sig, look_only=False):
         with self.lock:
-            return self._looks.setdefault(camera, LA.Lookalikes()).add(eid, group, box, sig)
+            return self._looks.setdefault(camera, LA.Lookalikes()).add(eid, group, box, sig, look_only)
 
     def lookalike_remove(self, camera, eid):
         with self.lock:

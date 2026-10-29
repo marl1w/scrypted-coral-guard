@@ -63,3 +63,21 @@ def test_too_big_person_is_never_tracked_over_http():
         assert r["detections"] and all(d.get("too_big") for d in r["detections"] if d["cls"] == "person")
     finally:
         b.close()
+
+
+def test_groups_the_camera_does_not_detect():
+    """0.3.44: a camera that never sees cars (detect_vehicle false) never tracks nor reports one: a grill scored as a car is gone."""
+    cfg = S.Config(detect_vehicle=False)
+    assert S.not_detected(det("car", (0.1, 0.4, 0.4, 0.8)), cfg) and S.not_detected(det("bicycle", (0.1, 0.4, 0.4, 0.8)), cfg)
+    assert not S.not_detected(det("person", (0.1, 0.4, 0.4, 0.8)), cfg) and not S.not_detected(det("car", (0.1, 0.4, 0.4, 0.8)), S.Config())
+    with pytest.raises(ValueError):
+        S.Config().updated({"detect_person": False, "detect_vehicle": False, "detect_animal": False})
+    b = Box()
+    try:
+        assert b.req("POST", "/v1/cameras/patio/config", json.dumps({"confirm_n": 1, "detect_person": False}).encode())[0] == 200
+        st, r = b.frame("patio", T0, "&verbose=1")
+        assert st == 200 and r["person"]["state"] == "idle"
+        assert r["detections"] and all(d.get("not_detected") for d in r["detections"] if d["cls"] == "person")
+        assert b.frame("patio", T0 + 1000)[1]["detections"] == []                # hidden from normal replies
+    finally:
+        b.close()

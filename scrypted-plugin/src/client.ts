@@ -57,7 +57,7 @@ export interface FrameReply {
     infer_ms?: number;
     total_ms?: number;
     /** group is absent on an old service: derive it from cls (see groupOf). parked/track_id are optional per-detection extras. */
-    detections?: { cls: string; score: number; box: number[]; group?: string; track_id?: number; /** display-only candidate flag from the service (vehicles 0.3-0.5): never decides anything */ weak?: boolean }[];
+    detections?: { cls: string; score: number; box: number[]; group?: string; track_id?: number; /** display-only candidate flag from the service (vehicles 0.3-0.5): never decides anything */ weak?: boolean; /** left out by a known look-alike (look match / place) */ lookalike?: number; lookalike_place?: boolean }[];
     person: PersonState;
     vehicle?: VehicleState;
     /** absent on an old service. */
@@ -103,6 +103,10 @@ export interface TrackerConfig {
     parking_spots?: boolean;
     /** service 0.3.31+: ignore person/animal boxes that match a look-alike labelled false alarm */
     lookalikes?: boolean;
+    /** service 0.3.44+: the groups the camera detects (the "Detect" setting); the others are never tracked nor reported */
+    detect_person?: boolean;
+    detect_vehicle?: boolean;
+    detect_animal?: boolean;
     /** newer service: extra shrunk-with-border pass, 0 = off */
     zoom_out?: number;
     /** newer service: re-check uncertain detections with a zoomed-in pass */
