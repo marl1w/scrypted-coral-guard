@@ -60,6 +60,27 @@ const STREAM_RETRY_BUSY_MS = 30_000;
  */
 export const PUBLISH_CLASS: Record<Group, string> = { person: 'verified_person', vehicle: 'verified_vehicle', animal: 'verified_animal' };
 
+/** GPU decode is probed again this long after a failure: 5 min, doubling per consecutive failed probe, at most 1 h. */
+export function hwRetryMs(failures: number): number {
+    return backoffMs(failures, 5 * 60_000, 60 * 60_000);
+}
+/** a GPU probe must deliver its first JPEG within this long (the GPU start of the camera's own process gets HW_FIRST_FRAME_MS). */
+const HW_PROBE_FIRST_FRAME_MS = 8000;
+/** hard cap of a probe, stream resolution included. */
+const HW_PROBE_CAP_MS = 30_000;
+/** after this many consecutive GPU failures (failed probes, GPU processes failing after a switch) the camera stays in software until the plugin restarts. */
+const HW_PROBE_MAX_FAILS = 6;
+/** a GPU process back after a probe resets the backoff only once it has delivered frames this long without failing. */
+const HW_CLEAN_RUN_MS = 30 * 60_000;
+/** a failed probe counts as a GPU failure only if the camera's own process delivered a frame within this long (else the stream, not the GPU, is the suspect). */
+const HW_PROBE_HEALTHY_MS = 10_000;
+/** a probe due while every GPU slot is taken waits this long and looks again. */
+const HW_SLOT_BUSY_MS = 5 * 60_000;
+/** a GPU process replaces the software one only after this long without a scan. */
+const HW_SWITCH_QUIET_MS = 30_000;
+/** a probe due during a scan waits this long and looks again. */
+const HW_PROBE_BUSY_MS = 60_000;
+
 export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSensor> implements MotionSensor, OccupancySensor, ObjectDetector {
     storageSettings = new StorageSettings(this, {
         mode: {
@@ -204,8 +225,32 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private lastFrameAt = 0;
     /** when the current ffmpeg process was requested (the watchdog never counts time before it). */
     private clock: FrameClock | undefined;
-    private hwDisabled = false;
+    /**
+     * after a GPU decode failure: when the GPU is probed next (monotonic ms; Infinity = given up). Non-zero means software decode
+     * until a probe succeeds (a stream that starts slowly fails the same way, so the GPU is tried again).
+     */
+    private hwRetryAt = 0;
+    private hwRetryTimer?: NodeJS.Timeout;
+    /** GPU-to-CPU fallbacks and failed probes since the plugin started (shown in the status) */
     private hwFallbacks = 0;
+    /** consecutive GPU failures (the backoff): failed probes and GPU processes failing after a switch; reset by a clean GPU run */
+    private hwProbeFails = 0;
+    /** a probe succeeded: a GPU failure counts toward the backoff until a GPU process has run cleanly for HW_CLEAN_RUN_MS */
+    private hwOnProbation = false;
+    private hwCleanTimer?: NodeJS.Timeout;
+    /** clean GPU run time on probation: summed over processes (per trigger, each one is short), and the start of the current run (0 = none) */
+    private hwCleanMs = 0;
+    private hwCleanSince = 0;
+    /** the camera keeps the GPU slot of a successful probe until its pending switch starts the GPU process (or is abandoned) */
+    private hwSwitchSlot = false;
+    /** the running GPU probe: a separate short-lived ffmpeg, never this.frames */
+    private hwProbe: { fs?: FrameStream; timer?: NodeJS.Timeout } | undefined;
+    /** a probe succeeded while the camera was busy: the software process is replaced when the scan ends or after a quiet period */
+    private hwSwitchPending = false;
+    private hwSwitchTimer?: NodeJS.Timeout;
+    /** decode mode of the current process */
+    private srcHw = false;
+    private scanEndedAt = 0;
     private lastEpisodePostAt = 0;
     private gate: PixelGate | undefined;
     private nextHeartbeatAt = 0;
@@ -997,8 +1042,11 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.startSource(); // a pending restart timer (backoff) owns the next spawn
         }
         else {
-            if (this.scanActive)
+            const ended = this.scanActive;
+            if (ended) {
                 this.scanGen++; // scan over (also in Keep-warm, where the process keeps running)
+                this.scanEndedAt = monoNow();
+            }
             this.scanActive = false;
             this.queue = [];
             this.burstUntil = 0;
@@ -1008,8 +1056,228 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.stopSource();
             else if (!this.frames && wantWarm && !this.warmRetry)
                 this.startSource();
+            if (ended && this.hwSwitchPending)
+                this.switchToHw(); // waits the quiet period after the scan
         }
         this.syncSnapTimer();
+    }
+
+    /** software decode after a GPU failure, until a probe succeeds (not a clock comparison: a timer that fires early changes nothing) */
+    private get hwDisabled(): boolean {
+        return this.hwRetryAt > 0;
+    }
+
+    /** software until a GPU probe in waitMs (±20 % per camera, so a fleet does not probe in the same second) */
+    private armHwRetry(waitMs: number): number {
+        const wait = Math.round(waitMs * 0.8 + spreadJitter(String(this.id), Math.round(waitMs * 0.4)));
+        this.hwRetryAt = monoNow() + wait;
+        clearTimeout(this.hwRetryTimer);
+        this.hwRetryTimer = setTimeout(() => this.hwRetryDue(), wait);
+        this.hwRetryTimer.unref?.();
+        return wait;
+    }
+
+    private hwRetryDue() {
+        this.hwRetryTimer = undefined;
+        if (this.released || this.hwProbe || !Number.isFinite(this.hwRetryAt) || this.hwRetryAt <= 0)
+            return;
+        const left = this.hwRetryAt - monoNow();
+        if (left > 0) { // fired early (timer rounding): wait the rest
+            this.hwRetryTimer = setTimeout(() => this.hwRetryDue(), left);
+            this.hwRetryTimer.unref?.();
+            return;
+        }
+        if (this.frames && this.srcHw) {
+            this.hwRetryAt = 0; // already decoding on the GPU: nothing to probe
+            return;
+        }
+        if (!this.frames || this.mode === 'off' || this.plugin.config.killSwitch || this.snapPaced) {
+            // no running stream (between triggers, paced snapshots, out of service): no probe opens one; the next real start tries
+            // the GPU itself, and its own fallback (counted toward the backoff) handles a failure
+            this.hwRetryAt = 0;
+            this.hwOnProbation = true;
+            this.console.log('frame source: GPU decode is tried again at the next start');
+            return;
+        }
+        if (this.scanActive) {
+            this.armHwRetry(HW_PROBE_BUSY_MS); // a probe never competes with a scan
+            return;
+        }
+        const v = DEFAULTS;
+        if (v.hwDecode === 'Off' || !vaapiAvailable()) {
+            this.armHwRetry(hwRetryMs(this.hwProbeFails)); // looked at again later: the setting may change
+            return;
+        }
+        if (!(this.plugin.acquireHw?.(this, v.maxHwCameras) ?? true)) {
+            this.console.log(`frame source: GPU probe postponed, all ${v.maxHwCameras} GPU decode slots are used`);
+            this.armHwRetry(HW_SLOT_BUSY_MS);
+            return;
+        }
+        this.probeHw();
+    }
+
+    /**
+     * GPU probe: a second ffmpeg on the same stream with GPU decode, stopped at its first JPEG. The camera's own (software) process
+     * and its warm ring are not touched; it holds the camera's GPU slot only while it runs.
+     */
+    private probeHw() {
+        const v = DEFAULTS;
+        const probe: NonNullable<GuardMixin['hwProbe']> = {};
+        this.hwProbe = probe;
+        const finish = (ok: boolean, why?: string) => {
+            if (this.hwProbe !== probe)
+                return;
+            this.endHwProbe(ok && !this.released); // a success keeps the slot for the switch
+            if (this.released)
+                return;
+            if (ok) {
+                this.hwOnProbation = true; // the backoff is kept until the GPU has run cleanly (a probe is only a few seconds)
+                this.hwRetryAt = 0;
+                clearTimeout(this.hwRetryTimer);
+                this.console.log('frame source: GPU probe delivered a frame, GPU decode works again');
+                this.switchToHw();
+                return;
+            }
+            if (!(this.streamUp && monoNow() - this.lastFrameAt < HW_PROBE_HEALTHY_MS)) {
+                // the camera's own stream is not delivering either: not a GPU verdict, same wait again, not counted
+                const wait = this.armHwRetry(hwRetryMs(this.hwProbeFails));
+                this.console.log(`frame source: GPU probe inconclusive, the camera stream delivers no frames; GPU again in ${Math.round(wait / 60000)} min (${maskUrls(why || '')})`);
+                return;
+            }
+            this.hwFallbacks++;
+            this.hwBackoff('GPU probe failed, staying on CPU', why || '');
+            if (this.streamUp && !this.srcHw)
+                this.status.setStream({ name: this.streamName || undefined, connected: true, decode: 'cpu', warm: this.warm, gpuFailed: true, gpuFallbacks: this.hwFallbacks });
+        };
+        this.console.log('frame source: probing GPU decode (the software process keeps running)');
+        probe.timer = setTimeout(() => finish(false, `no frame within ${HW_PROBE_CAP_MS} ms`), HW_PROBE_CAP_MS);
+        probe.timer.unref?.();
+        const streamUrl: string = v.streamUrl || '';
+        startFrames({
+            camera: this.mixinDevice,
+            inputUrl: streamUrl || undefined,
+            hwaccel: true,
+            hwFirstFrameMs: HW_PROBE_FIRST_FRAME_MS,
+            vaDriver: v.vaDriver || undefined,
+            bySize: DEFAULTS.analysisStreamBySize,
+            streamId: this.chosenStream(),
+            destination: DEFAULTS.analysisDestination,
+            longProbe: this.probeFallback,
+            intervalMs: Math.max(250, v.frameIntervalMs || 500),
+            prebufferMs: 0,
+            maxWidth: v.maxWidthNormal,
+            maxWidthWide: v.maxWidthWide,
+            quality: v.jpegQuality || 85,
+            console: this.console,
+            onFrame: () => finish(true),
+        }).then(fs => {
+            if (this.hwProbe !== probe) {
+                fs.stop(); // already over (first frame, timeout or release)
+                return;
+            }
+            probe.fs = fs;
+            fs.exited.then(err => finish(false, err || 'ended before the first frame'));
+        }).catch(e => finish(false, String(e?.message || e)));
+    }
+
+    /** one more consecutive GPU failure: the next probe waits longer, after HW_PROBE_MAX_FAILS none until the plugin restarts */
+    private hwBackoff(what: string, why: string) {
+        if (++this.hwProbeFails >= HW_PROBE_MAX_FAILS) {
+            this.hwRetryAt = Infinity;
+            clearTimeout(this.hwRetryTimer);
+            this.hwRetryTimer = undefined;
+            this.console.warn(`frame source: GPU decode failed ${this.hwProbeFails} times in a row, this camera decodes in software until the plugin restarts (${maskUrls(why)})`);
+            return;
+        }
+        const wait = this.armHwRetry(hwRetryMs(this.hwProbeFails));
+        this.console.warn(`frame source: ${what}; GPU again in ${Math.round(wait / 60000)} min (${maskUrls(why)})`);
+    }
+
+    /** stop the probe (if any) and free the slot it holds (kept for the switch after a success); never touches this.frames or srcGen */
+    private endHwProbe(keepSlot = false) {
+        const probe = this.hwProbe;
+        if (!probe)
+            return;
+        this.hwProbe = undefined;
+        clearTimeout(probe.timer);
+        probe.fs?.stop();
+        if (keepSlot)
+            this.hwSwitchSlot = true;
+        else
+            this.releaseSrcHw();
+    }
+
+    /** a software process is replaced by a GPU one only while idle; without a process (per trigger) the next start uses the GPU */
+    private switchToHw() {
+        clearTimeout(this.hwSwitchTimer);
+        this.hwSwitchTimer = undefined;
+        this.hwSwitchPending = false;
+        if (this.released || !this.frames || this.srcHw || this.hwDisabled) {
+            this.cancelHwSwitch(); // nothing to switch: the kept slot goes back
+            return;
+        }
+        if (this.scanActive) {
+            this.hwSwitchPending = true; // syncSource looks again when the scan ends
+            return;
+        }
+        const lastBusy = Math.max(this.loopStartedAt, this.scanEndedAt);
+        const quiet = lastBusy ? HW_SWITCH_QUIET_MS - (monoNow() - lastBusy) : 0;
+        if (quiet > 0) {
+            this.hwSwitchTimer = setTimeout(() => this.switchToHw(), quiet);
+            this.hwSwitchTimer.unref?.();
+            return;
+        }
+        this.console.log('frame source: switching to GPU decode');
+        this.hwSwitchSlot = false; // the slot passes to the GPU start (stop and start are synchronous: no other camera can take it)
+        this.stopSource();
+        this.startSource();
+    }
+
+    /** a pending switch is dropped (process stopped, camera released): its kept slot is freed */
+    private cancelHwSwitch() {
+        clearTimeout(this.hwSwitchTimer);
+        this.hwSwitchTimer = undefined;
+        this.hwSwitchPending = false;
+        if (this.hwSwitchSlot) {
+            this.hwSwitchSlot = false;
+            this.releaseSrcHw();
+        }
+    }
+
+    /** the camera's own process frees the GPU slot, unless a probe or a pending switch holds it */
+    private releaseSrcHw() {
+        if (!this.hwProbe && !this.hwSwitchSlot && !(this.frames && this.srcHw))
+            this.plugin.releaseHw?.(this);
+    }
+
+    /** the current GPU run on probation ends: clean time is summed, a GPU failure starts the sum over */
+    private hwCleanStop(failed: boolean) {
+        clearTimeout(this.hwCleanTimer);
+        this.hwCleanTimer = undefined;
+        if (failed)
+            this.hwCleanMs = 0;
+        else if (this.hwCleanSince)
+            this.hwCleanMs += monoNow() - this.hwCleanSince;
+        this.hwCleanSince = 0;
+    }
+
+    /** a GPU process on probation delivers frames: the backoff is reset once the summed clean run time reaches HW_CLEAN_RUN_MS */
+    private hwCleanStart() {
+        clearTimeout(this.hwCleanTimer);
+        this.hwCleanSince = monoNow();
+        this.hwCleanTimer = setTimeout(() => this.hwCleanDone(), Math.max(0, HW_CLEAN_RUN_MS - this.hwCleanMs));
+        this.hwCleanTimer.unref?.();
+    }
+
+    private hwCleanDone() {
+        this.hwCleanTimer = undefined;
+        if (this.released || !this.hwOnProbation)
+            return;
+        this.hwOnProbation = false;
+        this.hwProbeFails = 0;
+        this.hwCleanMs = 0;
+        this.hwCleanSince = 0;
+        this.console.log(`frame source: GPU decode ran cleanly for ${HW_CLEAN_RUN_MS / 60000} min, GPU failure backoff reset`);
     }
 
     private startSource() {
@@ -1030,6 +1298,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.streamUp = false;
         this.gate = new PixelGate(DEFAULTS.gate);
         let hwaccel = v.hwDecode !== 'Off' && !this.hwDisabled && vaapiAvailable();
+        if (this.hwSwitchSlot || this.hwSwitchPending || this.hwSwitchTimer) {
+            // any start replaces the pending switch (it decodes on the GPU itself when it can); its kept slot is used or freed below
+            clearTimeout(this.hwSwitchTimer);
+            this.hwSwitchTimer = undefined;
+            this.hwSwitchPending = false;
+            this.hwSwitchSlot = false;
+        }
         if (hwaccel) {
             if (this.plugin.acquireHw?.(this, v.maxHwCameras) ?? true) {
                 this.console.log(`GPU decode slots: ${this.plugin.hwSlotsUsed ?? '?'}/${v.maxHwCameras} used`);
@@ -1037,10 +1312,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             else {
                 hwaccel = false;
                 this.console.log(`GPU decode slots: ${v.maxHwCameras}/${v.maxHwCameras} used, this camera decodes in software`);
+                if (this.hwOnProbation)
+                    this.armHwRetry(HW_SLOT_BUSY_MS); // back on the GPU after a probe but no slot: probed again later
             }
         }
-        else
-            this.plugin.releaseHw?.(this); // a software start holds no slot
+        this.srcHw = hwaccel;
+        if (!hwaccel)
+            this.releaseSrcHw(); // a software start holds no slot
         let gotFirst = false;
         const explicitStream = this.chosenStream();
         /** a chosen stream that delivers no first JPEG: the default stream from now on; true when it restarted the source */
@@ -1100,6 +1378,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.warmAttempt = 0;
                 if (!this.streamUp) {
                     this.streamUp = true;
+                    if (hwaccel && this.hwOnProbation)
+                        this.hwCleanStart();
                     this.status.setStream({ name: this.streamName || undefined, connected: true, decode: hwaccel ? 'gpu' : 'cpu', warm: this.warm, gpuFailed: !hwaccel && this.hwDisabled, gpuFallbacks: this.hwFallbacks });
                 }
                 if (!this.scanActive) {
@@ -1154,8 +1434,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     return;
                 this.frames = undefined;
                 this.streamUp = false;
+                this.hwCleanStop(!!(hwaccel && err && err.startsWith(HW_FAILED_PREFIX)));
                 this.status.setStream({ connected: false, decode: 'unknown', warm: this.warm });
-                this.plugin.releaseHw?.(this);
+                this.releaseSrcHw();
                 if (err && err.startsWith(PROBE_FAILED_PREFIX) && !this.probeFallback) {
                     this.probeFallback = true; // sticky until the plugin restarts
                     this.console.warn(`analysis stream could not be probed, using the default stream with a longer probe until the plugin restarts (${err})`);
@@ -1164,9 +1445,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     return;
                 }
                 if (hwaccel && err && err.startsWith(HW_FAILED_PREFIX)) {
-                    this.hwDisabled = true; // sticky until the plugin restarts
                     this.hwFallbacks++;
-                    this.console.warn(`frame source: decode GPU failed, falling back to CPU for this camera until the plugin restarts (${maskUrls(err)})`);
+                    if (this.hwOnProbation) // back on the GPU after a probe and failing in use: counts toward the backoff and the give-up
+                        this.hwBackoff('decode GPU failed again after a successful probe, back to CPU', err);
+                    else {
+                        const wait = this.armHwRetry(hwRetryMs(this.hwProbeFails));
+                        this.console.warn(`frame source: decode GPU failed, falling back to CPU for this camera; GPU again in ${Math.round(wait / 60000)} min (${maskUrls(err)})`);
+                    }
                     this.status.onFailure('hardware decode failed, using software');
                     this.startSource();
                     return;
@@ -1178,7 +1463,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (gen !== this.srcGen || this.released)
                 return;
             this.frames = undefined;
-            this.plugin.releaseHw?.(this); // a failed start holds no slot
+            this.releaseSrcHw(); // a failed start holds no slot
             clearTimeout(this.streamFirstTimer);
             if (streamFailed())
                 return;
@@ -1541,7 +1826,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.scanGen++; // an in-flight request of the old process no longer blocks, its reply is void
         this.frames?.stop();
         this.frames = undefined;
-        this.plugin.releaseHw?.(this);
+        this.srcHw = false;
+        this.cancelHwSwitch();
+        this.releaseSrcHw();
+        this.hwCleanStop(false);
         this.queue = [];
         this.ring = [];
         this.clock = undefined;
@@ -1884,8 +2172,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.released = true;
         clearTimeout(this.streamFirstTimer);
         this.clearStreamRetry();
+        this.endHwProbe();
         this.stopSource();
         clearTimeout(this.warmRetry);
+        clearTimeout(this.hwRetryTimer);
         clearInterval(this.tickTimer);
         clearTimeout(this.probeTimer);
         clearTimeout(this.verifyTimer);
@@ -1898,6 +2188,16 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         try { if (this.lastOccupied) this.occupied = false; } catch (e) { /* ignore */ }
         await super.release();
     }
+}
+
+/** Per-camera offset (0..ms) from a well-mixed hash of the device id: short numeric ids spread over the whole range. */
+export function spreadJitter(id: string, ms: number): number {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+    h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
+    h = (h ^ (h >>> 16)) >>> 0;
+    return h % Math.max(1, ms);
 }
 
 /** Per-camera offset (0..ms) derived from the device id, so heartbeats of many cameras do not burst together. */

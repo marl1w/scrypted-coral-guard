@@ -381,19 +381,471 @@ test('Keep warm: a dead ffmpeg is restarted with a NEW startFrames (new getVideo
     await h.mixin.release();
 });
 
-test('Hardware decode: a hwaccel failure restarts once in software and stays in software', async () => {
+/** a warm camera whose GPU start failed: running in software, GPU probe pending */
+async function gpuFailed(settings: Record<string, any> = {}) {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', hwDecode: 'Auto', ...settings } });
+    await eventually(() => ctl.starts.length === 1);
+    assert.equal(ctl.starts[0].o.hwaccel, true);
+    ctl.starts[0].exit('hwaccel failed: ffmpeg exited 1');
+    await eventually(() => ctl.starts.length === 2, 3000, 'software restart');
+    assert.equal(ctl.starts[1].o.hwaccel, false);
+    frame(ctl.starts[1]); // the software process is healthy: a failed probe is a GPU verdict
+    return { h, m: h.mixin as any, sw: ctl.starts[1] };
+}
+/** the probe wait is over now */
+const probeDue = (m: any) => { m.hwRetryAt = 1; m.hwRetryDue(); };
+const probes = () => ctl.starts.filter(s => s.o.hwFirstFrameMs);
+
+test('Hardware decode: a hwaccel failure restarts in software and schedules a GPU probe (jittered around 5 min)', async () => {
     (ctl as any).vaapi = true;
     try {
-        const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', hwDecode: 'Auto' } });
-        await eventually(() => ctl.starts.length === 1);
-        assert.equal(ctl.starts[0].o.hwaccel, true);
-        ctl.starts[0].exit('hwaccel failed: ffmpeg exited 1');
-        await eventually(() => ctl.starts.length === 2, 3000, 'software restart');
-        assert.equal(ctl.starts[1].o.hwaccel, false);
-        assert.ok(ctl.logs.some(l => /decode GPU failed, falling back to CPU/.test(String(l[1]))));
+        const { h, m } = await gpuFailed();
+        assert.ok(ctl.logs.some(l => /decode GPU failed, falling back to CPU for this camera; GPU again in [4-6] min/.test(String(l[1]))));
+        const left = m.hwRetryAt - Date.now();
+        assert.ok(left > 0.8 * 5 * 60_000 - 1000 && left <= 1.2 * 5 * 60_000, `wait ${left}`);
+        assert.ok(m.hwRetryTimer, 'probe timer armed');
+        await h.mixin.release();
+        assert.equal(m.hwRetryTimer._destroyed, true, 'release clears the probe timer');
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a failed GPU probe leaves the software process running and backs off', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m, sw } = await gpuFailed();
+        const gen = m.srcGen;
+        probeDue(m);
+        await eventually(() => probes().length === 1, 3000, 'probe');
+        const p = probes()[0];
+        assert.equal(p.o.hwaccel, true);
+        assert.equal(p.o.hwFirstFrameMs, 8000);
+        assert.equal(h.plugin.hwSlotsUsed, 1, 'the probe holds a slot');
+        p.exit('hwaccel failed: no frame within 8000 ms');
+        await eventually(() => ctl.logs.some(l => /GPU probe failed, staying on CPU; GPU again in/.test(String(l[1]))), 3000, 'probe failure');
+        assert.equal(sw.stopped, false, 'the software process is untouched');
+        assert.equal(m.frames !== undefined, true);
+        assert.equal(m.srcGen, gen, 'a probe never changes srcGen');
+        assert.equal(ctl.starts.length, 3, 'no restart of the camera process');
+        assert.equal(h.plugin.hwSlotsUsed, 0, 'the slot is released');
+        assert.equal(m.hwProbeFails, 1);
+        assert.equal(m.hwFallbacks, 2);
+        assert.ok(m.hwDisabled);
+        const left = m.hwRetryAt - Date.now();
+        assert.ok(left > 0.8 * 10 * 60_000 - 1000 && left <= 1.2 * 10 * 60_000, `second wait ${left}`);
         await h.mixin.release();
     }
     finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a successful probe switches to GPU at once when idle; the status shows the GPU failure until then', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m, sw } = await gpuFailed();
+        frame(sw);
+        assert.deepEqual([m.status.stream.decode, m.status.stream.gpuFailed, m.status.stream.gpuFallbacks], ['cpu', true, 1]);
+        probeDue(m);
+        await eventually(() => probes().length === 1);
+        frame(probes()[0]);
+        await eventually(() => ctl.starts.length === 4, 3000, 'switch to GPU');
+        assert.equal(probes()[0].stopped, true, 'the probe is stopped');
+        assert.equal(sw.stopped, true);
+        assert.equal(ctl.starts[3].o.hwaccel, true);
+        assert.equal(ctl.starts[3].o.hwFirstFrameMs, undefined, 'the camera process is a normal start');
+        assert.equal(m.hwRetryAt, 0);
+        assert.equal(m.hwProbeFails, 0);
+        assert.equal(h.plugin.hwSlotsUsed, 1, 'one slot: the GPU process');
+        await h.mixin.release();
+        assert.equal(h.plugin.hwSlotsUsed, 0);
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a probe due during a scan waits about a minute instead', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m } = await gpuFailed();
+        m.syncSource(true);
+        probeDue(m);
+        await sleep(30);
+        assert.equal(probes().length, 0, 'no probe during a scan');
+        const left = m.hwRetryAt - Date.now();
+        assert.ok(left > 0.8 * 60_000 - 1000 && left <= 1.2 * 60_000, `re-armed ${left}`);
+        await h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a probe success during a scan keeps the GPU slot and switches after the scan and its quiet period', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m, sw } = await gpuFailed({ maxHwCameras: 1 });
+        probeDue(m);
+        await eventually(() => probes().length === 1);
+        m.syncSource(true); // a scan starts while the probe runs
+        frame(probes()[0]);
+        await eventually(() => m.hwRetryAt === 0, 3000, 'probe success');
+        await sleep(30);
+        assert.equal(sw.stopped, false, 'no switch during the scan');
+        assert.equal(ctl.starts.length, 3);
+        assert.equal(m.hwSwitchPending, true);
+        assert.equal(h.plugin.hwSlotsUsed, 1, 'the slot is kept for the switch');
+        assert.equal(h.plugin.acquireHw({ id: 'other' }, 1), false, 'another camera cannot take it');
+        m.syncSource(false);
+        assert.equal(sw.stopped, false, 'no switch right at the scan end');
+        assert.ok(m.hwSwitchTimer, 'quiet timer armed from the scan end');
+        assert.equal(h.plugin.hwSlotsUsed, 1);
+        m.scanEndedAt = Date.now() - 40_000; m.loopStartedAt = Date.now() - 45_000;
+        m.switchToHw();
+        await eventually(() => ctl.starts.length === 4, 3000, 'switch after the quiet period');
+        assert.equal(sw.stopped, true);
+        assert.equal(ctl.starts[3].o.hwaccel, true, 'the kept slot goes to the GPU process');
+        assert.equal(h.plugin.hwSlotsUsed, 1);
+        await h.mixin.release();
+        assert.equal(h.plugin.hwSlotsUsed, 0);
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: an abandoned switch frees the kept slot; a GPU start after a probe that gets no slot probes again later', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m } = await gpuFailed({ maxHwCameras: 1 });
+        m.syncSource(true);
+        m.syncSource(false); // recent scan: the switch will wait
+        probeDue(m);
+        await eventually(() => probes().length === 1);
+        frame(probes()[0]);
+        await eventually(() => m.hwRetryAt === 0);
+        assert.ok(m.hwSwitchTimer);
+        assert.equal(h.plugin.hwSlotsUsed, 1);
+        m.stopSource(); // e.g. the mode is turned off
+        assert.equal(m.hwSwitchTimer, undefined, 'switch dropped');
+        assert.equal(h.plugin.hwSlotsUsed, 0, 'kept slot freed');
+        // another camera takes the only slot; the next start wants the GPU (probation) and gets none
+        h.plugin.hw.set('other', {});
+        m.startSource();
+        await eventually(() => last(h).o.hwaccel === false && !last(h).o.hwFirstFrameMs);
+        assert.ok(m.hwDisabled, 'software until the next probe');
+        const left = m.hwRetryAt - Date.now();
+        assert.ok(left > 0.8 * 5 * 60_000 - 1000 && left <= 1.2 * 5 * 60_000, `probe re-armed ${left}`);
+        h.plugin.hw.delete('other');
+        await h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a failed probe while the camera stream delivers no frames is not counted', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m } = await gpuFailed();
+        m.lastFrameAt = Date.now() - 60_000; // the camera's own stream is down too
+        probeDue(m);
+        await eventually(() => probes().length === 1);
+        probes()[0].exit('ffmpeg exited 1: connection refused');
+        await eventually(() => !m.hwProbe);
+        assert.equal(m.hwProbeFails, 0, 'not a GPU failure');
+        assert.equal(m.hwFallbacks, 1);
+        assert.ok(ctl.logs.some(l => /GPU probe inconclusive/.test(String(l[1]))));
+        const left = m.hwRetryAt - Date.now();
+        assert.ok(left > 0.8 * 5 * 60_000 - 1000 && left <= 1.2 * 5 * 60_000, `same wait ${left}`);
+        // the cap timer and a start failure are inconclusive as well
+        m.streamUp = false;
+        probeDue(m);
+        await eventually(() => probes().length === 2);
+        m.hwProbe.timer._onTimeout();
+        assert.equal(m.hwProbeFails, 0);
+        await h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a probe success shortly after a scan waits for the quiet period', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m, sw } = await gpuFailed();
+        m.syncSource(true);
+        m.syncSource(false);
+        probeDue(m);
+        await eventually(() => probes().length === 1);
+        frame(probes()[0]);
+        await eventually(() => m.hwRetryAt === 0);
+        assert.equal(sw.stopped, false);
+        assert.ok(m.hwSwitchTimer, 'switch timer armed');
+        m.scanEndedAt = Date.now() - 40_000; m.loopStartedAt = Date.now() - 45_000;
+        m.switchToHw();
+        await eventually(() => ctl.starts.length === 4, 3000, 'switch after the quiet period');
+        assert.equal(ctl.starts[3].o.hwaccel, true);
+        await h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: no probe without a running stream (per trigger between scans, mode Off): the next start tries the GPU', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const h = make({ settings: { mode: 'Gate', hwDecode: 'Auto' } });
+        const m = h.mixin as any;
+        m.syncSource(true);
+        await eventually(() => ctl.starts.length === 1);
+        ctl.starts[0].exit('hwaccel failed: ffmpeg exited 1');
+        await eventually(() => ctl.starts.length === 2);
+        assert.equal(ctl.starts[1].o.hwaccel, false);
+        m.syncSource(false);
+        assert.equal(m.frames, undefined, 'no process between triggers');
+        probeDue(m);
+        await sleep(30);
+        assert.equal(ctl.starts.length, 2, 'no probe opens a stream');
+        assert.equal(m.hwRetryAt, 0);
+        assert.equal(m.hwOnProbation, true);
+        assert.equal(h.plugin.hwSlotsUsed, 0);
+        m.syncSource(true);
+        await eventually(() => ctl.starts.length === 3);
+        assert.equal(ctl.starts[2].o.hwaccel, true, 'the next start decodes on the GPU');
+        ctl.starts[2].exit('hwaccel failed: ffmpeg exited 1');
+        await eventually(() => ctl.starts.length === 4);
+        assert.equal(m.hwProbeFails, 1, 'its failure counts toward the backoff');
+        await h.mixin.release();
+
+        const g = await gpuFailed();
+        await g.h.mixin.putMixinSetting('mode', 'Off');
+        const n = ctl.starts.length;
+        probeDue(g.m);
+        await sleep(30);
+        assert.equal(ctl.starts.length, n, 'no probe while out of service');
+        assert.equal(g.m.hwRetryAt, 0);
+        await g.h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: per trigger, clean GPU run time adds up across processes; a GPU failure starts the sum over', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const h = make({ settings: { mode: 'Gate', hwDecode: 'Auto' } });
+        const m = h.mixin as any;
+        m.hwOnProbation = true; m.hwProbeFails = 3;
+        m.syncSource(true);
+        await eventually(() => ctl.starts.length === 1);
+        frame(ctl.starts[0]);
+        assert.ok(m.hwCleanTimer);
+        m.hwCleanSince -= 20 * 60_000; // this GPU process ran 20 min
+        m.syncSource(false);
+        assert.ok(Math.abs(m.hwCleanMs - 20 * 60_000) < 1000, `summed ${m.hwCleanMs}`);
+        assert.equal(m.hwProbeFails, 3);
+        m.syncSource(true);
+        await eventually(() => ctl.starts.length === 2);
+        frame(ctl.starts[1]);
+        assert.ok(Math.abs(m.hwCleanTimer._idleTimeout - 10 * 60_000) < 1000, 'only the remaining 10 min');
+        m.hwCleanTimer._onTimeout();
+        assert.equal(m.hwProbeFails, 0, 'reset at 30 min in total');
+        assert.equal(m.hwOnProbation, false);
+        // a failure starts the sum over
+        m.hwOnProbation = true; m.hwProbeFails = 1; m.hwCleanMs = 25 * 60_000;
+        m.syncSource(false); m.syncSource(true);
+        await eventually(() => ctl.starts.length === 3);
+        frame(ctl.starts[2]);
+        ctl.starts[2].exit('hwaccel failed: ffmpeg exited 1; Failed to transfer data to output frame');
+        await eventually(() => m.hwProbeFails === 2);
+        assert.equal(m.hwCleanMs, 0);
+        await h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: the GPU retry jitter spreads short numeric camera ids over the window', () => {
+    const { spreadJitter } = require('../src/mixin');
+    const waits = ['27', '30', '31', '34'].map(id => 0.8 * 5 * 60_000 + spreadJitter(id, 0.4 * 5 * 60_000));
+    assert.ok(Math.max(...waits) - Math.min(...waits) >= 60_000, `spread ${waits}`);
+    assert.ok(waits.every(w => w >= 4 * 60_000 && w < 6 * 60_000));
+    assert.equal(new Set(waits.map(w => Math.round(w / 1000))).size, 4, 'no two cameras in the same second');
+});
+
+test('Hardware decode: a probe timer that fires early waits the rest, and never restarts the process', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m, sw } = await gpuFailed();
+        m.hwRetryAt = Date.now() + 40; // the timer fired before the due time
+        m.hwRetryDue();
+        assert.equal(probes().length, 0, 'not yet');
+        assert.ok(m.hwDisabled, 'still software');
+        await eventually(() => probes().length === 1, 3000, 'probe after the remainder');
+        assert.equal(sw.stopped, false);
+        await h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: no probe when GPU decode is Off, or when the process already decodes on the GPU', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m } = await gpuFailed();
+        const { DEFAULTS } = require('../src/defaults') as typeof import('../src/defaults');
+        (DEFAULTS as any).hwDecode = 'Off';
+        probeDue(m);
+        await sleep(30);
+        assert.equal(probes().length, 0);
+        assert.ok(m.hwRetryAt > Date.now(), 'looked at again later');
+        await h.mixin.release();
+
+        const k = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', hwDecode: 'Auto' } });
+        await eventually(() => ctl.starts.length === 1);
+        const km = k.mixin as any;
+        assert.equal(km.srcHw, true);
+        probeDue(km);
+        await sleep(30);
+        assert.equal(ctl.starts.length, 1, 'no probe and no restart');
+        assert.equal(km.hwRetryAt, 0);
+        await k.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a probe with every GPU slot taken is postponed, and slots stay balanced', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m } = await gpuFailed({ maxHwCameras: 1 });
+        h.plugin.hw.set('other', {});
+        probeDue(m);
+        await sleep(30);
+        assert.equal(probes().length, 0);
+        assert.ok(ctl.logs.some(l => /GPU probe postponed/.test(String(l[1]))));
+        assert.ok(m.hwRetryAt > Date.now() + 0.8 * 5 * 60_000 - 1000, 'rescheduled');
+        assert.equal(h.plugin.hwSlotsUsed, 1);
+        h.plugin.hw.delete('other');
+        probeDue(m);
+        await eventually(() => probes().length === 1);
+        assert.equal(h.plugin.hwSlotsUsed, 1);
+        probes()[0].exit('ffmpeg exited 1: boom');
+        await eventually(() => !m.hwProbe);
+        assert.equal(h.plugin.hwSlotsUsed, 0);
+        await h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+/** probe due, the probe delivers a frame and the idle camera switches; returns the new GPU process */
+async function probeSucceeds(m: any) {
+    const n = ctl.starts.length;
+    probeDue(m);
+    await eventually(() => ctl.starts.length === n + 1, 3000, 'probe');
+    frame(ctl.starts[n]);
+    await eventually(() => ctl.starts.length === n + 2 && m.srcHw === true, 3000, 'switch to GPU');
+    return ctl.starts[n + 1];
+}
+
+test('Hardware decode: 6 failed probes in a row stop the probes until restart, logged once', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const g = await gpuFailed();
+        for (let i = 1; i <= 6; i++) {
+            probeDue(g.m);
+            await eventually(() => probes().length === i);
+            probes()[i - 1].exit('hwaccel failed: no frame');
+            await eventually(() => g.m.hwProbeFails === i);
+        }
+        assert.equal(g.m.hwRetryAt, Infinity);
+        assert.equal(g.m.hwRetryTimer, undefined, 'no further probe');
+        assert.equal(ctl.logs.filter(l => /GPU decode failed 6 times in a row/.test(String(l[1]))).length, 1);
+        g.m.hwRetryDue();
+        await sleep(30);
+        assert.equal(probes().length, 6, 'given up');
+        assert.ok(g.m.hwDisabled);
+        await g.h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a probe success keeps the backoff; only a GPU process running cleanly for 30 min resets it', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const g = await gpuFailed();
+        for (let i = 1; i <= 2; i++) {
+            probeDue(g.m);
+            await eventually(() => probes().length === i);
+            probes()[i - 1].exit('hwaccel failed: no frame');
+            await eventually(() => g.m.hwProbeFails === i);
+        }
+        let gpu = await probeSucceeds(g.m);
+        assert.equal(g.m.hwProbeFails, 2, 'a probe success does not reset the backoff');
+        assert.equal(g.m.hwCleanTimer, undefined, 'no clean-run timer before the first frame');
+        frame(gpu);
+        const t = g.m.hwCleanTimer;
+        assert.ok(t && !t._destroyed, 'clean-run timer armed at the first GPU frame');
+        g.m.stopSource(); // a stopped GPU process never counts as a clean run
+        assert.equal(t._destroyed, true);
+        g.m.startSource();
+        await eventually(() => last(g.h).o.hwaccel === true && !last(g.h).stopped);
+        gpu = last(g.h);
+        frame(gpu);
+        g.m.hwCleanTimer._onTimeout(); // 30 min later
+        assert.equal(g.m.hwProbeFails, 0, 'reset by the clean run');
+        assert.equal(g.m.hwOnProbation, false);
+        assert.ok(ctl.logs.some(l => /GPU decode ran cleanly for 30 min/.test(String(l[1]))));
+        // a later GPU failure starts over at 5 min
+        gpu.exit('hwaccel failed: ffmpeg exited 1');
+        await eventually(() => g.m.srcHw === false && g.m.hwDisabled, 3000, 'software again');
+        assert.equal(g.m.hwProbeFails, 0);
+        assert.ok(g.m.hwRetryAt - Date.now() <= 1.2 * 5 * 60_000);
+        await g.h.mixin.release();
+        assert.equal(g.m.hwCleanTimer?._destroyed ?? true, true, 'release clears the clean-run timer');
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: a GPU that passes probes but fails in use backs off 5, 10, 20 min... and gives up after 6', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const g = await gpuFailed();
+        for (let i = 1; i <= 6; i++) {
+            const gpu = await probeSucceeds(g.m);
+            frame(gpu);
+            gpu.exit('hwaccel failed: ffmpeg exited 1; Failed to transfer data to output frame');
+            await eventually(() => g.m.hwProbeFails === i && g.m.srcHw === false, 3000, `runtime failure ${i}`);
+            await eventually(() => last(g.h).o.hwaccel === false, 3000, 'software restart');
+            if (i < 6) {
+                const left = g.m.hwRetryAt - Date.now();
+                const want = Math.min(60, 5 * 2 ** i) * 60_000;
+                assert.ok(left > 0.8 * want - 1000 && left <= 1.2 * want, `wait ${i}: ${left}`);
+            }
+        }
+        assert.equal(g.m.hwRetryAt, Infinity);
+        assert.equal(g.m.hwRetryTimer, undefined);
+        assert.equal(ctl.logs.filter(l => /decode GPU failed again after a successful probe/.test(String(l[1]))).length, 5);
+        assert.equal(ctl.logs.filter(l => /GPU decode failed 6 times in a row/.test(String(l[1]))).length, 1);
+        assert.equal(g.m.hwFallbacks, 7);
+        assert.equal(g.h.plugin.hwSlotsUsed, 0);
+        await g.h.mixin.release();
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: release() during a probe stops it, frees its slot and ignores its late result', async () => {
+    (ctl as any).vaapi = true;
+    try {
+        const { h, m, sw } = await gpuFailed();
+        probeDue(m);
+        await eventually(() => probes().length === 1);
+        const p = probes()[0];
+        assert.equal(h.plugin.hwSlotsUsed, 1);
+        await h.mixin.release();
+        assert.equal(p.stopped, true);
+        assert.equal(sw.stopped, true);
+        assert.equal(m.hwProbe, undefined);
+        assert.equal(h.plugin.hwSlotsUsed, 0);
+        const n = ctl.starts.length;
+        frame(p);
+        p.exit('hwaccel failed: late');
+        await sleep(30);
+        assert.equal(ctl.starts.length, n, 'nothing restarts');
+        assert.equal(m.hwProbeFails, 0);
+    }
+    finally { (ctl as any).vaapi = false; }
+});
+
+test('Hardware decode: the GPU retry waits 5 min, doubling per failure, at most 1 h', () => {
+    const { hwRetryMs } = require('../src/mixin');
+    assert.deepEqual([0, 1, 2, 3, 4, 9].map(n => hwRetryMs(n) / 60_000), [5, 10, 20, 40, 60, 60]);
 });
 
 test('settings: Refresh and Status on top, then Mode with a short description (no repeated summary)', async () => {

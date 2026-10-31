@@ -50,6 +50,8 @@ export interface FrameOptions {
     hwaccel?: boolean;
     /** a GPU start already failed for this camera: this software start says so in its decode log line. */
     hwFailedBefore?: boolean;
+    /** hardware decode: the first JPEG must arrive within this long (default HW_FIRST_FRAME_MS; shorter for a GPU probe). */
+    hwFirstFrameMs?: number;
     /** override of STREAM_RESOLVE_MS (tests). */
     resolveTimeoutMs?: number;
     /** opt-in: request the stream chosen by resolution (RTSP ids only) instead of the 'low-resolution' destination. */
@@ -367,8 +369,9 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
         lastErr = (lastErr + d.toString()).slice(-6000);
     });
     let hwTimer: NodeJS.Timeout | undefined;
+    const hwFirstMs = o.hwFirstFrameMs ?? HW_FIRST_FRAME_MS;
     if (o.hwaccel) {
-        hwTimer = setTimeout(() => { if (!gotFrame) { hwTimedOut = true; stopping = true; try { cp.kill('SIGKILL'); } catch (e) { /* gone */ } } }, HW_FIRST_FRAME_MS);
+        hwTimer = setTimeout(() => { if (!gotFrame) { hwTimedOut = true; stopping = true; try { cp.kill('SIGKILL'); } catch (e) { /* gone */ } } }, hwFirstMs);
     }
     const exited = new Promise<string | undefined>(resolve => {
         cp.on('error', e => { clearTimeout(hwTimer); resolve(maskUrls(String(e.message))); });
@@ -378,7 +381,7 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
                 o.console.warn(`frame source: ffmpeg ended unexpectedly (code ${code}, signal ${signal}) +${monoNow() - t0} ms after start, first jpeg: ${gotFrame ? 'yes' : 'no'}; stderr tail: ${stderrTail(lastErr) || '(empty)'}`);
             // hardware decode: ANY exit before the first JPEG (code 0 included) is a hardware failure, so the caller falls back to software
             if (o.hwaccel && (hwTimedOut || (!stopping && (!gotFrame || (code && HW_RUNTIME_RE.test(lastErr)))))) {
-                resolve(`${HW_FAILED_PREFIX}: ${hwTimedOut ? 'no frame within ' + HW_FIRST_FRAME_MS + ' ms' : 'ffmpeg exited ' + code}; ${maskUrls(lastErr).trim().slice(-300)}`);
+                resolve(`${HW_FAILED_PREFIX}: ${hwTimedOut ? 'no frame within ' + hwFirstMs + ' ms' : 'ffmpeg exited ' + code}; ${maskUrls(lastErr).trim().slice(-300)}`);
                 return;
             }
             if (code && !gotFrame && (code === 183 || PROBE_FAILED_RE.test(lastErr))) {
