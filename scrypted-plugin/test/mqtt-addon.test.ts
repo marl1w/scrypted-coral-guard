@@ -84,6 +84,16 @@ test('MQTT add-on: platforms come from the bridge hello; none before it or from 
     assert.equal(a.supports('image'), true, 'another contract version is ignored');
 });
 
+test('MQTT add-on: finding the bridge asks it for a hello, answering a hello does not (no loop)', () => {
+    const { MqttAddon } = require('../src/mqtt-addon');
+    const a = new MqttAddon('coral-guard', console);
+    const sent: any[] = [];
+    a.emit = (m: any) => sent.push(m);
+    a.resend(true);
+    a.onBridge({ v: 1, type: 'hello', platforms: ['image'] });
+    assert.deepEqual(sent, [{ type: 'alive', hello: true }, { type: 'alive' }]);
+});
+
 function quietProvider() {
     const P = loadProvider();
     const p: any = new P('n');

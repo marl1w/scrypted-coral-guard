@@ -92,7 +92,7 @@ export class MqttAddon {
             if (!id) return; // not installed (yet)
             const listener = sdk.systemManager.listenDevice(id, BRIDGE_EVENT, (_s, _d, msg: any) => this.onBridge(msg));
             this.bridge = { id, listener };
-            this.resend();
+            this.resend(true);
         }
         catch (e) {
             this.console.warn(`mqtt add-on: ${(e as Error).message}`);
@@ -186,8 +186,9 @@ export class MqttAddon {
         for (const [key, jpeg] of this.images.get(device) ?? []) this.emit({ type: 'image', device, key, jpeg });
     }
 
-    private resend() {
-        this.emit({ type: 'alive' });
+    /** helloWanted: ask the bridge for a hello, which an add-on that started after it has missed */
+    private resend(helloWanted = false) {
+        this.emit(helloWanted ? { type: 'alive', hello: true } : { type: 'alive' });
         for (const [device, json] of this.configs) {
             this.emit({ type: 'config', device, entities: JSON.parse(json) });
             this.sendValues(device);
