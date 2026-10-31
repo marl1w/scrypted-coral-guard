@@ -1,6 +1,6 @@
 # Coral Verifier
 
-A small Home Assistant add-on that owns the Coral USB Edge TPU and runs YOLOv9-s int8 (512 input) as a sidecar service. A client (the Scrypted mixin plugin, optionally Home Assistant) posts JPEG frames per camera; the service replies with detections and keeps a per-camera session (person confirmation, hold, stationary lock, parked/moving vehicles incl. bicycles, confirmed animals; detections carry a `group` person|vehicle|animal). It is never in the video path.
+A small Home Assistant add-on that owns the Coral USB Edge TPU and runs YOLOv9-s int8 (512 input) as a sidecar service. A client (for example a Scrypted camera plugin, optionally Home Assistant) posts JPEG frames per camera; the service replies with detections and keeps a per-camera session (person confirmation, hold, stationary lock, parked/moving vehicles incl. bicycles, confirmed animals; detections carry a `group` person|vehicle|animal). It is never in the video path.
 
 The HTTP contract is [API.md](API.md), the source of truth for endpoints, JSON shapes, status codes, contract rulings, rate and latency limits. Licences and attribution (dbro YOLOv9 weights, GPL-3.0 lineage) are in [NOTICE.md](NOTICE.md).
 
