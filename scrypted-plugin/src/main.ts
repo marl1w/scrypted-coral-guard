@@ -6,6 +6,7 @@ import { GuardMixin } from './mixin';
 import { parsePresenceNativeId, PRESENCE_LABEL, presenceName, presenceNativeId, PresenceGroup } from './presence';
 import { PresenceSensor } from './presence-sensor';
 import { maskUrls } from './util';
+import { AddonEntity, MqttAddon, slug } from './mqtt-addon';
 import { renderOverview } from './overview';
 import { MetricsRing, renderPerformance } from './performance';
 import { DEFAULT_THRESHOLDS, resolveThresholds, THRESHOLD_TITLES, Thresholds } from './thresholds';
@@ -16,6 +17,15 @@ export const PACED_SOURCE_CHOICES = ['Stream', 'Camera snapshots'];
 const thresholdSetting = (k: keyof Thresholds, description: string, onPut: () => void) => ({
     group: 'Detection', title: THRESHOLD_TITLES[k], type: 'number' as const, defaultValue: DEFAULT_THRESHOLDS[k], description, onPut,
 });
+
+/** One occupancy entity per enabled group (several are on together when several are present); ids as Home Assistant names them. */
+export function mqttPresenceEntities(cameraName: string, groups: string[]): AddonEntity[] {
+    const base = slug(cameraName);
+    return (Object.keys(PRESENCE_LABEL) as PresenceGroup[]).filter(g => groups.includes(g)).map((g): AddonEntity => ({
+        key: g, name: `${PRESENCE_LABEL[g]} presence`, platform: 'binary_sensor', device_class: 'occupancy',
+        ...(base ? { object_id: `${base}_${g}_occupancy` } : {}),
+    }));
+}
 
 // Marker interface: lets exactly one Coral Guard mixin exist per camera (objectdetector pattern).
 const MARKER = 'scrypted-coral-guard:mixin';
@@ -199,9 +209,14 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     private healthTimer: NodeJS.Timeout;
     readonly client: VerifierClient;
 
+    /** Presence and its summary as entities of each camera in the Scrypted MQTT bridge, when it is installed. */
+    readonly mqtt: MqttAddon;
+
     constructor(nativeId?: string) {
         super(nativeId);
         this.client = new VerifierClient(() => this.config);
+        this.mqtt = new MqttAddon('coral-guard', this.console);
+        this.mqtt.start();
         this.healthTimer = setInterval(() => this.checkHealth(), HEALTH_INTERVAL_MS);
         this.healthTimer.unref?.();
         process.nextTick(() => this.checkHealth());
@@ -416,6 +431,11 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
 
     /** announces a camera's presence sensors (one per enabled group, repeated only when the name changes) and removes those of disabled groups. */
     ensurePresence(cameraId: string, cameraName: string, groups: string[]) {
+        const mqttKey = `${cameraName}|${[...groups].sort().join(',')}`;
+        if (this.mqttConfigured.get(cameraId) !== mqttKey) {
+            this.mqttConfigured.set(cameraId, mqttKey);
+            this.mqtt.config(cameraId, mqttPresenceEntities(cameraName, groups));
+        }
         for (const g of groups) {
             if (!(g in PRESENCE_LABEL)) continue;
             const nativeId = presenceNativeId(cameraId, g as PresenceGroup), name = presenceName(cameraName, g as PresenceGroup);
@@ -446,7 +466,11 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         const nativeId = presenceNativeId(cameraId, group);
         if (!this.announced.has(nativeId)) return; // group disabled for this camera
         this.presenceDevice(nativeId)?.set(on);
+        this.mqtt.state(cameraId, group, on);
     }
+
+    /** name and groups each camera's MQTT entities were last built from (ensurePresence runs on every frame) */
+    private mqttConfigured = new Map<string, string>();
 
     private presenceDevice(nativeId: string): PresenceSensor | undefined {
         if (!parsePresenceNativeId(nativeId)) return undefined;
@@ -466,6 +490,10 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
 
     async releaseMixin(id: string, mixinDevice: GuardMixin): Promise<void> {
         await mixinDevice?.release(); // idempotent; unregister drops it from the live map if it is still the live one
+        if (!this.live.has(id)) {
+            this.mqtt.withdraw(id);
+            this.mqttConfigured.delete(id);
+        }
     }
 }
 
