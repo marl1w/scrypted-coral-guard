@@ -105,7 +105,7 @@ function hook(stubFrames: boolean) {
         if (req === '@scrypted/sdk')
             return {
                 __esModule: true, default: sdkStub,
-                ScryptedInterface: { MotionSensor: 'MotionSensor', OccupancySensor: 'OccupancySensor', Settings: 'Settings', VideoCamera: 'VideoCamera', MixinProvider: 'MixinProvider', ObjectDetector: 'ObjectDetector' },
+                ScryptedInterface: { MotionSensor: 'MotionSensor', OccupancySensor: 'OccupancySensor', Settings: 'Settings', VideoCamera: 'VideoCamera', MixinProvider: 'MixinProvider', ObjectDetector: 'ObjectDetector', BinarySensor: 'BinarySensor' },
                 ScryptedDeviceType: { Camera: 'Camera', Doorbell: 'Doorbell', Light: 'Light' },
                 ScryptedDeviceBase: class { id = 'prov1'; nativeId = 'n'; storage = { getItem: () => null, setItem: () => { } }; log = { i() { } }; console = console; onDeviceEvent() { } constructor(_n?: string) { } },
                 ScryptedMimeTypes: { FFmpegInput: 'x-scrypted/x-ffmpeg-input' },

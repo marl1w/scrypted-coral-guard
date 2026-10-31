@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CameraStatus, EpisodeEvent, MAX_DATA_URI_BYTES, fmtMs, pctOf, relTime, esc } from '../src/status';
+import { CameraStatus, EpisodeEvent, MAX_DATA_URI_BYTES, fmtMs, pctOf, relTime, esc, tamperLine } from '../src/status';
 
 const T0 = new Date(2026, 9, 13, 12, 0, 0).getTime();
 const mk = () => { const c = { t: T0 }; const s = new CameraStatus(() => c.t); return { s, c }; };
@@ -335,4 +335,21 @@ test('activity: empty state draws only no-analysis ticks', () => {
     const h = s.render(T0);
     assert.equal((h.match(/<title>no analysis<\/title>/g) || []).length, 60);
     assert.match(h, />1 frame<\/text>/);
+});
+
+test('tamper line: on with reason and since, a pending check, learning, OK, disabled, not checked', () => {
+    const now = Date.now();
+    const base = { enabled: true, watching: true, learning: false, on: false };
+    assert.match(tamperLine({ ...base, on: true, reason: 'moved', sinceMs: now - 120_000 }, now), /ON \u00b7 moved \u00b7 since \d\d:\d\d:\d\d \(2 min ago\)/);
+    assert.match(tamperLine({ ...base, condition: 'blurred' }, now), /checking: blurred/);
+    assert.match(tamperLine({ ...base, learning: true }, now), /learning the view/);
+    assert.match(tamperLine(base, now), />OK</);
+    assert.match(tamperLine({ ...base, enabled: false }, now), /disabled for this camera/);
+    assert.match(tamperLine({ ...base, watching: false }, now), /needs the warm stream/);
+    assert.match(tamperLine({ ...base, learning: true, flat: true }, now), /learning: view looks flat/);
+    assert.match(tamperLine({ ...base, condition: 'changed' }, now), /checking: view changed/);
+    assert.match(tamperLine({ ...base, profile: 'night' }, now), /OK<\/span> \u00b7 night reference/);
+    const s = new CameraStatus();
+    s.setTamper({ ...base, on: true, reason: 'covered', sinceMs: now });
+    assert.match(s.render(now), /Tamper: covered/);
 });

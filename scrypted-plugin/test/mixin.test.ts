@@ -851,7 +851,7 @@ test('Hardware decode: the GPU retry waits 5 min, doubling per failure, at most 
 test('settings: Refresh and Status on top, then Mode with a short description (no repeated summary)', async () => {
     const h = make({ settings: { mode: 'Gate' } });
     const st = await h.mixin.getMixinSettings();
-    assert.deepEqual(st.map(x => x.key), ['refresh', 'status', 'mode', 'detect', 'stream', 'zoomOut', 'animalStart', 'animalKeep', 'minPerson', 'minVehicle', 'minAnimal', 'maxPerson', 'singleMinHeight', 'shapeHold', 'shapeThreshold', 'coveredHold', 'parkingSpots', 'forgetSpots', 'lookalikes', 'forgetLookalikes', 'zoneNames']);
+    assert.deepEqual(st.map(x => x.key), ['refresh', 'status', 'mode', 'detect', 'stream', 'zoomOut', 'animalStart', 'animalKeep', 'minPerson', 'minVehicle', 'minAnimal', 'maxPerson', 'singleMinHeight', 'shapeHold', 'shapeThreshold', 'coveredHold', 'parkingSpots', 'forgetSpots', 'lookalikes', 'forgetLookalikes', 'tamper', 'zoneNames']);
     assert.equal(st[1].type, 'html');
     assert.equal(st[1].readonly, true);
     assert.ok(!st.some(x => x.group), 'one group only (the mixin default)');
@@ -1870,7 +1870,7 @@ test('camera settings tabs: Overview (Status only) first, then Setup (Mode, Dete
     assert.deepEqual([...new Set(st.map(x => x.subgroup))], ['Overview', 'Setup', 'Zones'], 'exactly three tabs');
     assert.equal(st.find(x => x.key === 'zone:Street')!.title, 'Edit zone: Street');
     assert.deepEqual(st.map(x => [x.key, x.subgroup]), [
-        ['refresh', 'Overview'], ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'], ['animalStart', 'Setup'], ['animalKeep', 'Setup'], ['minPerson', 'Setup'], ['minVehicle', 'Setup'], ['minAnimal', 'Setup'], ['maxPerson', 'Setup'], ['singleMinHeight', 'Setup'], ['shapeHold', 'Setup'], ['shapeThreshold', 'Setup'], ['coveredHold', 'Setup'], ['parkingSpots', 'Setup'], ['forgetSpots', 'Setup'], ['lookalikes', 'Setup'], ['forgetLookalikes', 'Setup'],
+        ['refresh', 'Overview'], ['status', 'Overview'], ['mode', 'Setup'], ['detect', 'Setup'], ['stream', 'Setup'], ['zoomOut', 'Setup'], ['animalStart', 'Setup'], ['animalKeep', 'Setup'], ['minPerson', 'Setup'], ['minVehicle', 'Setup'], ['minAnimal', 'Setup'], ['maxPerson', 'Setup'], ['singleMinHeight', 'Setup'], ['shapeHold', 'Setup'], ['shapeThreshold', 'Setup'], ['coveredHold', 'Setup'], ['parkingSpots', 'Setup'], ['forgetSpots', 'Setup'], ['lookalikes', 'Setup'], ['forgetLookalikes', 'Setup'], ['tamper', 'Setup'],
         ['zoneNames', 'Zones'], ['zone:Street', 'Zones'],
     ]);
     await h.mixin.release();
@@ -2440,4 +2440,126 @@ test('presence: a camera trigger reset never turns a presence sensor off by itse
     assert.equal(on(), false, 'after the grace the model decides');
     h.calls.reset[0].d.res({});
     await h.mixin.release();
+});
+
+const texture = () => { let s = 7; const g = new Uint8Array(128 * 72); for (let i = 0; i < g.length; i++) { s = (s * 1664525 + 1013904223) >>> 0; g[i] = 40 + ((((i % 128) >> 2) * 37 + ((i >> 9) * 53) + (s >>> 28) * 8) % 160); } return g; };
+const fastTamper = { ...(require('../src/defaults') as typeof import('../src/defaults')).DEFAULTS.tamper, sampleMs: 0, onMs: 0, offMs: 0, settleMs: 0, acceptMs: 0 };
+
+test('tamper: a covered camera turns its Tamper sensor on (logged with the reason, shown in the Status) and off again', async () => {
+    const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm', gate: { warmupFrames: 0 } as any, tamper: fastTamper } });
+    const sensor: boolean[] = [];
+    h.plugin.ensureTamper = () => { };
+    h.plugin.setTamper = (_id: string, on: boolean) => sensor.push(on);
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    for (let i = 0; i < 4; i++) s.o.gray.onGray(texture());
+    assert.deepEqual(sensor, []);
+    for (let i = 0; i < 3; i++) s.o.gray.onGray(flat());
+    assert.deepEqual(sensor, [true]);
+    assert.ok(ctl.logs.some(l => l[0] === 'warn' && /^Tamper ON: covered \(mean/.test(l[1])), JSON.stringify(ctl.logs.filter(l => /Tamper/.test(l[1]))));
+    const html = String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value);
+    assert.match(html, /Tamper: covered/);
+    assert.match(html, /ON · covered · since/);
+    assert.ok(JSON.parse(h.mixin.storage.getItem('tamperRef')!).on, 'the reference and the state are saved for a restart');
+    for (let i = 0; i < 3; i++) s.o.gray.onGray(texture());
+    assert.deepEqual(sensor, [true, false]);
+    assert.ok(ctl.logs.some(l => /^Tamper OFF \(was covered\)/.test(l[1])));
+    assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /Tamper<\/div><div><span style="color:#2f9e5b">OK/);
+    await h.mixin.release();
+});
+
+test('tamper: the per-camera setting turns it off (sensor removed, nothing checked) and on again', async () => {
+    const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm', gate: { warmupFrames: 0 } as any, tamper: fastTamper } });
+    const ensured: boolean[] = [], sensor: boolean[] = [];
+    h.plugin.ensureTamper = (_id: string, _n: string, on: boolean) => ensured.push(on);
+    h.plugin.setTamper = (_id: string, on: boolean) => sensor.push(on);
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    for (let i = 0; i < 4; i++) s.o.gray.onGray(texture());
+    for (let i = 0; i < 3; i++) s.o.gray.onGray(flat());
+    assert.deepEqual(sensor, [true]);
+    await h.mixin.putMixinSetting('tamper', 'false');
+    assert.equal(ensured[ensured.length - 1], false, 'the Tamper sensor is removed');
+    assert.deepEqual(sensor, [true, false]);
+    for (let i = 0; i < 5; i++) s.o.gray.onGray(flat());
+    assert.deepEqual(sensor, [true, false], 'not checked while off');
+    assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /off \(disabled for this camera\)/);
+    await h.mixin.putMixinSetting('tamper', 'true');
+    assert.equal(ensured[ensured.length - 1], true);
+    await h.mixin.release();
+});
+
+test('tamper: the references saved before a restart are restored, so a camera covered across the restart stays on (since kept)', async () => {
+    const g = () => new Array(32 * 18).fill(0).map((_, i) => (i * 7) % 13);
+    const snap = { v: 2, profiles: { 'default|any': { ref: { mean: 120, std: 40, edge: 50, sharp: 1.25, grad: g() }, anchor: { sharp: 1.25, grad: g() } } }, on: true, reason: 'covered', sinceWall: 1_700_000_000_000 };
+    const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm', gate: { warmupFrames: 0 } as any, tamper: fastTamper }, store: { tamperRef: JSON.stringify(snap) } });
+    assert.equal(h.mixin['tamper'].state.on, true);
+    assert.equal(h.mixin['tamper'].state.reason, 'covered');
+    assert.equal(h.mixin['tamper'].state.learning, false);
+    assert.equal(h.mixin['tamperSinceWall'], 1_700_000_000_000);
+    assert.ok(ctl.logs.some(l => /Tamper: still on after a restart \(covered\)/.test(l[1])));
+    await h.mixin.release();
+});
+
+test('tamper: a stream change keeps one reference per stream and never re-learns while on; frames of the replaced stream are ignored', async () => {
+    const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm', gate: { warmupFrames: 0 } as any, tamper: fastTamper } });
+    const sensor: boolean[] = [];
+    h.plugin.ensureTamper = () => { };
+    h.plugin.setTamper = (_id: string, on: boolean) => sensor.push(on);
+    await eventually(() => ctl.starts.length === 1);
+    const s0 = ctl.starts[0];
+    for (let i = 0; i < 4; i++) s0.o.gray.onGray(texture());
+    for (let i = 0; i < 3; i++) s0.o.gray.onGray(flat());
+    assert.deepEqual(sensor, [true]);
+    assert.equal(h.mixin['tamper'].state.profile, 'default|any');
+    h.mixin['streamLabels'].set('Sub', 'sub');
+    await h.mixin.putMixinSetting('stream', 'Sub');
+    await eventually(() => ctl.starts.length === 2);
+    assert.equal(h.mixin['tamper'].state.profile, 'sub|any');
+    assert.equal(h.mixin['tamper'].state.on, true, 'still on: nothing re-learnt while tampered');
+    for (let i = 0; i < 6; i++) s0.o.gray.onGray(texture());                // late frames of the old stream
+    assert.equal(h.mixin['tamper'].state.learning, true, 'not learnt from the old stream');
+    assert.deepEqual(sensor, [true]);
+    await h.mixin.release();
+});
+
+test('tamper: with a Night mode sibling (BinarySensor, -nightmode) day and night keep separate references', async () => {
+    const sm = (require('./harness') as typeof import('./harness')).sdkStub.systemManager;
+    let nightCb: (s: any, d: any, v: any) => void = () => { };
+    const night = { providerId: { value: 'cam1' }, nativeId: { value: '7-nightmode' }, interfaces: { value: ['BinarySensor'] }, name: { value: 'Cam 1 Night mode' }, binaryState: { value: false } };
+    sm.getSystemState = () => ({ cam1: { providerId: { value: 'nvr' } }, other: { providerId: { value: 'cam2' }, nativeId: { value: '9-nightmode' }, interfaces: { value: ['BinarySensor'] } }, nm: night });
+    sm.listenDevice = (id: string, _e: any, cb: any) => { assert.equal(id, 'nm'); nightCb = cb; return { removeListener() { } }; };
+    try {
+        const h = make({ settings: { mode: 'Shadow', frameProcess: 'Keep warm', gate: { warmupFrames: 0 } as any, tamper: fastTamper } });
+        const sensor: boolean[] = [];
+        h.plugin.ensureTamper = () => { };
+        h.plugin.setTamper = (_id: string, on: boolean) => sensor.push(on);
+        await eventually(() => ctl.starts.length === 1);
+        assert.equal(h.mixin['tamper'].state.profile, 'default|day');
+        const s0 = ctl.starts[0];
+        for (let i = 0; i < 4; i++) s0.o.gray.onGray(texture());
+        const day = h.mixin['tamper'].reference;
+        nightCb(null, null, true);
+        assert.equal(h.mixin['tamper'].state.profile, 'default|night');
+        const ir = () => texture().map(v => 255 - v);                     // another picture entirely: learnt as the night reference
+        for (let i = 0; i < 6; i++) s0.o.gray.onGray(ir());
+        assert.deepEqual(sensor, [], 'the IR switch never alarms');
+        assert.notDeepEqual(h.mixin['tamper'].reference, day);
+        nightCb(null, null, null);                                          // unknown: the last known value stays
+        assert.equal(h.mixin['tamper'].state.profile, 'default|night');
+        nightCb(null, null, false);
+        for (let i = 0; i < 6; i++) s0.o.gray.onGray(texture());
+        assert.deepEqual(h.mixin['tamper'].reference, day, 'day kept its own reference');
+        assert.deepEqual(sensor, []);
+        assert.match(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value), /day reference/);
+        // the Night mode child disappears: re-validated at the next lookup, back to one reference set
+        sm.getSystemState = () => ({ cam1: { providerId: { value: 'nvr' } } });
+        h.mixin['findNightMode'](true);
+        assert.equal(h.mixin['tamper'].state.profile, 'default|any');
+        await h.mixin.release();
+    }
+    finally {
+        delete sm.getSystemState;
+        delete sm.listenDevice;
+    }
 });

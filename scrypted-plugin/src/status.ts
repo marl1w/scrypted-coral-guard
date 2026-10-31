@@ -272,6 +272,8 @@ export class CameraStatus {
             + polys.map(z => `<polygon points="${z.points.map(p => `${n(p[0])},${n(p[1])}`).join(' ')}" fill="currentColor" fill-opacity=".25" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"><title>${esc(z.name)}</title></polygon>`).join('')
             + `</svg>`;
     }
+    private tamper?: TamperInfo;
+    setTamper(t: TamperInfo) { this.tamper = t; }
     private zoomOut = 0;
     setZoomOut(v: number) { this.zoomOut = v; }
     setDetect(groups: string[]) { this.enabledGroups = groups; this.detecting = groups.length === 3 ? groups.join(', ') : groups.length === 1 ? `${groups[0]} only` : groups.join(', '); }
@@ -522,16 +524,31 @@ export class CameraStatus {
         const failure = this.failure && showFailure ? `<div style="margin-top:8px;color:${C.red}">Failure: ${esc(this.failure.msg)} \u00b7 ${esc(ago(nowMs - this.failure.atMs))}</div>` : '';
         const head = `<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;opacity:.7"><span>Updated ${esc(clock(nowMs))}</span><span>${esc(this.mode)}${this.sensorless ? ' \u00b7 sensorless' : ''}${this.zoomOut ? ` \u00b7 zoom-out ${Math.round(this.zoomOut * 100)} %` : ''}</span></div>`;
         const bypass = !this.enabled || this.state === 'disabled' ? `<div style="margin-top:6px">${this.chip('Disabled', C.gray)}</div>` : '';
+        const tamperChip = this.tamper?.on ? `<div style="margin-top:6px">${this.chip(`Tamper: ${this.tamper.reason ?? 'on'}`, C.red)}</div>` : '';
         return `<div style="font-size:90%;line-height:1.45;max-width:680px;color:currentColor">`
-            + head + bypass
+            + head + bypass + tamperChip
             + this.nowCard(nowMs)
             + this.activityChart(nowMs)
             + this.nowLists(nowMs)
             + this.thumb(nowMs)
             + `<div style="max-width:420px">${this.detectionThumb(nowMs)}</div>`
-            + `<div style="font-weight:600;margin-top:12px">Stats</div><div style="display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;font-size:85%">${grid('Today', today)}${grid('Latency', lat)}${grid('Decode', video)}${grid('Service', service)}</div>`
+            + `<div style="font-weight:600;margin-top:12px">Stats</div><div style="display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;font-size:85%">${grid('Today', today)}${grid('Latency', lat)}${grid('Decode', video)}${grid('Service', service)}${this.tamper ? grid('Tamper', tamperLine(this.tamper, nowMs)) : ''}</div>`
             + `<div style="margin-top:10px;font-weight:600">Episodes</div><div style="font-size:85%;overflow-x:auto">${episodes}</div>${failure}</div>`;
     }
+}
+
+/** Tamper detector state for the panel (wall-clock since). */
+export interface TamperInfo { enabled: boolean; watching: boolean; learning: boolean; /** learning, the view looks flat */ flat?: boolean; on: boolean; reason?: string; condition?: string; sinceMs?: number; /** 'day' / 'night' with a Night mode sensor */ profile?: string }
+
+/** the Stats 'Tamper' cell (html): on with reason and since, a pending condition, learning, OK, or why it is not checked. */
+export function tamperLine(t: TamperInfo, nowMs: number): string {
+    if (!t.enabled) return `<span style="opacity:.7">off (disabled for this camera)</span>`;
+    const ref = t.profile ? esc(` \u00b7 ${t.profile} reference`) : '';
+    if (t.on) return `<span style="color:${C.red}">ON \u00b7 ${esc(t.reason ?? '')}${t.sinceMs ? esc(` \u00b7 since ${clock(t.sinceMs)} (${relTime(t.sinceMs, nowMs)})`) : ''}</span>${ref}`;
+    if (!t.watching) return `<span style="opacity:.7">not checked (needs the warm stream)</span>`;
+    if (t.learning) return t.flat ? `<span style="color:${C.amber}">learning: view looks flat (covered?)</span>${ref}` : esc('learning the view') + ref;
+    if (t.condition) return `<span style="color:${C.amber}">${esc(`OK \u00b7 checking: ${t.condition === 'changed' ? 'view changed' : t.condition}`)}</span>${ref}`;
+    return `<span style="color:${C.green}">OK</span>${ref}`;
 }
 
 export interface ActivityEntry { t: number; groups: string[]; published: boolean; would: boolean }

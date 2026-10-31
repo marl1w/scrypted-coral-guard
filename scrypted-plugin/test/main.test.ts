@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadProvider } from './harness';
+import { loadProvider, sdkStub, sleep } from './harness';
 
 const MARKER = 'scrypted-coral-guard:mixin';
 const camIfaces = ['VideoCamera', 'MotionSensor'];
@@ -183,4 +183,83 @@ test('Release motion after still: default 170 s, clamped 0..180', async () => {
     }
     p.storageSettings = real;
     clearInterval(p.healthTimer);
+});
+
+test('tamper: one "<camera> Tamper" BinarySensor child per camera (nativeId suffix -tamper), removed when the camera turns it off', async () => {
+    const P = loadProvider();
+    const p: any = new P('n');
+    const dm = sdkStub.deviceManager;
+    const discovered: any[] = [], removed: string[] = [];
+    dm.onDeviceDiscovered = (d: any) => { discovered.push(d); };
+    dm.onDeviceRemoved = (id: string) => { removed.push(id); };
+    try {
+        p.ensureTamper('42', 'Front Door', true);
+        p.ensureTamper('42', 'Front Door', true);   // repeated only on a rename
+        await sleep(5);
+        assert.equal(discovered.length, 1);
+        assert.equal(discovered[0].nativeId, '42-tamper');
+        assert.equal(discovered[0].name, 'Front Door Tamper');
+        assert.deepEqual(discovered[0].interfaces, ['BinarySensor']);
+        const d = await p.getDevice('42-tamper');
+        p.setTamper('42', true);
+        assert.equal(d.binaryState, undefined, 'written only after the announcement resolved');
+        await sleep(5);
+        assert.equal(d.binaryState, true);
+        p.setTamper('42', false);
+        await sleep(5);
+        assert.equal(d.binaryState, false);
+        assert.equal(await p.getDevice('presence:42:person') === d, false, 'presence ids are not tamper ids');
+        p.ensureTamper('42', 'Front Door', false);
+        await sleep(5);
+        assert.deepEqual(removed, ['42-tamper']);
+        p.setTamper('42', true);                       // off for this camera: ignored
+        await sleep(5);
+        assert.equal(d.binaryState, false);
+    }
+    finally {
+        delete dm.onDeviceDiscovered;
+        delete dm.onDeviceRemoved;
+        clearInterval(p.healthTimer);
+    }
+});
+
+test('tamper: the Tamper child is removed once its camera is gone (extension removed, camera deleted), not when a new instance follows', async () => {
+    const P = loadProvider();
+    const p: any = new P('n');
+    const dm = sdkStub.deviceManager;
+    const removed: string[] = [];
+    dm.onDeviceDiscovered = () => { };
+    dm.onDeviceRemoved = (id: string) => { removed.push(id); };
+    p.tamperRemoveDelayMs = 20;
+    try {
+        p.ensureTamper('42', 'Front Door', true);
+        p.ensureTamper('43', 'Back Door', true);
+        const fake = (id: string) => ({ id, name: id, release: async () => { } });
+        p.live.set('43', fake('43'));                   // 43 has a live (new) instance again
+        await p.releaseMixin('42', fake('42'));
+        await p.releaseMixin('43', fake('43-old'));
+        await sleep(60);
+        assert.deepEqual(removed, ['42-tamper']);
+        assert.equal(p.announced.has('42-tamper'), false);
+        assert.equal(p.announced.has('43-tamper'), true);
+        // released, then a new instance registers before the delay: the child stays
+        p.ensureTamper('44', 'Side', true);
+        await p.releaseMixin('44', fake('44'));
+        p.register({ id: '44' });
+        await sleep(60);
+        assert.deepEqual(removed, ['42-tamper']);
+        // a removal, then a new announcement: the announcement waits for the removal
+        const order: string[] = [];
+        dm.onDeviceRemoved = async (id: string) => { await sleep(10); order.push(`removed ${id}`); };
+        dm.onDeviceDiscovered = (d: any) => { order.push(`discovered ${d.nativeId}`); };
+        p.ensureTamper('44', 'Side', false);
+        p.ensureTamper('44', 'Side', true);
+        await sleep(40);
+        assert.deepEqual(order, ['removed 44-tamper', 'discovered 44-tamper']);
+    }
+    finally {
+        delete dm.onDeviceDiscovered;
+        delete dm.onDeviceRemoved;
+        clearInterval(p.healthTimer);
+    }
 });

@@ -5,6 +5,7 @@ import { DEFAULTS } from './defaults';
 import { GuardMixin } from './mixin';
 import { parsePresenceNativeId, PRESENCE_LABEL, presenceName, presenceNativeId, PresenceGroup } from './presence';
 import { PresenceSensor } from './presence-sensor';
+import { parseTamperNativeId, tamperName, tamperNativeId, TamperSensor } from './tamper-sensor';
 import { maskUrls, monoNow } from './util';
 import { AddonEntity, MqttAddon, slug } from './mqtt-addon';
 import { ANNOTATE_QUALITY, ANNOTATE_QUALITY_SMALLER, annotateJpeg, DrawBox, TOO_LARGE } from './annotate';
@@ -264,7 +265,13 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     releaseHw(m: GuardMixin) { if (this.hwUsers.get(m.id) === m) this.hwUsers.delete(m.id); }
     get hwSlotsUsed(): number { return this.hwUsers.size; }
 
-    register(m: GuardMixin) { this.active.add(m); }
+    register(m: GuardMixin) {
+        this.active.add(m);
+        // a new instance of a released camera: its Tamper child stays
+        const id = String(m.id);
+        clearTimeout(this.tamperRemoveTimers.get(id));
+        this.tamperRemoveTimers.delete(id);
+    }
 
     /** name of another enabled camera that uses the same service camera id, if any. */
     /** another camera (different device id) that uses the same service camera id, if any */
@@ -480,6 +487,62 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         this.mqtt.state(cameraId, group, on);
     }
 
+    // ---- tamper sensors (child devices) -------------------------------------------------------
+
+    private tamper = new Map<string, TamperSensor>();
+    /** per Tamper sensor: its announcement, then each state write in order (a write never lands before the device exists) */
+    private tamperReady = new Map<string, Promise<void>>();
+    /** a released camera's Tamper child is removed this long after, if no new instance of the camera showed up (tests shorten it). */
+    tamperRemoveDelayMs = 30_000;
+    private tamperRemoveTimers = new Map<string, NodeJS.Timeout>();
+
+    /** announces a camera's Tamper sensor (repeated only when the name changes), or removes it when tamper detection is off for the camera. */
+    ensureTamper(cameraId: string, cameraName: string, enabled: boolean) {
+        const nativeId = tamperNativeId(cameraId), name = tamperName(cameraName);
+        if (!enabled) {
+            this.removeTamper(cameraId, name);
+            return;
+        }
+        if (this.announced.get(nativeId) === name) return;
+        this.announced.set(nativeId, name);
+        const prev = this.tamperReady.get(nativeId) ?? Promise.resolve();
+        this.tamperReady.set(nativeId, prev.then(() => sdk.deviceManager.onDeviceDiscovered({
+            nativeId, name, type: ScryptedDeviceType.Sensor, interfaces: [ScryptedInterface.BinarySensor],
+            info: { manufacturer: 'Coral Guard', model: 'Tamper' },
+        })).then(() => undefined, e => this.console.warn(`${name}: could not announce the tamper sensor`, e)));
+    }
+
+    /** the camera turned tamper detection off, or the camera itself is gone: its Tamper sensor is removed. */
+    private removeTamper(cameraId: string, name: string) {
+        const nativeId = tamperNativeId(cameraId);
+        const known = this.announced.has(nativeId) || ((sdk.deviceManager as any).getNativeIds?.() ?? []).includes(nativeId);
+        this.announced.delete(nativeId);
+        this.tamper.delete(nativeId);
+        const prev = this.tamperReady.get(nativeId) ?? Promise.resolve();
+        if (!known)
+            return;
+        // a later announcement waits for the removal (it never lands before it and gets removed)
+        const removal = prev.then(() => sdk.deviceManager.onDeviceRemoved(nativeId));
+        removal.catch(e => this.console.warn(`${name}: could not remove the tamper sensor`, e));
+        this.tamperReady.set(nativeId, removal.then(() => undefined, () => undefined));
+    }
+
+    setTamper(cameraId: string, on: boolean) {
+        const nativeId = tamperNativeId(cameraId);
+        if (!this.announced.has(nativeId)) return; // tamper detection off for this camera
+        const prev = this.tamperReady.get(nativeId) ?? Promise.resolve();
+        this.tamperReady.set(nativeId, prev.then(() => {
+            if (this.announced.has(nativeId)) this.tamperDevice(nativeId)?.set(on);
+        }).catch(e => this.console.warn(`${this.announced.get(nativeId) ?? nativeId}: tamper state not written`, e)));
+    }
+
+    private tamperDevice(nativeId: string): TamperSensor | undefined {
+        if (parseTamperNativeId(nativeId) === undefined) return undefined;
+        let d = this.tamper.get(nativeId);
+        if (!d) { d = new TamperSensor(nativeId); this.tamper.set(nativeId, d); }
+        return d;
+    }
+
     /** a camera's MQTT entities, sent again only when its name, its groups or the bridge's image support changed */
     private mqttConfig(cameraId: string) {
         const cam = this.mqttCameras.get(cameraId);
@@ -550,17 +613,25 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     }
 
     async getDevice(nativeId: string): Promise<any> {
-        return this.presenceDevice(nativeId);
+        return this.presenceDevice(nativeId) ?? this.tamperDevice(nativeId);
     }
 
     async releaseDevice(_id: string, nativeId: string): Promise<void> {
         this.presence.delete(nativeId);
+        this.tamper.delete(nativeId);
         this.announced.delete(nativeId);
     }
 
     async releaseMixin(id: string, mixinDevice: GuardMixin): Promise<void> {
         await mixinDevice?.release(); // idempotent; unregister drops it from the live map if it is still the live one
         if (!this.live.has(id)) {
+            // the extension was removed from the camera, or the camera deleted (a plugin restart never gets here): its Tamper child goes
+            // too, once it is clear no new instance follows (a rebuilt extension chain may release before it creates the new one)
+            const name = tamperName(String((mixinDevice as any)?.name || id));
+            clearTimeout(this.tamperRemoveTimers.get(id));
+            const t = setTimeout(() => { this.tamperRemoveTimers.delete(id); if (!this.live.has(id)) this.removeTamper(id, name); }, this.tamperRemoveDelayMs);
+            t.unref?.();
+            this.tamperRemoveTimers.set(id, t);
             this.mqtt.withdraw(id);
             this.mqttCameras.delete(id);
             this.mqttConfigured.delete(id);

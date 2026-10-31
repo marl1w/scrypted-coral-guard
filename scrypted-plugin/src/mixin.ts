@@ -22,6 +22,7 @@ import { viewOfReply } from './reply-view';
 import type { DrawBox } from './annotate';
 import type { Box } from './status';
 import { PixelGate } from './gate';
+import { TamperChange, TamperDetector, TamperSnapshot } from './tamper';
 import { maskUrls, monoNow, validCameraId, validStreamUrl } from './util';
 import type { GlobalConfig, GuardProvider } from './main';
 
@@ -45,6 +46,14 @@ const ZOOM_LABELS: [string, number][] = [['Off', 0], ['20 %', 0.2], ['35 %', 0.3
 /** 'Camera AI' only: how long a raw edge waits for the camera's class claim. */
 const AI_CLAIM_WAIT_MS = 1500;
 const STREAM_DEFAULT_LABEL = 'Default (already open stream)';
+/** camera storage key of the tamper reference (kept across restarts, so a camera covered during a restart is still caught). */
+const TAMPER_REF_KEY = 'tamperRef';
+/** the tamper reference is saved at most this often while it follows a clean view (and at every transition). */
+const TAMPER_SAVE_MS = 10 * 60_000;
+/** the camera's Night mode child is looked for this often until found. */
+const NIGHT_LOOK_MS = 5 * 60_000;
+/** no gray frame for this long (mode off, kill switch, stream gone): the Tamper sensor goes off, nothing is checked. */
+const TAMPER_STALE_MS = 120_000;
 /** a chosen (non-default) stream must deliver its first JPEG within this long, else the default stream is used. */
 const STREAM_FIRST_FRAME_MS = 25000;
 /** camera storage key of the journal episode in progress (closed at the next start if a restart cut it). */
@@ -190,6 +199,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             description: 'Clear the look-alikes learnt from your false alarm labels on this camera.',
             type: 'button',
         },
+        tamper: {
+            title: 'Tamper detection',
+            description: 'A "Tamper" sensor that turns on when the camera is covered, turned away or blurred for 10 s (checked every few seconds on the warm stream).',
+            type: 'boolean',
+            defaultValue: true,
+        },
     });
     /** label -> stream id of the last rendered Stream choices */
     private streamLabels = new Map<string, string>([[STREAM_DEFAULT_LABEL, 'default']]);
@@ -306,6 +321,20 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** verified groups already announced in the current confirmation, and when the last verified event went out. */
     private emittedGroups: string[] = [];
     private lastDetectionAt = 0;
+    /** tamper detector on the gray frames; wall-clock time the sensor turned on; last sample (mono) and last reference save (mono) */
+    private tamper = new TamperDetector();
+    private tamperSinceWall = 0;
+    private tamperSampleAt = 0;
+    private tamperStartAt = 0;
+    private tamperSavedAt = 0;
+    private tamperWarned = false;
+    private tamperRestored = false;
+    /** tamper profile: the stream being analysed, and the camera's Night mode (undefined = unknown or no such sensor) */
+    private tamperStream = '';
+    private night: boolean | undefined;
+    private nightId: string | undefined;
+    private nightListener: EventListenerRegister | undefined;
+    private nightLookAt = -Infinity;
 
     constructor(options: SettingsMixinDeviceOptions<VideoCamera & MotionSensor>, private plugin: GuardProvider) {
         super(options);
@@ -344,6 +373,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.tickTimer = setInterval(() => this.onTick(), 1000);
         plugin.register(this);
         plugin.ensurePresence(this.id, this.name || this.id, this.detectGroups());
+        this.startTamper();
         this.syncSource(false);
         this.refreshStatus();
         this.postConfig();
@@ -926,6 +956,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         this.status.setEnabled(state !== 'disabled');
         if (state !== 'disabled')
             this.status.setState(state);
+        const t = this.tamper.state;
+        this.status.setTamper({ enabled: this.tamperEnabled, watching: !!this.tamperSampleAt && monoNow() - this.tamperSampleAt < TAMPER_STALE_MS,
+            learning: t.learning, flat: t.flat, on: t.on, reason: t.reason, condition: t.condition, sinceMs: t.on ? this.tamperSinceWall || undefined : undefined,
+            profile: this.night === undefined ? undefined : this.night ? 'night' : 'day' });
     }
 
     /** Write motionDetected and later check the write really became the shared state. */
@@ -984,6 +1018,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             return;
         this.expirePresence();
         const now = monoNow();
+        if (this.tamper.state.on && (!this.tamperEnabled || now - Math.max(this.tamperSampleAt, this.tamperStartAt) >= TAMPER_STALE_MS))
+            this.onTamperChange(this.tamper.clear(this.tamperEnabled ? `no frames to check for ${TAMPER_STALE_MS / 1000} s` : 'detection disabled'));
+        this.findNightMode();
         // Per trigger: shorter than the confirm timeout, so a dead stream fails open before any veto.
         // A source restart does not abort an episode in progress: only ~10 s without any frame does.
         const watchdog = this.warm ? NO_FRAMES_MS : Math.min(NO_FRAMES_MS, this.episodeConfig().confirmTimeoutMs * 0.75);
@@ -1297,6 +1334,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const ringMax = Math.min(BURST_MAX, Math.ceil((v.preRollS * 1000) / interval) + 1);
         this.streamUp = false;
         this.gate = new PixelGate(DEFAULTS.gate);
+        // one tamper reference set per analysed stream: a fallback to the default stream, or the chosen one back, switches it
+        this.tamperStream = streamUrl ? 'override' : this.chosenStream() ?? 'default';
+        this.applyTamperProfile();
         let hwaccel = v.hwDecode !== 'Off' && !this.hwDisabled && vaapiAvailable();
         if (this.hwSwitchSlot || this.hwSwitchPending || this.hwSwitchTimer) {
             // any start replaces the pending switch (it decodes on the GPU itself when it can); its kept slot is used or freed below
@@ -1355,7 +1395,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             longProbe: this.probeFallback,
             minGapMs: Math.round(Math.min(interval, 1000 / Math.max(1, DEFAULTS.burstFps)) * 0.6),
             burstFps: warm ? DEFAULTS.burstFps : undefined,
-            gray: warm && this.mode !== 'off' && !this.plugin.config.killSwitch ? { width: 128, height: 72, minGapMs: 600, onGray: f => this.onGray(f) } : undefined,
+            gray: warm && this.mode !== 'off' && !this.plugin.config.killSwitch ? { width: 128, height: 72, minGapMs: 600, onGray: f => this.onGray(f, gen) } : undefined,
             intervalMs: interval,
             prebufferMs: streamUrl ? 0 : Math.max(KEYFRAME_PREBUFFER_MS, usePreRoll ? v.preRollS * 1000 : 0),
             maxWidth: v.maxWidthNormal,
@@ -1646,7 +1686,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
      * motion is raised only when the service confirms a person. Shadow: one frame is posted, a confirmed
      * person is logged and counted, motion is never touched.
      */
-    private onGray(frame: Uint8Array) {
+    private onGray(frame: Uint8Array, gen?: number) {
+        if (gen === undefined || gen === this.srcGen) // frames still in flight from a replaced stream are never learnt
+            this.checkTamper(frame);
         const gate = this.gate;
         if (!gate || this.released || this.mode === 'off' || this.plugin.config.killSwitch || this.episode.degraded || !this.paced)
             return;
@@ -1662,6 +1704,142 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             this.synthReason = `gate ${r.reason}, blob ${r.blob}px, ${(r.fraction * 100).toFixed(1)}% changed`;
             this.apply(this.episode.synthStart(now));
         }
+    }
+
+    // ---- tamper (covered / moved / blurred) -------------------------------------------------------
+
+    private get tamperEnabled(): boolean {
+        const v = (this.storageSettings.values as any).tamper;
+        return v === undefined || v === null || v === '' ? true : v === true || v === 'true';
+    }
+
+    /** start or settings change: announce or remove the Tamper sensor; the references saved before a restart are restored. */
+    private startTamper() {
+        const on = this.tamperEnabled;
+        this.tamperStartAt = monoNow();
+        this.plugin.ensureTamper?.(this.id, this.name || this.id, on);
+        if (!on)
+            return;
+        if (!this.tamperRestored) {
+            this.tamperRestored = true;
+            let snap: TamperSnapshot | undefined;
+            try { snap = JSON.parse(this.storage.getItem(TAMPER_REF_KEY) || 'null') ?? undefined; } catch { snap = undefined; }
+            if (this.tamper.restore(snap, monoNow()) && this.tamper.state.on) {
+                this.tamperSinceWall = Number(snap?.sinceWall) > 0 ? Number(snap!.sinceWall) : Date.now();
+                this.console.log(`Tamper: still on after a restart (${this.tamper.state.reason}), cleared once the view is clean for ${DEFAULTS.tamper.offMs / 1000} s`);
+            }
+        }
+        this.tamperStream ||= this.chosenStream() ?? 'default';
+        this.findNightMode(true);
+        this.applyTamperProfile();
+        this.plugin.setTamper?.(this.id, this.tamper.state.on);
+    }
+
+    /** the reference set in use: the analysed stream, and day / night when the camera has a Night mode sensor ('any' without one). */
+    private applyTamperProfile() {
+        this.tamper.setProfile(`${this.tamperStream || 'default'}|${this.night === undefined ? 'any' : this.night ? 'night' : 'day'}`, monoNow());
+    }
+
+    /**
+     * The camera's "<camera> Night mode" child (a BinarySensor with a '-nightmode' native id, e.g. from scrypted-reolink): when
+     * present, day and night keep separate tamper references, so the IR switch never needs a re-learn. Looked up at start and
+     * every NIGHT_LOOK_MS until found (the camera plugin may add it later).
+     */
+    private findNightMode(force = false) {
+        if (this.released || !this.tamperEnabled)
+            return;
+        const now = monoNow();
+        if (!force && now - this.nightLookAt < NIGHT_LOOK_MS)
+            return;
+        this.nightLookAt = now;
+        try {
+            const sm: any = sdk.systemManager;
+            const state = typeof sm.getSystemState === 'function' ? sm.getSystemState() : undefined;
+            const isNight = (id: string) => {
+                const v = (k: string) => state?.[id]?.[k]?.value;
+                return String(v('providerId')) === String(this.id) && String(v('nativeId') ?? '').endsWith('-nightmode') && (v('interfaces') || []).includes(ScryptedInterface.BinarySensor);
+            };
+            if (this.nightId) {
+                if (isNight(this.nightId))
+                    return;
+                // the Night mode child is gone (camera plugin changed or removed it): back to one reference set until another shows up
+                this.nightListener?.removeListener();
+                this.nightListener = undefined;
+                this.nightId = undefined;
+                this.night = undefined;
+                this.applyTamperProfile();
+            }
+            for (const id of Object.keys(state || {})) {
+                if (!isNight(id))
+                    continue;
+                this.nightId = id;
+                this.nightListener = sm.listenDevice(id, ScryptedInterface.BinarySensor, (_s: any, _d: any, data: any) => this.setNight(data));
+                this.console.log(`Tamper: separate day and night references (${state[id]?.name?.value || 'Night mode'})`);
+                this.tamper.dropProfiles(k => k.endsWith('|any')); // superseded by the day and night references
+                this.setNight(state[id]?.binaryState?.value);
+                return;
+            }
+        }
+        catch (e) { /* not found: one reference set, re-learnt at a lighting step */ }
+    }
+
+    /** a known day/night value switches the reference set; unknown (null) keeps the last known one */
+    private setNight(value: unknown) {
+        if (value === undefined || value === null)
+            return;
+        const n = !!value;
+        if (n === this.night)
+            return;
+        this.night = n;
+        this.applyTamperProfile();
+    }
+
+    /**
+     * Background tamper check on the pixel gate's gray frames (warm stream, about 1 fps; the detector samples one every
+     * DEFAULTS.tamper.sampleMs). Runs whatever the service does: it needs no Coral and no network. Never throws: the
+     * pixel gate gets the frame whatever happens here.
+     */
+    private checkTamper(frame: Uint8Array) {
+        try {
+            if (this.released || !this.tamperEnabled)
+                return;
+            const now = monoNow();
+            const c = this.tamper.push(frame, now);
+            this.tamperSampleAt = now;
+            this.plugin.ensureTamper?.(this.id, this.name || this.id, true); // cheap: repeats only on a rename
+            if (c)
+                this.onTamperChange(c);
+            else if (now - this.tamperSavedAt >= TAMPER_SAVE_MS && this.tamper.dirty)
+                this.saveTamper(now);
+        }
+        catch (e) {
+            if (!this.tamperWarned) this.console.warn('tamper check skipped:', String((e as any)?.message || e));
+            this.tamperWarned = true;
+        }
+    }
+
+    private onTamperChange(c: TamperChange | undefined) {
+        if (!c)
+            return;
+        this.tamperSinceWall = c.on ? Date.now() : 0;
+        if (c.on)
+            this.console.warn(`Tamper ON: ${c.reason} (${c.detail})`);
+        else
+            this.console.log(`Tamper OFF (was ${c.reason}): ${c.detail}`);
+        this.plugin.setTamper?.(this.id, c.on);
+        this.saveTamper(monoNow());
+        this.refreshStatus();
+    }
+
+    private saveTamper(now: number) {
+        this.tamperSavedAt = now;
+        this.tamper.takeDirty();
+        const snap = this.tamper.snapshot();
+        try {
+            if (snap) this.storage.setItem(TAMPER_REF_KEY, JSON.stringify({ ...snap, ...(snap.on && this.tamperSinceWall ? { sinceWall: this.tamperSinceWall } : {}) }));
+            else this.storage.removeItem(TAMPER_REF_KEY);
+        }
+        catch (e) { /* best effort: the references are learnt again after a restart */ }
     }
 
     /** The camera's own raw motion changed (the only input that marks the mixin as 'touched'). */
@@ -2067,6 +2245,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             this.console.log(`Detect: ${this.detectGroups().join(', ')}`);
         else if (key === 'mode')
             this.console.log(`Mode: ${value}`);
+        else if (key === 'tamper') {
+            this.console.log(`Tamper detection: ${this.tamperEnabled ? 'on' : 'off'}`);
+            if (!this.tamperEnabled)
+                this.onTamperChange(this.tamper.clear('detection disabled'));
+            this.startTamper();
+        }
         this.postConfig();
         this.applyConfig();
         this.refreshStatus();
@@ -2181,6 +2365,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         clearTimeout(this.verifyTimer);
         this.listener?.removeListener();
         this.claimListener?.removeListener();
+        this.nightListener?.removeListener();
         this.plugin.unregister(this);
         // Best effort only: once removed, a write from this mixin is an event, not persisted state.
         // The next motion write from the camera re-establishes the real state.
