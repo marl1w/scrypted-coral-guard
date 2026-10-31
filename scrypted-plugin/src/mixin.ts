@@ -321,6 +321,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** verified groups already announced in the current confirmation, and when the last verified event went out. */
     private emittedGroups: string[] = [];
     private lastDetectionAt = 0;
+    /** liveness beat timer, and when the last paced snapshot arrived (snapshot mode has no stream frames between scans) */
+    private aliveTimer: NodeJS.Timeout | undefined;
+    private lastSnapAt = 0;
     /** tamper detector on the gray frames; wall-clock time the sensor turned on; last sample (mono) and last reference save (mono) */
     private tamper = new TamperDetector();
     private tamperSinceWall = 0;
@@ -371,6 +374,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             this.onObjectsDetected(data);
         });
         this.tickTimer = setInterval(() => this.onTick(), 1000);
+        this.scheduleAliveBeat();
         plugin.register(this);
         plugin.ensurePresence(this.id, this.name || this.id, this.detectGroups());
         this.startTamper();
@@ -884,6 +888,36 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
 
     private emitDetections(data: ObjectsDetected) {
         sdk.deviceManager.onMixinEvent(this.id, this, ScryptedInterface.ObjectDetector, data)?.catch?.(() => { /* best effort */ });
+    }
+
+    /**
+     * Live for this camera: verified detections are published here (Gate, publishing on, no kill switch, service up) and frames
+     * arrive (stream or paced snapshots). Shadow publishes no verified detections, so it is never live: a consumer that treats a
+     * live verifier's silence as a veto must not hear beats from it.
+     */
+    get aliveHealthy(): boolean {
+        return this.publishingVerified && monoNow() - Math.max(this.lastFrameAt, this.lastSnapAt) < DEFAULTS.aliveFrameMs;
+    }
+
+    private scheduleAliveBeat() {
+        clearTimeout(this.aliveTimer);
+        this.aliveTimer = undefined;
+        if (this.released)
+            return;
+        this.aliveTimer = setTimeout(() => this.aliveBeat(), aliveBeatDelay(this.id, DEFAULTS.aliveBeatMs, DEFAULTS.aliveBeatJitterMs));
+        this.aliveTimer.unref?.();
+    }
+
+    /** an empty ObjectsDetected while healthy: a sign of life on a quiet camera; nothing while unhealthy, so silence means not live. */
+    private aliveBeat() {
+        if (this.released)
+            return;
+        // reschedule first: a synchronous throw from onMixinEvent (device mid-rebuild) must not end the chain
+        this.scheduleAliveBeat();
+        try {
+            if (this.aliveHealthy)
+                this.emitDetections({ detections: [], timestamp: Date.now(), sourceId: this.plugin.id ?? 'coral-guard' });
+        } catch { /* best effort */ }
     }
 
     /** confirm transition (new group): one event at once; held: repeat every DEFAULTS.detectionRepeatMs (pulse-style consumers keep seeing it); nothing otherwise. */
@@ -1612,6 +1646,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (this.released || !this.snapPaced)
                 return;
             const t = monoNow();
+            this.lastSnapAt = t;
             this.status.setLiveFrame(jpeg, Date.now());
             if (!this.nextHeartbeatAt)
                 this.nextHeartbeatAt = t; // the timer already carries the per-camera jitter
@@ -2347,6 +2382,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         clearTimeout(this.aiWaitTimer);
         clearTimeout(this.snapTimer);
         this.snapTimer = undefined;
+        clearTimeout(this.aliveTimer);
+        this.aliveTimer = undefined;
         if (this.jId) {
             // never leave a journal episode 'in progress' across a restart or a removal
             const outcome = this.jConfirmed ? 'released' : 'aborted';
@@ -2383,6 +2420,12 @@ export function spreadJitter(id: string, ms: number): number {
     h = Math.imul(h ^ (h >>> 16), 0x45d9f3b);
     h = (h ^ (h >>> 16)) >>> 0;
     return h % Math.max(1, ms);
+}
+
+/** Delay to the next liveness beat: ms, offset per camera by -jitterMs..+jitterMs (stable for a camera). */
+export function aliveBeatDelay(id: string, ms: number, jitterMs: number): number {
+    const j = Math.max(0, Math.round(jitterMs));
+    return Math.max(1, ms - j + spreadJitter(id, 2 * j + 1));
 }
 
 /** Per-camera offset (0..ms) derived from the device id, so heartbeats of many cameras do not burst together. */

@@ -68,6 +68,14 @@ export const DEFAULTS = {
     singleMinHeightPct: 25,
     /** verified ObjectDetector event repeated this often while a confirmed group is held, ms. */
     detectionRepeatMs: 10000,
+    /**
+     * Liveness beat: an empty ObjectsDetected (`detections: []`) on each camera about this often, offset per camera by up to
+     * ±aliveBeatJitterMs, only while Coral Guard verifies that camera (Gate, publishing on, service up, frames arriving within
+     * aliveFrameMs). Consumers (Scrypted Stamina) read it as "the verifier is live here"; silence means it is not, ms.
+     */
+    aliveBeatMs: 60000,
+    aliveBeatJitterMs: 10000,
+    aliveFrameMs: 15000,
     /** 'Last detection' picture (MQTT add-on): one per confirmed episode, at most one per camera this often, ms. */
     lastDetectionMinMs: 30000,
     /** the frame drawn must have been analysed at most this long before the confirmation, ms. */
