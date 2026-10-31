@@ -11,11 +11,13 @@ const BRIDGE_EVENT = 'ScryptedMqttBridge';
 const BRIDGE_PLUGIN_ID = '@marl1w/scrypted-mqtt';
 const ALIVE_MS = 30_000;
 const FIND_BRIDGE_MS = 60_000;
+/** the contract's limit for an image */
+const MAX_IMAGE_BYTES = 1024 * 1024;
 
 export interface AddonEntity {
     key: string;
     name: string;
-    platform: 'binary_sensor' | 'sensor' | 'switch' | 'button' | 'event';
+    platform: 'binary_sensor' | 'sensor' | 'switch' | 'button' | 'event' | 'image';
     device_class?: string;
     unit?: string;
     state_class?: string;
@@ -35,10 +37,31 @@ export function slug(s: string): string {
 export class MqttAddon {
     private configs = new Map<string, string>();
     private states = new Map<string, Map<string, string | null>>();
+    /** last image per device and key, base64 (images cross the event bus as text) */
+    private images = new Map<string, Map<string, string>>();
     private bridge?: { id: string; listener: EventListenerRegister };
+    /** entity platforms the bridge's last hello advertised; none before it (or from a bridge too old to say) */
+    private bridgePlatforms: readonly string[] = [];
     private timers: NodeJS.Timeout[] = [];
 
-    constructor(readonly source: string, private console: Console, private onCommand?: (device: string, key: string, value: string) => void) { }
+    /** onPlatforms: the bridge's platforms changed (hello, bridge found or gone), called before everything is sent again: a plugin re-sends configs that depend on them. */
+    constructor(readonly source: string, private console: Console, private onCommand?: (device: string, key: string, value: string) => void,
+        private onPlatforms?: () => void) { }
+
+    /** the bridge is installed and listened to */
+    get connected(): boolean {
+        return !!this.bridge;
+    }
+
+    /** entity platforms the bridge accepts, as its last hello said */
+    get platforms(): readonly string[] {
+        return this.bridgePlatforms;
+    }
+
+    /** whether the bridge accepts entities of this platform; false until its hello says so */
+    supports(platform: AddonEntity['platform']): boolean {
+        return this.bridgePlatforms.includes(platform);
+    }
 
     start() {
         this.emit({ type: 'alive' });
@@ -55,6 +78,7 @@ export class MqttAddon {
         this.timers = [];
         this.bridge?.listener.removeListener();
         this.bridge = undefined;
+        this.bridgePlatforms = [];
     }
 
     /** Listens to the bridge once it exists (again, if it was reinstalled), and sends it everything when first found. */
@@ -64,19 +88,33 @@ export class MqttAddon {
             if (id === this.bridge?.id) return;
             this.bridge?.listener.removeListener();
             this.bridge = undefined;
+            this.setPlatforms([]); // a new bridge says what it supports in its hello
             if (!id) return; // not installed (yet)
-            const listener = sdk.systemManager.listenDevice(id, BRIDGE_EVENT, (_s, _d, msg: any) => {
-                if (msg?.v !== 1) return;
-                if (msg.type === 'hello') this.resend();
-                else if (msg.type === 'command' && msg.source === this.source && this.declares(msg.device, msg.key))
-                    this.onCommand?.(msg.device, msg.key, String(msg.value));
-            });
+            const listener = sdk.systemManager.listenDevice(id, BRIDGE_EVENT, (_s, _d, msg: any) => this.onBridge(msg));
             this.bridge = { id, listener };
             this.resend();
         }
         catch (e) {
             this.console.warn(`mqtt add-on: ${(e as Error).message}`);
         }
+    }
+
+    private onBridge(msg: any) {
+        if (msg?.v !== 1) return;
+        if (msg.type === 'hello') {
+            // a bridge too old to list its platforms supports none of the optional ones
+            this.setPlatforms(Array.isArray(msg.platforms) ? msg.platforms.filter((p: unknown) => typeof p === 'string') : []);
+            this.resend();
+        }
+        else if (msg.type === 'command' && msg.source === this.source && this.declares(msg.device, msg.key))
+            this.onCommand?.(msg.device, msg.key, String(msg.value));
+    }
+
+    private setPlatforms(platforms: string[]) {
+        if (platforms.join(',') === this.bridgePlatforms.join(',')) return;
+        this.bridgePlatforms = platforms;
+        try { this.onPlatforms?.(); }
+        catch (e) { this.console.warn(`mqtt add-on: ${(e as Error).message}`); }
     }
 
     /** Best effort: the add-on never disturbs the plugin it lives in. */
@@ -103,13 +141,16 @@ export class MqttAddon {
         const keys = new Set(entities.map(e => e.key));
         const states = this.states.get(device);
         for (const k of [...states?.keys() ?? []]) if (!keys.has(k)) states!.delete(k);
+        const images = this.images.get(device);
+        for (const k of [...images?.keys() ?? []]) if (!keys.has(k)) images!.delete(k);
         this.emit({ type: 'config', device, entities });
-        for (const [key, value] of this.states.get(device) ?? []) this.emit({ type: 'state', device, key, value });
+        this.sendValues(device);
     }
 
     withdraw(device: string) {
         if (!this.configs.delete(device)) return;
         this.states.delete(device);
+        this.images.delete(device);
         this.emit({ type: 'withdraw', device });
     }
 
@@ -127,11 +168,29 @@ export class MqttAddon {
         if (this.configs.has(device)) this.emit({ type: 'event', device, key, event_type: eventType, attributes });
     }
 
+    /** A JPEG of at most 1 MB for an image entity, or null to clear it; kept (the last per key) and sent again with everything else. */
+    image(device: string, key: string, jpeg: Buffer | null) {
+        if (jpeg && (jpeg.length > MAX_IMAGE_BYTES || jpeg[0] !== 0xff || jpeg[1] !== 0xd8 || jpeg[2] !== 0xff)) {
+            this.console.warn(`mqtt add-on: ${key} image dropped (not a JPEG of at most 1 MB)`);
+            return;
+        }
+        let images = this.images.get(device);
+        if (!images) this.images.set(device, images = new Map());
+        if (jpeg) images.set(key, jpeg.toString('base64'));
+        else if (!images.delete(key)) return;
+        if (this.configs.has(device)) this.emit({ type: 'image', device, key, jpeg: jpeg ? images.get(key) : null });
+    }
+
+    private sendValues(device: string) {
+        for (const [key, value] of this.states.get(device) ?? []) this.emit({ type: 'state', device, key, value });
+        for (const [key, jpeg] of this.images.get(device) ?? []) this.emit({ type: 'image', device, key, jpeg });
+    }
+
     private resend() {
         this.emit({ type: 'alive' });
         for (const [device, json] of this.configs) {
             this.emit({ type: 'config', device, entities: JSON.parse(json) });
-            for (const [key, value] of this.states.get(device) ?? []) this.emit({ type: 'state', device, key, value });
+            this.sendValues(device);
         }
     }
 }

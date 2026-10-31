@@ -19,6 +19,8 @@ import { fetchSnapshot, FastPathTimer, SNAP_MAX_FAILS } from './fastpath';
 import { FrameStream, HW_FAILED_PREFIX, PROBE_FAILED_PREFIX, startFrames, streamLabels, vaapiAvailable } from './frames';
 import { FrameClock } from './preroll';
 import { viewOfReply } from './reply-view';
+import type { DrawBox } from './annotate';
+import type { Box } from './status';
 import { PixelGate } from './gate';
 import { maskUrls, monoNow, validCameraId, validStreamUrl } from './util';
 import type { GlobalConfig, GuardProvider } from './main';
@@ -666,6 +668,59 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
     }
     private jReconfirm = false;
+
+    // ---- 'Last detection' picture (MQTT add-on) ----------------------------------------------------
+    /**
+     * per group, the newest analysed frame showing it (mono ms): a reference to the JPEG already in hand, nothing is copied.
+     * Kept only while an episode still needs its picture, so no frame outlives it.
+     */
+    private lastHits = new Map<DrawBox['group'], { jpeg: Buffer; boxes: DrawBox[]; at: number }>();
+    private shotTaken = false;
+    private shotBusy = false;
+    private shotAt = -Infinity;
+
+    /** keeps the frame for each group it shows a valid detection of: not weak, masked, parked or still. */
+    private noteHit(jpeg: Buffer, boxes: Box[]) {
+        if (this.shotTaken)
+            return;
+        const draw = boxes.filter(b => !b.weak && !b.masked && !b.parked && !b.still)
+            .map((b): DrawBox => ({ x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1, group: b.group ?? 'person' }));
+        const at = monoNow();
+        for (const g of new Set(draw.map(b => b.group)))
+            this.lastHits.set(g, { jpeg, boxes: draw, at });
+    }
+
+    /**
+     * One picture per confirmed episode, drawn from the newest frame showing a confirmed group, at most one per camera every
+     * lastDetectionMinMs and one at a time; never awaited. A confirmation without such a frame waits for one.
+     */
+    private lastDetectionStep() {
+        if (!this.episode.scanning) {
+            this.shotTaken = false;
+            this.lastHits.clear();
+            return;
+        }
+        const cg = this.episode.confirmedGroups as DrawBox['group'][] | undefined;
+        const now = monoNow();
+        if (!cg || this.shotTaken || this.shotBusy || now - this.shotAt < DEFAULTS.lastDetectionMinMs)
+            return;
+        // the newest frame of a confirmed group: a newer frame showing only another group does not replace it
+        let hit: { jpeg: Buffer; boxes: DrawBox[]; at: number } | undefined;
+        for (const g of cg) {
+            const h = this.lastHits.get(g);
+            if (h && now - h.at <= DEFAULTS.lastDetectionFrameMs && (!hit || h.at > hit.at)) hit = h;
+        }
+        if (!hit)
+            return;
+        const run = this.plugin.publishLastDetection?.(this.id, hit.jpeg, hit.boxes.filter(b => cg.includes(b.group)));
+        if (!run)
+            return;
+        this.shotTaken = true;
+        this.shotBusy = true;
+        this.shotAt = now;
+        this.lastHits.clear();
+        run.finally(() => { this.shotBusy = false; });
+    }
     private lastOccupied = false;
     private jUnflaggedAt: number | undefined;
 
@@ -673,6 +728,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (this.released)
             return;
         try { this.journalStep(fx); } catch { /* journal never affects decisions */ }
+        try { this.lastDetectionStep(); } catch { /* the picture never affects decisions */ }
         // never write before a genuine camera event, except a confirmation (true) or the release of our own true
         if ((this.touched || fx.motion || this.lastPublished) && this.motionDetected !== fx.motion)
             this.publish(fx.motion);
@@ -1165,6 +1221,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     this.status.setThumbTooLarge();
                 const view = viewOfReply(raw, this.viewThresholds());
                 this.status.onFrameAnalysed({ atMs: Date.now(), ...view.frame, boxes: view.boxes });
+                this.noteHit(jpeg, view.boxes);
                 this.trackFrom(raw);
             }
             catch (e) { this.warnBadReply(e); return; }
@@ -1536,6 +1593,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                     const view = viewOfReply(reply, this.viewThresholds());
                     this.lastPresent = view.present;
                     this.status.onFrameAnalysed({ atMs: Date.now(), ...view.frame, boxes: view.boxes });
+                    this.noteHit(item.jpeg, view.boxes);
                     this.trackFrom(reply);
                 }
                 catch (e) { this.warnBadReply(e); }

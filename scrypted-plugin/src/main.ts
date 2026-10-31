@@ -5,8 +5,9 @@ import { DEFAULTS } from './defaults';
 import { GuardMixin } from './mixin';
 import { parsePresenceNativeId, PRESENCE_LABEL, presenceName, presenceNativeId, PresenceGroup } from './presence';
 import { PresenceSensor } from './presence-sensor';
-import { maskUrls } from './util';
+import { maskUrls, monoNow } from './util';
 import { AddonEntity, MqttAddon, slug } from './mqtt-addon';
+import { ANNOTATE_QUALITY, ANNOTATE_QUALITY_SMALLER, annotateJpeg, DrawBox, TOO_LARGE } from './annotate';
 import { renderOverview } from './overview';
 import { MetricsRing, renderPerformance } from './performance';
 import { DEFAULT_THRESHOLDS, resolveThresholds, THRESHOLD_TITLES, Thresholds } from './thresholds';
@@ -27,9 +28,22 @@ export function mqttPresenceEntities(cameraName: string, groups: string[]): Addo
     }));
 }
 
+/** key of the camera's 'Last detection' image entity */
+export const LAST_DETECTION_KEY = 'last_detection';
+
+/** The frame of the camera's last confirmed detection, boxes drawn. */
+export function mqttLastDetectionEntity(cameraName: string): AddonEntity {
+    const base = slug(cameraName);
+    return { key: LAST_DETECTION_KEY, name: 'Last detection', platform: 'image', ...(base ? { object_id: `${base}_${LAST_DETECTION_KEY}` } : {}) };
+}
+
 // Marker interface: lets exactly one Coral Guard mixin exist per camera (objectdetector pattern).
 const MARKER = 'scrypted-coral-guard:mixin';
 const HEALTH_INTERVAL_MS = 30000;
+/** a hung lookup of Scrypted's ffmpeg must not stall the pictures of every camera */
+const FFMPEG_PATH_TIMEOUT_MS = 10_000;
+/** a failing 'Last detection' picture is logged at most this often */
+const ANNOTATE_WARN_MS = 5 * 60_000;
 
 export interface GlobalConfig {
     baseUrl: string;
@@ -215,7 +229,7 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
     constructor(nativeId?: string) {
         super(nativeId);
         this.client = new VerifierClient(() => this.config);
-        this.mqtt = new MqttAddon('coral-guard', this.console);
+        this.mqtt = new MqttAddon('coral-guard', this.console, undefined, () => { for (const id of this.mqttCameras.keys()) this.mqttConfig(id); });
         this.mqtt.start();
         this.healthTimer = setInterval(() => this.checkHealth(), HEALTH_INTERVAL_MS);
         this.healthTimer.unref?.();
@@ -431,11 +445,8 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
 
     /** announces a camera's presence sensors (one per enabled group, repeated only when the name changes) and removes those of disabled groups. */
     ensurePresence(cameraId: string, cameraName: string, groups: string[]) {
-        const mqttKey = `${cameraName}|${[...groups].sort().join(',')}`;
-        if (this.mqttConfigured.get(cameraId) !== mqttKey) {
-            this.mqttConfigured.set(cameraId, mqttKey);
-            this.mqtt.config(cameraId, mqttPresenceEntities(cameraName, groups));
-        }
+        this.mqttCameras.set(cameraId, { name: cameraName, groups });
+        this.mqttConfig(cameraId);
         for (const g of groups) {
             if (!(g in PRESENCE_LABEL)) continue;
             const nativeId = presenceNativeId(cameraId, g as PresenceGroup), name = presenceName(cameraName, g as PresenceGroup);
@@ -469,7 +480,66 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         this.mqtt.state(cameraId, group, on);
     }
 
-    /** name and groups each camera's MQTT entities were last built from (ensurePresence runs on every frame) */
+    /** a camera's MQTT entities, sent again only when its name, its groups or the bridge's image support changed */
+    private mqttConfig(cameraId: string) {
+        const cam = this.mqttCameras.get(cameraId);
+        if (!cam) return;
+        const image = this.mqtt.supports('image');
+        const mqttKey = `${cam.name}|${[...cam.groups].sort().join(',')}|${image}`;
+        if (this.mqttConfigured.get(cameraId) === mqttKey) return;
+        this.mqttConfigured.set(cameraId, mqttKey);
+        this.mqtt.config(cameraId, [...mqttPresenceEntities(cam.name, cam.groups), ...(image ? [mqttLastDetectionEntity(cam.name)] : [])]);
+    }
+
+    /** pictures are drawn one at a time for all cameras (each camera has at most one waiting) */
+    private annotating: Promise<unknown> = Promise.resolve();
+    /** Scrypted's ffmpeg, looked up once (again after a failed lookup) */
+    private ffmpegPath: Promise<string> | undefined;
+    private annotateWarnedAt = -Infinity;
+
+    private ffmpeg(): Promise<string> {
+        if (!this.ffmpegPath) {
+            let timer: NodeJS.Timeout | undefined;
+            const timeout = new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error('ffmpeg path lookup timed out')), FFMPEG_PATH_TIMEOUT_MS);
+            });
+            const lookup = Promise.race([sdk.mediaManager.getFFmpegPath(), timeout]).finally(() => clearTimeout(timer));
+            lookup.catch(() => { if (this.ffmpegPath === lookup) this.ffmpegPath = undefined; });
+            this.ffmpegPath = lookup;
+        }
+        return this.ffmpegPath;
+    }
+
+    /**
+     * Draws a camera's confirmed detection and publishes it as its 'Last detection' image; resolves false when nothing was
+     * published. Nothing is drawn while the bridge is missing or does not take images.
+     */
+    publishLastDetection(cameraId: string, jpeg: Buffer, boxes: DrawBox[]): Promise<boolean> {
+        if (!this.mqtt.connected || !this.mqtt.supports('image'))
+            return Promise.resolve(false);
+        const run = this.annotating.then(async () => {
+            const path = await this.ffmpeg();
+            let r = await annotateJpeg(path, jpeg, boxes, undefined, ANNOTATE_QUALITY);
+            if (r.error === TOO_LARGE)
+                r = await annotateJpeg(path, jpeg, boxes, undefined, ANNOTATE_QUALITY_SMALLER);
+            if (r.error !== undefined)
+                throw new Error(r.error);
+            this.mqtt.image(cameraId, LAST_DETECTION_KEY, r.jpeg);
+            return true;
+        }).catch(e => {
+            const now = monoNow();
+            if (now - this.annotateWarnedAt >= ANNOTATE_WARN_MS) {
+                this.annotateWarnedAt = now;
+                this.console.warn(`Last detection picture failed (${maskUrls((e as Error).message)}); logged at most every ${ANNOTATE_WARN_MS / 60_000} min`);
+            }
+            return false;
+        });
+        this.annotating = run;
+        return run;
+    }
+
+    /** name and groups of each camera's MQTT entities (ensurePresence runs on every frame), and the key they were last sent for */
+    private mqttCameras = new Map<string, { name: string; groups: string[] }>();
     private mqttConfigured = new Map<string, string>();
 
     private presenceDevice(nativeId: string): PresenceSensor | undefined {
@@ -492,6 +562,7 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         await mixinDevice?.release(); // idempotent; unregister drops it from the live map if it is still the live one
         if (!this.live.has(id)) {
             this.mqtt.withdraw(id);
+            this.mqttCameras.delete(id);
             this.mqttConfigured.delete(id);
         }
     }

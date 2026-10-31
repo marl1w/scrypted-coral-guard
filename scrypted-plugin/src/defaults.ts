@@ -68,6 +68,10 @@ export const DEFAULTS = {
     singleMinHeightPct: 25,
     /** verified ObjectDetector event repeated this often while a confirmed group is held, ms. */
     detectionRepeatMs: 10000,
+    /** 'Last detection' picture (MQTT add-on): one per confirmed episode, at most one per camera this often, ms. */
+    lastDetectionMinMs: 30000,
+    /** the frame drawn must have been analysed at most this long before the confirmation, ms. */
+    lastDetectionFrameMs: 15000,
     /** tracker overrides posted to the service; empty object = service defaults, nothing is posted. */
     tracker: {} as { start_thr?: number; cont_thr?: number; hold_s?: number },
 };
