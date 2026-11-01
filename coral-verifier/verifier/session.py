@@ -10,6 +10,8 @@ and 4 fps senders cannot confirm on near-duplicate frames.
   - hold: a confirmed track is present while gap <= hold_s (still_hold_s for a stationary track), and, exactly like the reference simulation, a track can still
     be re-matched when the gap was <= hold + 1 s at the previous tick (the reference simulation's off-by-one)
   - stationary lock: IoU > 0.7 between the current box and the track's box still_s (default 3 s, as in the reference simulation) earlier, rolling
+  - weak continuation: SERVICE-SIDE, no counterpart in the reference simulation: a box below start_thr continues a track only if its area is within
+    CONT_MAX_AREA_RATIO of the track's box (a large weak look-alike next to a person who walked away must not take the track over)
   - max_hold_s: SERVICE-SIDE safety with no counterpart in the reference simulation: a track with no detection >= start_thr for that long ends (default 600 s)
   - fast confirm (per camera, off by default): FastConfirm below runs on every FRAME (not ticks); when it fires, the tick track under that box is confirmed at once
 Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`snapshot(wall_now)`) advances with the server clock.
@@ -27,6 +29,11 @@ from dataclasses import dataclass, fields, asdict
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
 ANIMALS = tuple(DETECT_THR["animal"])
 GATE = 1.5            # centre-distance gate (in units of the track's longest box side), from the reference simulation
+# A WEAK box (cont_thr <= score < start_thr) continues a confirmed person track only when its area is within this factor of the track's box
+# (service-side, no counterpart in the reference simulation). A real person changes little from one second to the next; a large weak
+# look-alike next to where a person walked (an overexposed wall under the lights, scoring 0.2-0.45) is many times bigger and would
+# otherwise take the track over and hold it for minutes.
+CONT_MAX_AREA_RATIO = 4.0
 MATCH_IOU_VEHICLE = 0.3
 STILL_IOU = 0.7
 PARKED_BREAK_IOU = 0.5
@@ -217,10 +224,19 @@ def _cd(tb, db):
     return (dx * dx + dy * dy) ** 0.5 / n
 
 
-def greedy_cd(trk_boxes, det_boxes, gate=GATE):
+def _area(b):
+    return max(b[2] - b[0], 0.0) * max(b[3] - b[1], 0.0)
+
+
+def greedy_cd(trk_boxes, det_boxes, gate=GATE, max_ratio=None):
+    """Greedy centre-distance matching; with max_ratio, a pair whose box areas differ by more than that factor never matches."""
     pr = []
     for i, tb in enumerate(trk_boxes):
         for j, db in enumerate(det_boxes):
+            if max_ratio is not None:
+                a, b = _area(tb), _area(db)
+                if a <= 0 or b <= 0 or max(a, b) > max_ratio * min(a, b):
+                    continue
             v = _cd(tb, db)
             if v <= gate:
                 pr.append((v, i, j))
@@ -315,7 +331,7 @@ class PersonTracker:
             matched[i] = (hi[j], True); used_t.add(i); used_d.add(j)
         rem = [i for i, tr in enumerate(trks) if i not in used_t and tr.conf]
         if rem and lo:
-            for ii, j in greedy_cd([trks[i].box for i in rem], [d[1] for d in lo]):
+            for ii, j in greedy_cd([trks[i].box for i in rem], [d[1] for d in lo], max_ratio=CONT_MAX_AREA_RATIO):
                 matched[rem[ii]] = (lo[j], False)
         for i, (d, is_hi) in matched.items():
             tr = trks[i]; box = d[1]
