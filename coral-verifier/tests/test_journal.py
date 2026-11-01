@@ -266,7 +266,7 @@ def test_client_times_are_clamped_to_server_time_plus_minus_one_day(tmp_path):
     ep(j, "c", "clamp-0001", "start", now + 400 * day, timeline_event={"t_ms": now - 400 * day, "text": "x"})
     m = j.get("clamp-0001")
     assert m["start_ms"] == now + day and m["timeline"][0]["t_ms"] == now - day
-    ep(j, "c", "clamp-0001", "end", now - 10 * day, outcome="aborted")
+    ep(j, "c", "clamp-0001", "end", now - 10 * day, outcome="released")
     assert j.get("clamp-0001")["end_ms"] == now - day
     ep(j, "c", "clamp-0002", "start", now + 1000)
     assert j.get("clamp-0002")["start_ms"] == now + 1000                                                      # inside the window: untouched
@@ -337,7 +337,10 @@ def test_file_lookup_survives_concurrent_retention(tmp_path):
 
 def mk(j, clk, eid, cam, start, outcome, groups, kind="camera", label=None):
     clk.t = max(clk.t, start) if start < 10**6 else start                  # client times are clamped to now +- 1 day: the clock follows the episode
-    ep(j, cam, eid, "start", start, kind=kind, groups=groups); ep(j, cam, eid, "end", start + 10, outcome=outcome)
+    ep(j, cam, eid, "start", start, kind=kind, groups=groups)
+    if outcome == "aborted":                                                # an aborted episode without a frame is not kept
+        j.record_frame(cam, start + 5, b"f", [])
+    ep(j, cam, eid, "end", start + 10, outcome=outcome)
     if label:
         j.set_label(eid, label, None)
 
@@ -540,6 +543,29 @@ def test_legacy_unflagged_noise_is_purged_at_startup_and_in_maintenance(tmp_path
     j2.stop()
 
 
+def test_aborted_episode_without_a_frame_is_discarded_at_end_at_startup_and_in_maintenance(tmp_path):
+    """Nothing to review: an aborted episode that never got a frame is not kept (any kind); with a frame, or any other outcome, it stays."""
+    clk = Clock(); j = Journal(str(tmp_path), clock=clk)
+    st, out = ep(j, "c", "ab-nofrm1", "start", 1000, kind="camera", groups=["person"])
+    st, out = ep(j, "c", "ab-nofrm1", "end", 2000, outcome="aborted")
+    assert st == 200 and out["status"] == "discarded" and j.get("ab-nofrm1") is None and not (tmp_path / "ab-nofrm1").exists()
+    ep(j, "c", "ab-frame1", "start", 3000, kind="camera", groups=["person"])
+    j.record_frame("c", 3500, b"x", [det("person", 0.8)])
+    ep(j, "c", "ab-frame1", "end", 4000, outcome="aborted")
+    ep(j, "d", "vt-nofrm1", "start", 5000, kind="camera"); ep(j, "d", "vt-nofrm1", "end", 6000, outcome="vetoed")
+    assert j.get("ab-frame1")["status"] == "closed" and j.get("vt-nofrm1")["status"] == "closed"
+    for eid in ("old-abort1", "old-abort2"):                                                                  # left over from before: a released one rewritten as aborted
+        ep(j, "e", eid, "start", 7000, kind="camera"); ep(j, "e", eid, "end", 8000, outcome="released")
+    j.stop()
+    p = tmp_path / "old-abort1" / "meta.json"; m = json.loads(p.read_text()); m["outcome"] = "aborted"; p.write_text(json.dumps(m))
+    j2 = Journal(str(tmp_path), clock=clk)
+    assert j2.get("old-abort1") is None and not (tmp_path / "old-abort1").exists() and j2.get("old-abort2")["status"] == "closed"
+    j2.eps["old-abort2"]["meta"]["outcome"] = "aborted"                                                      # and in maintenance
+    j2.maintain()
+    assert j2.get("old-abort2") is None and j2.get("ab-frame1")["status"] == "closed"
+    j2.stop()
+
+
 def test_summary_categories_confirmed_vetoed_unflagged_other(tmp_path):
     clk = Clock(); j = Journal(str(tmp_path), clock=clk)
     mk(j, clk, "ct-000001", "a", 1000, "confirmed", ["person"])
@@ -548,7 +574,8 @@ def test_summary_categories_confirmed_vetoed_unflagged_other(tmp_path):
     mk(j, clk, "ct-000004", "a", 4000, "vetoed", ["person"])
     mk(j, clk, "ct-000005", "a", 5000, "aborted", [])
     mk(j, clk, "ct-000006", "b", 6000, "released", ["animal"], kind="unflagged")                              # by kind, whatever the outcome (another camera: no merge into the veto)
-    ep(j, "a", "ct-000007", "start", 7000, groups=["person"], timeline_event={"t_ms": 7100, "text": "Person confirmed"}); ep(j, "a", "ct-000007", "end", 7200, outcome="aborted")
+    ep(j, "a", "ct-000007", "start", 7000, groups=["person"], timeline_event={"t_ms": 7100, "text": "Person confirmed"})
+    j.record_frame("a", 7100, b"f", []); ep(j, "a", "ct-000007", "end", 7200, outcome="aborted")
     T = j.summary()["totals"]
     assert (T["confirmed"], T["vetoed"], T["unflagged"], T["other"], T["events"]) == (3, 1, 1, 2, 7)
     j.stop()

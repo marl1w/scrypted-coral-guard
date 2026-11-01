@@ -168,13 +168,13 @@ class Journal:
                 self.auto = autovalidate.AutoValidator(self)
 
     def _purge_legacy(self):
-        """Unflagged episodes that never confirmed are noise (any label): removed at startup and in maintenance; the count is logged."""
+        """Noise (unflagged episodes that never confirmed, aborted ones with no frame; any label): removed at startup and in maintenance; the count is logged."""
         n = 0
         for st in list(self.eps.values()):
             if self._discard_if_unconfirmed_unflagged(st):
                 n += 1
         if n:
-            log.info("journal: removed %d unflagged episode(s) that never confirmed", n)
+            log.info("journal: removed %d episode(s) with nothing to review (unflagged never confirmed, or aborted without a frame)", n)
         return n
 
     # ---------------- single worker: ALL journal mutations and disk writes run here, never on the frame path ----------------
@@ -327,8 +327,10 @@ class Journal:
         return bool(m.get("groups")) and m.get("outcome") == "released"
 
     def _discard_if_unconfirmed_unflagged(self, st):
+        """Noise is not kept: a closed unflagged episode that never confirmed, or a closed aborted episode with no frame (nothing to review)."""
         m = st["meta"]
-        if m.get("kind") == "unflagged" and m.get("status") == "closed" and not self.confirmed(m):
+        if m.get("status") == "closed" and (
+                (m.get("kind") == "unflagged" and not self.confirmed(m)) or (m.get("outcome") == "aborted" and not m.get("frames"))):
             self._delete(m["id"])
             return True
         return False
