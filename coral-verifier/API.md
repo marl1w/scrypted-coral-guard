@@ -314,3 +314,11 @@ Auto-validation: emptiness counts only the groups the episode's camera detects (
 Review page: the vehicle group is called Vehicle everywhere (the Validate toggle, key V, the "is:" chip); boxes keep the detected class (car, truck, bus, motorcycle, bicycle). Validate shortcuts ignore Cmd / Ctrl / Alt combinations (Cmd+V is paste).
 
 Plugin: posts `detect_person` / `detect_vehicle` / `detect_animal` with the camera config. A heartbeat opens a verified unflagged episode for a person only when the reply has a person box in that frame that is not a known look-alike: a person the service only holds (gone behind a pillar or indoors, occlusion hold) re-opened an episode right after the previous one ended, a false alarm with no person in any frame.
+
+## 0.3.53 notes
+
+One-frame person: a box of at least `person_skip_area` (3 %) of the frame is never re-checked by the second look, so it could never use the one-frame rule. Such a box (no `second_look` mark) now qualifies like a confirmed one: >= 0.75 and at least `single_min_h` of the frame tall, not a still object (`confirmed_by` "single").
+
+Short sighting (with `fast_confirm`, constants `defaults.SHORT_SIGHTING`): someone in clear view for only about a second. One per-frame IoU track with >= 3 frames >= 0.25 at least 150 ms apart within 1.5 s, one of them >= `start_thr`, that moved >= `fast_move` (centre shift or size change between its first and last frame, as the fast rule) and is not a still object confirms (`confirmed_by` "short"). Boxes of 30 % of the frame or more and second-look doubtful boxes never count. When the confirming box is below `start_thr` and no tick track lies under it, a confirmed track is created, as for rule B.
+
+Plugin: a pixel-gate opening whose largest blob is above 100 px (of the 128x72 gray frame) samples at the burst rate for 2 s, extended by the next such opening, and opens an unflagged episode even inside the cooldown after a person-less one; smaller openings are unchanged. At most 30 s of such bursts per minute per camera. Only with Fast confirm on.

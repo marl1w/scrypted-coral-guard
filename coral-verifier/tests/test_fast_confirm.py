@@ -49,7 +49,7 @@ def test_walking_towards_the_camera_counts_as_movement():
 
 def test_static_high_score_box_does_not_fast_confirm_and_falls_back_to_ticks():
     box = (0.4, 0.3, 0.55, 0.8)
-    sess = new()
+    sess = new(single_min_h=0)                                                     # one-frame rule off: this box is large enough for it
     sn = run(sess, [[person(0.87, box)]] * 4)                                      # 4 frames in 600 ms: one tick, no movement
     assert not any(s["person"]["present"] for s in sn)
     sess.update(T0 + 1000, [person(0.87, box)])                                    # the second tick confirms by the ordinary rule
@@ -83,7 +83,7 @@ def test_fast_disabled_keeps_todays_behaviour():
     ref = S.Session(S.Config())
     seq = [[person(0.9, walking(0))], [], [person(0.8, walking(1))], [person(0.3, walking(1))], []]
     a = [(ref.update(T0 + i * 1000, d), ref.snapshot()["person"]["state"])[1] for i, d in enumerate(seq)]
-    on = new()
+    on = new(single_min_h=0)                                                       # the first box would pass the one-frame rule
     b = [(on.update(T0 + i * 1000, d), on.snapshot()["person"]["state"])[1] for i, d in enumerate(seq)]
     assert a == b == ["candidate", "candidate", "confirmed", "confirmed", "holding"]
 
@@ -158,7 +158,7 @@ def test_camera_ai_person_plus_one_strong_frame_confirms_at_once():
     assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "fast_claim"
     sn = run(new(), [[person(0.70, box)]], claim="person")                           # below 0.75: rule B confirms instead
     assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "fast_b"
-    sn = run(new(), [[person(0.90, box)]])                                           # no camera claim: one frame never confirms
+    sn = run(new(), [[person(0.90, (0.4, 0.5, 0.48, 0.78))]])                         # no camera claim, not re-checked (2 % of the frame): no
     assert not sn[0]["person"]["present"]
 
 
@@ -184,8 +184,58 @@ def test_one_frame_person_confirmed_by_the_second_look_and_tall_enough_confirms(
     assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "single"
     assert not run(new(), [[sl(0.81, squat)]])[0]["person"]["present"]               # too short: a bird
     assert not run(new(), [[sl(0.74, tall)]])[0]["person"]["present"]                # below 0.75
-    assert not run(new(), [[person(0.90, tall)]])[0]["person"]["present"]            # no second look (large boxes skip it): one frame is not enough
+    assert not run(new(), [[person(0.90, tall)]])[0]["person"]["present"]            # 2 % of the frame, not re-checked (the cap): one frame is not enough
     assert not run(new(), [[sl(0.90, tall, "lowered")]])[0]["person"]["present"]
     assert not run(new(single_min_h=0), [[sl(0.90, tall)]])[0]["person"]["present"]  # 0 = rule off
     assert run(new(single_min_h=0.15), [[sl(0.81, squat)]])[0]["person"]["present"]  # per camera
     assert not run(new(fast_confirm=False), [[sl(0.90, tall)]])[0]["person"]["present"]
+
+
+def test_one_frame_person_too_large_for_the_second_look_confirms():
+    """0.3.53: a box of at least person_skip_area (3 %) of the frame is never re-checked; a strong, tall one counts for the one-frame rule."""
+    near = (0.6, 0.33, 0.75, 0.62)                                                   # 15 % x 29 %: 4.4 % of the frame
+    sn = run(new(), [[person(0.82, near)]])
+    assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "single"
+    assert not run(new(), [[person(0.74, near)]])[0]["person"]["present"]            # below 0.75
+    assert not run(new(), [[person(0.90, (0.5, 0.5, 0.9, 0.6))]])[0]["person"]["present"]   # large but squat (h 0.10)
+    assert not run(new(), [[{**person(0.90, near), "second_look": "skipped", "second_look_doubt": True}]])[0]["person"]["present"]  # cap / shed
+
+
+def sighting(scores, step=0.02, dt=167):
+    """A person walking down (6 fps burst): one box per frame, `scores` in order; the centre moves `step` per frame (box height 0.3)."""
+    frames = [[person(s, (0.7, 0.3 + i * step, 0.78, 0.6 + i * step))] for i, s in enumerate(scores)]
+    return frames, dt
+
+
+def test_short_sighting_three_frames_one_strong_moving_confirms():
+    frames, dt = sighting([0.30, 0.48, 0.70])
+    sn = run(new(), frames, dt=dt)
+    assert [s["person"]["present"] for s in sn] == [False, False, True]
+    assert sn[2]["person"]["confirmed_by"] == "short"
+    frames, dt = sighting([0.40, 0.68, 0.51, 0.62])                                  # strongest first: confirms on the third frame
+    assert run(new(), frames, dt=dt)[2]["person"]["confirmed_by"] == "short"
+
+
+def test_short_sighting_needs_a_strong_frame_three_frames_and_movement():
+    frames, dt = sighting([0.30, 0.48, 0.60, 0.55])                                  # nothing >= start_thr
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=dt))
+    frames, dt = sighting([0.30, 0.70])                                              # two frames only
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=dt))
+    frames, dt = sighting([0.30, 0.48, 0.70], step=0.0)                              # still: a look-alike
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=dt))
+    frames, dt = sighting([0.30, 0.48, 0.70])
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=100))       # near-duplicate frames count once
+    frames, dt = sighting([0.30, 0.48, 0.70])
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=800))       # spread over 1.6 s: not a short sighting
+    frames, dt = sighting([0.30, 0.48, 0.70])
+    assert not any(s["person"]["present"] for s in run(new(fast_confirm=False), frames, dt=dt))
+
+
+def test_short_sighting_ignores_weak_doubtful_and_huge_boxes():
+    frames, dt = sighting([0.20, 0.24, 0.70])                                        # below 0.25
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=dt))
+    frames, dt = sighting([0.30, 0.48, 0.70])
+    frames[1] = [{**frames[1][0], "second_look_doubt": True}]
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=dt))
+    huge = [[person(s, (0.6, 0.02 + i * 0.01, 0.95, 0.99))] for i, s in enumerate([0.30, 0.35, 0.70])]   # 34 % of the frame
+    assert not any(s["person"]["present"] for s in run(new(), huge, dt=167))

@@ -89,7 +89,7 @@ TRACKER = {
     # Maximum person size (0.3.35): a person box covering more than this share of the frame area never reaches the trackers (something on the
     # lens, not a person; the largest real person seen was about half the frame). It stays in the journal with too_big: true. Per camera.
     "max_area_person": 0.85,
-    # One-frame person (0.3.35): with fast_confirm, ONE person frame >= FAST_SINGLE_SECOND_LOOK that the second look confirmed, and whose box
+    # One-frame person (0.3.35): with fast_confirm, ONE person frame >= FAST_SINGLE_SECOND_LOOK that the second look confirmed (0.3.53: or skipped for its size), and whose box
     # is at least this share of the frame HEIGHT, confirms (confirmed_by "single"). The height keeps birds out (squat boxes); 0 = rule off. Per camera.
     "single_min_h": 0.25,
     # Shape hold (0.3.30, see shape.py): a still or parked vehicle the detector misses is kept while the outline inside its box still matches
@@ -137,12 +137,19 @@ FAST_B_THR = 0.45
 # 0.3.15: with claim=person (the camera's own AI says person) one frame at or above this confirms at once (two independent sources agree).
 FAST_SINGLE_CLAIM = 0.75
 # 0.3.35: one person frame at or above this, confirmed by the second look and tall enough (single_min_h), confirms without a camera claim.
+# 0.3.53: a box the second look never re-checks because of its size (SECOND_LOOK["person_skip_area"]) qualifies as well.
 FAST_SINGLE_SECOND_LOOK = 0.75
 # 0.3.29: with claim=animal (the camera's own AI says dog/cat) one animal frame at or above this confirms the animal at once (a doubtful one is capped below it).
 FAST_SINGLE_CLAIM_ANIMAL = 0.70
 # 0.3.14: the two qualifying frames must be at least this far apart (frame time), so "seen twice" is two looks, not two copies.
 FAST_MIN_SPAN_MS = 200.0
 FAST_IOU = 0.3                  # fast-confirm track matching between consecutive frames (IoU), frames are ~0.15-0.5 s apart
+# 0.3.53 short sighting (with fast_confirm): someone in clear view for only ~1 s (an approach hidden by a pillar, then partly hidden at the door)
+# scores like 0.30, 0.32, 0.48, 0.83 or 0.40, 0.68, 0.51, 0.62 over a 6-8 fps burst, never two frames >= start_thr. One IoU track with >= `n`
+# frames >= `lo` at least `span_ms` apart within `window_ms`, one of them >= start_thr, that moved like the fast rule (>= fast_move), confirms
+# (confirmed_by "short"). Boxes of `max_area` of the frame or more never count (a weak full-height ghost box along a frame edge); second-look
+# doubtful boxes never count.
+SHORT_SIGHTING = {"n": 3, "lo": 0.25, "span_ms": 150.0, "window_ms": 1500.0, "max_area": 0.30}
 
 # Detection classes beyond person (COCO names of the 17-class model). group -> {class: threshold}. Person uses the per-frame person_thr (the camera's
 # cont_thr); airplane, train, boat and elephant are decoded by nobody and ignored. Internal constants, not add-on options.

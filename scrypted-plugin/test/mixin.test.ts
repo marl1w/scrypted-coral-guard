@@ -875,6 +875,7 @@ test('status panel: a person reply shows analysing/person confirmed and is throt
 });
 
 const flat = () => new Uint8Array(128 * 72);
+const smallBlob = () => { const g = new Uint8Array(128 * 72); for (let y = 20; y < 26; y++) for (let x = 40; x < 46; x++) g[y * 128 + x] = 200; return g; };
 const blobFrame = () => { const g = new Uint8Array(128 * 72); for (let y = 20; y < 40; y++) for (let x = 40; x < 60; x++) g[y * 128 + x] = 200; return g; };
 
 test('Shadow: a pixel-gate hit runs the same verified unflagged episode as Gate; wouldPublish ON, motion never written', async () => {
@@ -911,11 +912,37 @@ test('Gate: a pixel change alone never raises motion; it only asks the service (
     assert.equal(ctl.writes.filter(w => w[1] === true).length, 0);
     assert.equal(motion(), false);
     assert.ok(!ctl.logs.some(l => /raised motion/.test(String(l[1]))));
-    // a person-less synthetic scan leaves no trace in the history, and a cooldown blocks an immediate re-scan
+    // a person-less synthetic scan leaves no trace in the history, and a cooldown blocks an immediate re-scan on a small opening
     assert.ok(!/Unflagged/.test(String((await h.mixin.getMixinSettings()).find(x => x.key === 'status')!.value).replace(/Unflagged persons/g, '')));
-    s.o.gray.onGray(blobFrame());
+    s.o.gray.onGray(flat());
+    s.o.gray.onGray(smallBlob());
     await sleep(50);
     assert.equal(h.calls.reset.length, 1, 'cooldown after a person-less scan');
+    await h.mixin.release();
+});
+
+test('Gate: a big gate opening skips the cooldown and samples at the burst rate; a small one does not', async () => {
+    const h = make({ fast: true, settings: { mode: 'Gate', frameProcess: 'Keep warm', confirmTimeoutS: 1, gate: { warmupFrames: 0 } as any } });
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    frame(s);
+    s.o.gray.onGray(flat());
+    s.o.gray.onGray(smallBlob()); // 8x8 px after dilation: below gateBurstBlob
+    await eventually(() => h.calls.frame.length === 1);
+    const answered = new Set<any>();
+    const answer = setInterval(() => { for (const c of h.calls.frame) if (!answered.has(c)) { answered.add(c); c.d.res(idleReply); } }, 20);
+    await eventually(() => !h.mixin['episode'].scanning, 3000, 'vetoed: the cooldown starts');
+    assert.equal(h.calls.reset.length, 1);
+    s.o.gray.onGray(flat());
+    s.o.gray.onGray(smallBlob());
+    await sleep(50);
+    assert.equal(h.calls.reset.length, 1, 'a small opening waits for the cooldown');
+    const bursts = (s as any).burst.length;
+    s.o.gray.onGray(flat());
+    s.o.gray.onGray(blobFrame()); // 20x20 px: a big opening
+    await eventually(() => h.calls.reset.length === 2, 2000, 'a new scan inside the cooldown');
+    assert.equal((s as any).burst.slice(bursts).includes(true), true, 'burst rate on');
+    clearInterval(answer);
     await h.mixin.release();
 });
 

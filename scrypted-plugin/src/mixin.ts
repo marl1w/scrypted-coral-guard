@@ -283,6 +283,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private synthReason = '';
     private synthCooldownUntil = 0;
     private lastGateOpenAt = 0;
+    /** gate bursts (DEFAULTS.gateBurstBlob): start of the current one-minute budget window and the burst time spent in it, ms. */
+    private gateBurstWindowAt = 0;
+    private gateBurstUsedMs = 0;
     /** pre-roll burst waiting to be sent in order; live frames are never queued. */
     private queue: { jpeg: Buffer; t: number }[] = [];
     /** recent frames of the warm process (exact arrival times), oldest first. */
@@ -1732,13 +1735,36 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const now = monoNow();
         if (hit)
             this.lastGateOpenAt = now;
-        // Shadow and Gate alike: a pixel-gate hit opens a verified unflagged episode (Shadow only reports would-publish)
-        if (hit && !this.episode.scanning && now >= this.synthCooldownUntil) {
+        const big = hit && r.blob > DEFAULTS.gateBurstBlob && (this.plugin.fastConfirm ?? true) && this.gateBurstBudget(now) > 0;
+        // Shadow and Gate alike: a pixel-gate hit opens a verified unflagged episode (Shadow only reports would-publish); a big one skips the cooldown
+        if (hit && !this.episode.scanning && (big || now >= this.synthCooldownUntil)) {
             this.synthRaised = false;
             this.synthStartedAt = now;
             this.synthReason = `gate ${r.reason}, blob ${r.blob}px, ${(r.fraction * 100).toFixed(1)}% changed`;
             this.apply(this.episode.synthStart(now));
         }
+        if (big && this.scanActive)
+            this.gateBurst(now);
+    }
+
+    /** burst time left in the current one-minute window (DEFAULTS.gateBurstCapMs). */
+    private gateBurstBudget(now: number): number {
+        if (now - this.gateBurstWindowAt >= 60_000) {
+            this.gateBurstWindowAt = now;
+            this.gateBurstUsedMs = 0;
+        }
+        return DEFAULTS.gateBurstCapMs - this.gateBurstUsedMs;
+    }
+
+    /** a big gate opening: sample at burstFps until gateBurstMs from now (never shortening a running burst), within the budget. */
+    private gateBurst(now: number) {
+        const from = Math.max(now, this.burstUntil);
+        const until = Math.min(now + DEFAULTS.gateBurstMs, from + this.gateBurstBudget(now));
+        if (until <= from)
+            return;
+        this.gateBurstUsedMs += until - from;
+        this.burstUntil = until;
+        this.syncBurst(now);
     }
 
     // ---- tamper (covered / moved / blurred) -------------------------------------------------------

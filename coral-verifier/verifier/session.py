@@ -14,6 +14,7 @@ and 4 fps senders cannot confirm on near-duplicate frames.
     CONT_MAX_AREA_RATIO of the track's box (a large weak look-alike next to a person who walked away must not take the track over)
   - max_hold_s: SERVICE-SIDE safety with no counterpart in the reference simulation: a track with no detection >= start_thr for that long ends (default 600 s)
   - fast confirm (per camera, off by default): FastConfirm below runs on every FRAME (not ticks); when it fires, the tick track under that box is confirmed at once
+  - short sighting (with fast confirm): ShortSighting below, a person seen for about a second at weak scores with one strong frame (defaults.SHORT_SIGHTING)
 Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`snapshot(wall_now)`) advances with the server clock.
 """
 import math, re, threading, time
@@ -23,7 +24,7 @@ from geom import iou, inside
 import spots as SP
 import lookalikes as LA
 
-from defaults import TRACKER as _T, SPOTS as _SP, WEAK_VEHICLE_THR, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR, FAST_SINGLE_SECOND_LOOK
+from defaults import TRACKER as _T, SPOTS as _SP, WEAK_VEHICLE_THR, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, MOVE_IOU, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR, FAST_SINGLE_SECOND_LOOK, SHORT_SIGHTING as _SS, SECOND_LOOK as _SL
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -708,6 +709,47 @@ def person_animal_overlap(detections, thr=PERSON_ANIMAL_OVERLAP):
     return out
 
 
+class ShortSighting:
+    """Per-FRAME person tracks for the short sighting (defaults.SHORT_SIGHTING): greedy IoU (FAST_IOU) over the boxes >= lo and below max_area,
+    each track keeps its frames [(t, score, box)] of the last window_ms. step() returns the box of a track with >= n frames at least span_ms apart,
+    one of them >= start_thr, that moved >= fast_move (the fast rule's measure, between its first and last frame); otherwise None."""
+    def __init__(self):
+        self.tracks = []
+
+    def step(self, t, dets, cfg):
+        win = _SS["window_ms"]
+        cand = [d for d in dets if d[0] >= _SS["lo"] and _area(d[1]) < _SS["max_area"]]
+        trks = self.tracks = [tr for tr in self.tracks if t - tr.last <= win]
+        used, best = set(), None
+        for i, j in greedy_iou([tr.box for tr in trks], [d[1] for d in cand], FAST_IOU):
+            tr, d = trks[i], cand[j]; used.add(j)
+            tr.box = d[1]
+            if t > tr.last:                                       # frames with the same (clamped) time count once
+                tr.hist.append((t, d[0], d[1]))
+            tr.last = t
+            tr.hist = [h for h in tr.hist if t - h[0] <= win]
+            n, prev = 0, None
+            for h in tr.hist:                                     # near-duplicate frames (a repeated video frame) count once
+                if prev is None or h[0] - prev >= _SS["span_ms"]:
+                    n, prev = n + 1, h[0]
+            if n < _SS["n"] or max(h[1] for h in tr.hist) < cfg.start_thr:
+                continue
+            b0, b1 = tr.hist[0][2], tr.hist[-1][2]
+            hh = max(b0[3] - b0[1], b1[3] - b1[1], 1e-3)
+            shift = math.hypot((b1[0] + b1[2] - b0[0] - b0[2]) / 2.0, (b1[1] + b1[3] - b0[1] - b0[3]) / 2.0) / hh
+            grow = abs((b1[3] - b1[1]) - (b0[3] - b0[1])) / hh
+            if max(shift, grow) >= cfg.fast_move and (best is None or d[0] > best[0]):
+                best = d
+        for j, d in enumerate(cand):
+            if j not in used:
+                tr = _FTrack(); tr.box = d[1]; tr.last = t; tr.hist = [(t, d[0], d[1])]
+                trks.append(tr)
+        if len(trks) > MAX_TRACKS:
+            trks.sort(key=lambda tr: -tr.last)
+            del trks[MAX_TRACKS:]
+        return best
+
+
 class Session:
     def __init__(self, cfg, wall_now=0.0):
         self.cfg = cfg
@@ -724,8 +766,9 @@ class Session:
         self._tick_snap = None
         self._tick_dets = None
         self.fast = FastConfirm()
+        self.short = ShortSighting()
         self._force = None            # (tick time, box, how): a fast confirmation re-applied whenever that tick is re-stepped (same-tick merge)
-        self.confirmed_by = None      # "fast_move" | "fast_claim" | "ticks" for the current confirmation, None while not confirmed
+        self.confirmed_by = None      # "fast_move" | "fast_claim" | "fast_b" | "single" | "short" | "ticks" for the current confirmation, None while not confirmed
         self.would_b = None           # rule B (live since 0.3.18; diagnostic): frame time at which its condition (camera-AI person + one non-still box >= FAST_B_THR) first held
 
     def _apply_force(self):
@@ -741,12 +784,12 @@ class Session:
         if tent:
             tr = cands[tent[0][1]]
             tr.conf = True
-        elif f[2] == "fast_b":
-            # rule B can fire on a box below start_thr, for which the tick tracker made no track: create it confirmed;
+        elif f[2] in ("fast_b", "short"):
+            # rule B and the short sighting can fire on a box below start_thr, for which the tick tracker made no track: create it confirmed;
             # from now on it is kept alive like any confirmed track (matched down to cont_thr)
             tr = _PTrack(); tr.id = p.nid; p.nid += 1
             tr.box = f[1]; tr.last = self._tick_t; tr.last_hi = self._tick_t; tr.born = self._tick_t; tr.hits = 1
-            tr.hist = [(self._tick_t, f[1])]; tr.still = False; tr.score = FAST_B_THR; tr.conf = True
+            tr.hist = [(self._tick_t, f[1])]; tr.still = False; tr.score = FAST_B_THR if f[2] == "fast_b" else _SS["lo"]; tr.conf = True
             p.tracks.append(tr)
         else:
             return False
@@ -848,14 +891,24 @@ class Session:
                     if self._force is None or self._force[0] != self._tick_t:
                         self._force = (self._tick_t, max(cand, key=lambda d: d[0])[1], "fast_b")
                         self._apply_force()
-            # one-frame person (0.3.35): a strong person box the second look confirmed, tall enough not to be a bird, not a still object
+            # one-frame person (0.3.35): a strong person box the second look confirmed (0.3.53: or never re-checked for its size), tall enough not
+            # to be a bird, not a still object
             if self.cfg.single_min_h > 0 and (self._force is None or self._force[0] != self._tick_t):
                 stills = [tr.box for tr in self.person.live(self._tick_t) if tr.still]
-                one = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person" and d.get("second_look") == "confirmed"
+                one = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person"
+                       and (d.get("second_look") == "confirmed" or ("second_look" not in d and _area(d["box"]) >= _SL["person_skip_area"]))
                        and float(d["score"]) >= FAST_SINGLE_SECOND_LOOK and d["box"][3] - d["box"][1] >= self.cfg.single_min_h
                        and all(iou(tuple(d["box"]), sb) <= 0.5 for sb in stills)]
                 if one:
                     self._force = (self._tick_t, max(one, key=lambda d: d[0])[1], "single")
+                    self._apply_force()
+            # short sighting (0.3.53): about a second in view, mostly weak boxes and one strong one, moving, not a still object
+            sure = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person" and not d.get("second_look_doubt")]
+            short = self.short.step(t, sorted(sure, key=lambda d: -d[0])[:MAX_TRACK_DETS], self.cfg)
+            if short is not None and (self._force is None or self._force[0] != self._tick_t):
+                stills = [tr.box for tr in self.person.live(self._tick_t) if tr.still]
+                if all(iou(short[1], sb) <= 0.5 for sb in stills):
+                    self._force = (self._tick_t, short[1], "short")
                     self._apply_force()
         live = bool(self.person.live(self._tick_t))
         if not live:
