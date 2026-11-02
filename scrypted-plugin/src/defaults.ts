@@ -20,12 +20,15 @@ export const DEFAULTS = {
      * Gate burst: a pixel-gate opening whose largest changed blob is above gateBurstBlob px (of the 128x72 gray frame) samples at burstFps
      * for gateBurstMs, extended by the next such opening, and opens an unflagged episode even inside the cooldown after a person-less one.
      * Someone in clear view for only ~1 s (an approach hidden by a pillar) is then seen in enough frames for the service's short-sighting
-     * rule. Smaller openings keep the 1 fps episode and its cooldown. At most gateBurstCapMs of such bursts per minute per camera (insects
-     * in the night light can keep a gate open), so the extra Coral load scales with motion and stays bounded.
+     * rule. Smaller openings keep the 1 fps episode and its cooldown. Insects in the night light can keep a gate open, so the burst time
+     * comes from a per-camera token bucket (gateBurstRefill ms per ms, at most gateBurstCapMs: on average 30 s a minute, never more than
+     * 30 s at once) and at most gateBurstCameras cameras burst at the same time: the extra Coral load scales with motion and stays bounded.
      */
     gateBurstBlob: 100,
     gateBurstMs: 2000,
     gateBurstCapMs: 30000,
+    gateBurstRefill: 0.5,
+    gateBurstCameras: 4,
     /** seconds of recent frames handed to the service as pre-roll at a raw trigger (0 = off). */
     preRollS: 4,
     /** frames are scaled down to this width in px, never up. */

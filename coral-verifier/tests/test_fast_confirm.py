@@ -192,28 +192,46 @@ def test_one_frame_person_confirmed_by_the_second_look_and_tall_enough_confirms(
 
 
 def test_one_frame_person_too_large_for_the_second_look_confirms():
-    """0.3.53: a box of at least person_skip_area (3 %) of the frame is never re-checked; a strong, tall one counts for the one-frame rule."""
-    near = (0.6, 0.33, 0.75, 0.62)                                                   # 15 % x 29 %: 4.4 % of the frame
-    sn = run(new(), [[person(0.82, near)]])
-    assert sn[0]["person"]["present"] and sn[0]["person"]["confirmed_by"] == "single"
-    assert not run(new(), [[person(0.74, near)]])[0]["person"]["present"]            # below 0.75
-    assert not run(new(), [[person(0.90, (0.5, 0.5, 0.9, 0.6))]])[0]["person"]["present"]   # large but squat (h 0.10)
-    assert not run(new(), [[{**person(0.90, near), "second_look": "skipped", "second_look_doubt": True}]])[0]["person"]["present"]  # cap / shed
+    """0.3.53: a box of at least person_skip_area (3 %) of the frame is never re-checked (second_look "size"); a strong, tall one below 30 % of the
+    frame counts for the one-frame rule when its track has a second frame that moved."""
+    size = lambda score, box: {**person(score, box), "second_look": "size"}
+    near = lambda i: (0.6, 0.30 + i * 0.03, 0.75, 0.59 + i * 0.03)                     # 15 % x 29 %: 4.4 % of the frame, walking down
+    sn = run(new(), [[size(0.40, near(0))], [size(0.82, near(1))]])
+    assert sn[1]["person"]["present"] and sn[1]["person"]["confirmed_by"] == "single"
+    assert not run(new(), [[size(0.82, near(1))]])[0]["person"]["present"]              # one frame alone: not enough
+    assert not run(new(), [[size(0.40, near(1))], [size(0.82, near(1))]])[1]["person"]["present"]   # still
+    assert not run(new(), [[size(0.40, near(0))], [size(0.74, near(1))]])[1]["person"]["present"]   # below 0.75
+    assert not run(new(), [[person(0.40, near(0))], [person(0.82, near(1))]])[1]["person"]["present"]   # no mark: the second look is off
+    big = lambda i: (0.3, 0.1 + i * 0.03, 0.9, 0.7 + i * 0.03)                          # 36 % of the frame: something on the lens
+    assert not run(new(), [[size(0.40, big(0))], [size(0.90, big(1))]])[1]["person"]["present"]
 
 
-def sighting(scores, step=0.02, dt=167):
-    """A person walking down (6 fps burst): one box per frame, `scores` in order; the centre moves `step` per frame (box height 0.3)."""
+def sighting(scores, step=0.03, dt=167, sl=None):
+    """A person walking down (6 fps burst): one box per frame, `scores` in order; the centre moves `step` per frame (box height 0.3, 2.4 % of
+    the frame: below the size skip). `sl` marks the strongest frame's second look."""
     frames = [[person(s, (0.7, 0.3 + i * step, 0.78, 0.6 + i * step))] for i, s in enumerate(scores)]
+    if sl:
+        k = max(range(len(scores)), key=lambda i: scores[i])
+        frames[k] = [{**frames[k][0], "second_look": sl}]
     return frames, dt
 
 
 def test_short_sighting_three_frames_one_strong_moving_confirms():
-    frames, dt = sighting([0.30, 0.48, 0.70])
+    frames, dt = sighting([0.30, 0.48, 0.70])                                        # moved 0.2 box heights
     sn = run(new(), frames, dt=dt)
     assert [s["person"]["present"] for s in sn] == [False, False, True]
     assert sn[2]["person"]["confirmed_by"] == "short"
     frames, dt = sighting([0.40, 0.68, 0.51, 0.62])                                  # strongest first: confirms on the third frame
     assert run(new(), frames, dt=dt)[2]["person"]["confirmed_by"] == "short"
+
+
+def test_short_sighting_small_movement_needs_a_sure_strong_frame():
+    frames, dt = sighting([0.27, 0.31, 0.66], step=0.012)                            # 0.08 box heights: box jitter of a still object
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=dt))
+    frames, dt = sighting([0.27, 0.31, 0.66], step=0.012, sl="confirmed")            # the second look confirmed the strong frame
+    assert run(new(), frames, dt=dt)[2]["person"]["confirmed_by"] == "short"
+    frames, dt = sighting([0.27, 0.31, 0.66], step=0.012, sl="not_found")
+    assert not any(s["person"]["present"] for s in run(new(), frames, dt=dt))
 
 
 def test_short_sighting_needs_a_strong_frame_three_frames_and_movement():

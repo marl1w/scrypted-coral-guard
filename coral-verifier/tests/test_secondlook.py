@@ -312,3 +312,7 @@ def test_large_person_is_never_rechecked_nor_doubted(monkeypatch):
     assert SL.select([big], CFG, {}) == []
     assert SL.select([small], CFG, {}) == [0]
     assert SL.tracker_view(big, CFG)["score"] == 0.7
+    # 0.3.53: the skip is marked, so the one-frame rule tells it from a camera with the second look off (no mark at all)
+    eng = D.Engine(SeqModel(512, [[it("person", 2.0)]] * 4))
+    out, info = SL.second_look(eng, IMG, [big, small], CFG, {}, [], 100.0)
+    assert out[0]["second_look"] == "size" and not out[0].get("second_look_doubt") and out[1]["second_look"] != "size"

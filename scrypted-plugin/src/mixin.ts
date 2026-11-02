@@ -32,6 +32,8 @@ const MODES = new Map<string, Mode>([['Off', 'off'], ['Shadow', 'shadow'], ['Gat
 const BURST_MAX = 10;
 /** warm ring hand-over at a trigger: only the newest frames (about the last 1.5 s), sent sequentially, so the live frames follow quickly. */
 const PREROLL_BURST_MAX = 3;
+/** cameras in a gate burst (DEFAULTS.gateBurstCameras), id -> monotonic end of the burst; shared by every camera of the plugin. */
+const gateBursting = new Map<string, number>();
 const VERIFY_DELAY_MS = 300;
 const NO_FRAMES_MS = 10000;
 /** camera class names that are never a claim about what moved. */
@@ -283,9 +285,10 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private synthReason = '';
     private synthCooldownUntil = 0;
     private lastGateOpenAt = 0;
-    /** gate bursts (DEFAULTS.gateBurstBlob): start of the current one-minute budget window and the burst time spent in it, ms. */
-    private gateBurstWindowAt = 0;
-    private gateBurstUsedMs = 0;
+    /** gate bursts (DEFAULTS.gateBurstBlob): token bucket of burst time (ms, refilled at gateBurstRefill per ms) and the end of the charged burst. */
+    private gateTokens = DEFAULTS.gateBurstCapMs;
+    private gateTokensAt = 0;
+    private gateChargedUntil = 0;
     /** pre-roll burst waiting to be sent in order; live frames are never queued. */
     private queue: { jpeg: Buffer; t: number }[] = [];
     /** recent frames of the warm process (exact arrival times), oldest first. */
@@ -1123,6 +1126,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             }
             this.scanActive = false;
             this.queue = [];
+            this.gateBurstEnd(monoNow());
             this.burstUntil = 0;
             this.burstNext = undefined;
             this.syncBurst();
@@ -1735,36 +1739,61 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         const now = monoNow();
         if (hit)
             this.lastGateOpenAt = now;
-        const big = hit && r.blob > DEFAULTS.gateBurstBlob && (this.plugin.fastConfirm ?? true) && this.gateBurstBudget(now) > 0;
+        const big = hit && r.blob > DEFAULTS.gateBurstBlob && (this.plugin.fastConfirm ?? true) && this.gateBudget(now) > 0 && this.gateSlot(now);
         // Shadow and Gate alike: a pixel-gate hit opens a verified unflagged episode (Shadow only reports would-publish); a big one skips the cooldown
+        let started = false;
         if (hit && !this.episode.scanning && (big || now >= this.synthCooldownUntil)) {
             this.synthRaised = false;
             this.synthStartedAt = now;
             this.synthReason = `gate ${r.reason}, blob ${r.blob}px, ${(r.fraction * 100).toFixed(1)}% changed`;
             this.apply(this.episode.synthStart(now));
+            started = this.scanActive;
         }
         if (big && this.scanActive)
-            this.gateBurst(now);
+            this.gateBurst(now, started);
     }
 
-    /** burst time left in the current one-minute window (DEFAULTS.gateBurstCapMs). */
-    private gateBurstBudget(now: number): number {
-        if (now - this.gateBurstWindowAt >= 60_000) {
-            this.gateBurstWindowAt = now;
-            this.gateBurstUsedMs = 0;
+    /** burst time in the camera's token bucket (DEFAULTS.gateBurstRefill ms per ms, at most gateBurstCapMs). */
+    private gateBudget(now: number): number {
+        this.gateTokens = Math.min(DEFAULTS.gateBurstCapMs, this.gateTokens + Math.max(0, now - this.gateTokensAt) * DEFAULTS.gateBurstRefill);
+        this.gateTokensAt = now;
+        return this.gateTokens;
+    }
+
+    /** this camera is bursting already, or fewer than gateBurstCameras others are. */
+    private gateSlot(now: number): boolean {
+        let n = 0;
+        for (const [id, until] of gateBursting) {
+            if (until <= now) gateBursting.delete(id);
+            else if (id !== this.id) n++;
         }
-        return DEFAULTS.gateBurstCapMs - this.gateBurstUsedMs;
+        return n < DEFAULTS.gateBurstCameras;
     }
 
-    /** a big gate opening: sample at burstFps until gateBurstMs from now (never shortening a running burst), within the budget. */
-    private gateBurst(now: number) {
-        const from = Math.max(now, this.burstUntil);
-        const until = Math.min(now + DEFAULTS.gateBurstMs, from + this.gateBurstBudget(now));
-        if (until <= from)
+    /**
+     * A big gate opening: sample at burstFps until gateBurstMs from now (never shortening a running burst), paid from the token bucket.
+     * When it started the scan, the scan's own burst (burstMaxMs from its start) is charged too.
+     */
+    private gateBurst(now: number, started: boolean) {
+        const paid = Math.max(now, this.gateChargedUntil);
+        const from = started ? now : Math.max(now, this.burstUntil);
+        const until = Math.min(Math.max(now + DEFAULTS.gateBurstMs, started ? this.burstUntil : 0), paid + this.gateBudget(now));
+        if (until <= paid)
             return;
-        this.gateBurstUsedMs += until - from;
-        this.burstUntil = until;
+        this.gateTokens -= until - paid;
+        this.gateChargedUntil = until;
+        if (until > from || started)
+            this.burstUntil = until;
+        gateBursting.set(this.id, until);
         this.syncBurst(now);
+    }
+
+    /** scan over: the paid burst time not used goes back to the bucket and the camera leaves the shared count. */
+    private gateBurstEnd(now: number) {
+        if (this.gateChargedUntil > now)
+            this.gateTokens = Math.min(DEFAULTS.gateBurstCapMs, this.gateTokens + this.gateChargedUntil - now);
+        this.gateChargedUntil = 0;
+        gateBursting.delete(this.id);
     }
 
     // ---- tamper (covered / moved / blurred) -------------------------------------------------------
@@ -2417,6 +2446,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             this.jId = undefined;
         }
         this.released = true;
+        gateBursting.delete(this.id);
         clearTimeout(this.streamFirstTimer);
         this.clearStreamRetry();
         this.endHwProbe();

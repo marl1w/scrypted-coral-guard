@@ -946,6 +946,32 @@ test('Gate: a big gate opening skips the cooldown and samples at the burst rate;
     await h.mixin.release();
 });
 
+test('Gate: big gate openings are paid from a token bucket; an empty bucket keeps the cooldown', async () => {
+    const h = make({ fast: true, settings: { mode: 'Gate', frameProcess: 'Keep warm', confirmTimeoutS: 1, gate: { warmupFrames: 0 } as any } });
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    frame(s);
+    const m = h.mixin as any;
+    const t0 = 1_000_000;
+    m.gateTokens = 30_000; m.gateTokensAt = t0;
+    assert.equal(m.gateBudget(t0 + 10_000), 30_000, 'capped at 30 s');
+    m.gateTokens = 0;
+    assert.equal(m.gateBudget(t0 + 14_000), 2_000, 'refilled at 0.5 ms per ms');
+    s.o.gray.onGray(flat());
+    s.o.gray.onGray(smallBlob());
+    await eventually(() => h.calls.frame.length === 1);
+    const answered = new Set<any>();
+    const answer = setInterval(() => { for (const c of h.calls.frame) if (!answered.has(c)) { answered.add(c); c.d.res(idleReply); } }, 20);
+    await eventually(() => !m.episode.scanning, 3000, 'vetoed');
+    m.gateTokens = 0; m.gateTokensAt = Number.MAX_SAFE_INTEGER; // empty, no refill
+    s.o.gray.onGray(flat());
+    s.o.gray.onGray(blobFrame());
+    await sleep(50);
+    assert.equal(h.calls.reset.length, 1, 'no budget: the cooldown holds');
+    clearInterval(answer);
+    await h.mixin.release();
+});
+
 test('Gate: a confirmed person in an unflagged scan raises motion once, holds while present, releases when gone; camera raw mid-scan merges', async () => {
     const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', gate: { warmupFrames: 0 } as any } });
     await eventually(() => ctl.starts.length === 1);

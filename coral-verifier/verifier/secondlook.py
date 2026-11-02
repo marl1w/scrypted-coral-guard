@@ -132,6 +132,9 @@ def second_look(engine, img, dets, cfg, tracks, cache, now, reduced=False):
     dets = [dict(d) for d in dets]
     info = {"preprocess_ms": 0.0, "infer_ms": 0.0, "post_ms": 0.0, "cache": cache, "counts": {}, "n": 0}
     count = lambda k, n=1: info["counts"].__setitem__(k, info["counts"].get(k, 0) + n)
+    for d in dets:                                                       # 0.3.53: never re-checked for its size, said explicitly (the one-frame rule
+        if group_of(d) == "person" and area(d["box"]) >= _SL["person_skip_area"]:   # tells it from a camera with the second look off)
+            d["second_look"] = "size"
     for i in select(dets, cfg, tracks):
         d, g = dets[i], group_of(dets[i])
         mand = mandatory(d, cfg, tracks)                                 # evaluated on the first-pass score

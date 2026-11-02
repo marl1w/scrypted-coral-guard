@@ -137,7 +137,8 @@ FAST_B_THR = 0.45
 # 0.3.15: with claim=person (the camera's own AI says person) one frame at or above this confirms at once (two independent sources agree).
 FAST_SINGLE_CLAIM = 0.75
 # 0.3.35: one person frame at or above this, confirmed by the second look and tall enough (single_min_h), confirms without a camera claim.
-# 0.3.53: a box the second look never re-checks because of its size (SECOND_LOOK["person_skip_area"]) qualifies as well.
+# 0.3.53: a box the second look never re-checks because of its size (second_look "size") qualifies as well when it is below
+# SHORT_SIGHTING["max_area"] and the same track has a second frame that moved (SHORT_SIGHTING comment).
 FAST_SINGLE_SECOND_LOOK = 0.75
 # 0.3.29: with claim=animal (the camera's own AI says dog/cat) one animal frame at or above this confirms the animal at once (a doubtful one is capped below it).
 FAST_SINGLE_CLAIM_ANIMAL = 0.70
@@ -146,10 +147,13 @@ FAST_MIN_SPAN_MS = 200.0
 FAST_IOU = 0.3                  # fast-confirm track matching between consecutive frames (IoU), frames are ~0.15-0.5 s apart
 # 0.3.53 short sighting (with fast_confirm): someone in clear view for only ~1 s (an approach hidden by a pillar, then partly hidden at the door)
 # scores like 0.30, 0.32, 0.48, 0.83 or 0.40, 0.68, 0.51, 0.62 over a 6-8 fps burst, never two frames >= start_thr. One IoU track with >= `n`
-# frames >= `lo` at least `span_ms` apart within `window_ms`, one of them >= start_thr, that moved like the fast rule (>= fast_move), confirms
-# (confirmed_by "short"). Boxes of `max_area` of the frame or more never count (a weak full-height ghost box along a frame edge); second-look
-# doubtful boxes never count.
-SHORT_SIGHTING = {"n": 3, "lo": 0.25, "span_ms": 150.0, "window_ms": 1500.0, "max_area": 0.30}
+# frames >= `lo` at least `span_ms` apart within `window_ms`, one of them >= start_thr, that moved, confirms (confirmed_by "short"). Boxes of
+# `max_area` of the frame or more and second-look doubtful boxes never count. Movement (centre shift or size change between the first and last
+# frame, in box heights): `move`, well above the jitter of a still object's box at night, or `move_sure` when the strong frame is second-look
+# confirmed or too large to be re-checked (second_look "size"); the shortest real arrival measured moved 0.08 in 0.5 s, the others 0.27.
+# The one-frame rule's size-skipped branch uses the same tracks: the box must be below `max_area` and its track must have a second frame
+# that moved >= `move_sure`, so something on the lens or one large blob never confirms on one frame.
+SHORT_SIGHTING = {"n": 3, "lo": 0.25, "span_ms": 150.0, "window_ms": 1500.0, "max_area": 0.30, "move": 0.15, "move_sure": 0.06}
 
 # Detection classes beyond person (COCO names of the 17-class model). group -> {class: threshold}. Person uses the per-frame person_thr (the camera's
 # cont_thr); airplane, train, boat and elephant are decoded by nobody and ignored. Internal constants, not add-on options.
