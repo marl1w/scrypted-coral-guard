@@ -72,8 +72,8 @@ const versionCache = new Map<string, Promise<{ text: string; passthrough: string
 
 /**
  * ffmpeg version line (logged once per start). `passthrough` is the per-output option that keeps one output frame per
- * decoded frame instead of constant frame rate: unused now that frames are dense and sampled by the fps filter,
- * kept for sparse (keyframe-only) sources. `-fps_mode` exists from 5.1, `-vsync` is removed in 9.
+ * decoded frame instead of constant frame rate: used on the JPEG output in every-frame mode (no fps filter sets the
+ * output rate there). `-fps_mode` exists from 5.1, `-vsync` is removed in 9.
  */
 export function ffmpegVersion(ffmpegPath: string): Promise<{ text: string; passthrough: string[] }> {
     let p = versionCache.get(ffmpegPath);
@@ -318,7 +318,11 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
     const fps = 1000 / o.intervalMs;
     const ver = await ffmpegVersion(ffmpegPath);
     const width = streamWide ? (o.maxWidthWide ?? o.maxWidth) : o.maxWidth;
-    const jpegOut = ['-c:v', 'mjpeg', '-q:v', String(qualityToQscale(o.quality)), '-f', 'image2pipe', 'pipe:1'];
+    const everyFrame = !!(o.burstFps && sourceFps);
+    // Every-frame mode has no fps filter to set the output rate, so ffmpeg would pad to the rate it reads from the
+    // timestamps (a 50 ms grid reads as 20 fps) with duplicates: 20 JPEGs a second per camera, mostly thrown away.
+    // Passthrough keeps one JPEG per decoded frame.
+    const jpegOut = ['-c:v', 'mjpeg', '-q:v', String(qualityToQscale(o.quality)), ...(everyFrame ? ver.passthrough : []), '-f', 'image2pipe', 'pipe:1'];
     args = [
         '-hide_banner', '-loglevel', 'warning',
         ...args,
@@ -332,10 +336,11 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
 
     if (o.hwaccel && o.vaDriver)
         env = { ...env, LIBVA_DRIVER_NAME: o.vaDriver };
-    const everyFrame = !!(o.burstFps && sourceFps);
     const canBurst = everyFrame ? sourceStep(fps, sourceFps!) > 1 : burstStep(fps, o.burstFps) > 1;
-    // the safety net against bunched frames must let every real frame through: at most 40 % of the source's frame interval
-    const minGapMs = everyFrame && o.minGapMs ? Math.min(o.minGapMs, Math.round(400 / sourceFps!)) : o.minGapMs;
+    // No arrival-time gap filter in every-frame mode: with passthrough there are no duplicates to drop, and real frames
+    // arrive bunched by the network (a 12 fps stream has gaps of 0-50 ms), so any gap would drop real frames. A bunch
+    // during a burst is resolved by the caller (one request in flight, latest wins).
+    const minGapMs = everyFrame ? undefined : o.minGapMs;
     if (o.burstFps)
         o.console.log(`frame source: ${everyFrame ? `source ${sourceFps} fps: bursts take every frame, idle 1 in ${sourceStep(fps, sourceFps!)}` : `source rate not reported: bursts resampled to ${o.burstFps} fps`}`);
     // stdin is a pipe only for the burst commands (ffmpeg reads its interactive commands from it); otherwise ignored as before
