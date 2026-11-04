@@ -35,7 +35,7 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.3.54"
+FALLBACK_VERSION = "0.3.55"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024

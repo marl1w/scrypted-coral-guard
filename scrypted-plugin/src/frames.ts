@@ -302,8 +302,11 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
         const inArgs = buildInputArgs(input.inputArguments, input.url);
         args = [...decodeArgs(!!o.hwaccel), ...(o.longProbe ? withLongProbe(inArgs) : inArgs)];
         const mso: any = input.mediaStreamOptions || {};
-        const asked = explicit ?? (useId ? rawOpts.find((x: any) => x?.id === pick.choice?.id) : undefined);
-        sourceFps = validSourceFps(mso.video?.fps) ?? validSourceFps(asked?.video?.fps);
+        // The camera's current options first: a rebroadcast session started before an encoder change keeps reporting the
+        // old rate in its own options for as long as it stays open.
+        const asked = explicit ?? (useId ? rawOpts.find((x: any) => x?.id === pick.choice?.id) : undefined)
+            ?? (mso.id ? rawOpts.find((x: any) => x?.id === mso.id) : undefined);
+        sourceFps = validSourceFps(asked?.video?.fps) ?? validSourceFps(mso.video?.fps);
         if (!streamDesc)
             streamDesc = `${mso.name || mso.id || dest}${mso.video?.width && mso.video?.height ? ` ${mso.video.width}x${mso.video.height}` : ''}`;
         o.console.log(`frame source: getVideoStream asked ${explicit || useId ? 'stream ' + streamDesc : dest === 'low-resolution' ? 'destination low-resolution' : 'default stream'}${o.longProbe ? ' (long probe fallback)' : ''}, prebuffer ${o.prebufferMs} ms; stream reports prebuffer ${mso.prebuffer ?? 'n/a'} ms / ${mso.prebufferBytes ?? 'n/a'} bytes`);
@@ -334,7 +337,7 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
     // the safety net against bunched frames must let every real frame through: at most 40 % of the source's frame interval
     const minGapMs = everyFrame && o.minGapMs ? Math.min(o.minGapMs, Math.round(400 / sourceFps!)) : o.minGapMs;
     if (o.burstFps)
-        o.console.log(`frame source: ${everyFrame ? `source ${sourceFps} fps: bursts take every frame, idle every ${sourceStep(fps, sourceFps!)}th` : `source rate not reported: bursts resampled to ${o.burstFps} fps`}`);
+        o.console.log(`frame source: ${everyFrame ? `source ${sourceFps} fps: bursts take every frame, idle 1 in ${sourceStep(fps, sourceFps!)}` : `source rate not reported: bursts resampled to ${o.burstFps} fps`}`);
     // stdin is a pipe only for the burst commands (ffmpeg reads its interactive commands from it); otherwise ignored as before
     const cp = child_process.spawn(ffmpegPath, args, { env, stdio: [canBurst ? 'pipe' : 'ignore', 'pipe', 'pipe', ...(o.gray ? ['pipe' as const] : [])] }) as unknown as child_process.ChildProcessWithoutNullStreams;
     cp.stdin?.on?.('error', () => { /* ffmpeg gone: a burst command is best effort */ });

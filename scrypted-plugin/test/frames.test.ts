@@ -430,7 +430,7 @@ test('frames: the stream reporting its fps switches the warm process to every-fr
     await sleep(300);
     assert.match(args().join(' '), /-vf framestep@burst=step=4,scale=/);
     assert.doesNotMatch(args().join(' '), /fps=6/);
-    assert.ok(logs.some(l => /source 7 fps: bursts take every frame, idle every 4th/.test(l)), logs.join('|'));
+    assert.ok(logs.some(l => /source 7 fps: bursts take every frame, idle 1 in 4/.test(l)), logs.join('|'));
     f.stop(); await f.exited;
     const plain = { getVideoStreamOptions: async () => [opt('sub', 1536, 576)], getVideoStream: async () => ({}) };
     const g = await startFrames({ bySize: true, camera: plain as any, intervalMs: 500, burstFps: 6, minGapMs: 100, prebufferMs: 0, maxWidth: 960, maxWidthWide: 1280, quality: 85, console: { log: (m: string) => logs.push(m), warn() { } } as any, onFrame: () => { } });
@@ -438,4 +438,16 @@ test('frames: the stream reporting its fps switches the warm process to every-fr
     assert.match(args().join(' '), /-vf fps=6\.0000,framestep@burst=step=3,scale=/);
     assert.ok(logs.some(l => /source rate not reported: bursts resampled to 6 fps/.test(l)));
     g.stop(); await g.exited;
+});
+
+test('frames: the camera options win over a rebroadcast session that still reports the rate it started with', async () => {
+    setup(async () => ({ url: 'rtsp://x/live', inputArguments: [], ffmpegPath: fake, mediaStreamOptions: { id: 'sub', video: { fps: 6 } } }));
+    const { startFrames } = loadFrames();
+    const logs: string[] = [];
+    const now12 = { ...opt('sub', 896, 512), video: { ...opt('sub', 896, 512).video, fps: 12 } };
+    const camera = { getVideoStreamOptions: async () => [now12], getVideoStream: async () => ({}) };
+    const f = await startFrames({ camera: camera as any, destination: 'low-resolution', intervalMs: 500, burstFps: 6, minGapMs: 100, prebufferMs: 0, maxWidth: 960, maxWidthWide: 1280, quality: 85, console: { log: (m: string) => logs.push(m), warn() { } } as any, onFrame: () => { } });
+    await sleep(300);
+    assert.ok(logs.some(l => /source 12 fps: bursts take every frame, idle 1 in 6/.test(l)), logs.join('|'));
+    f.stop(); await f.exited;
 });
