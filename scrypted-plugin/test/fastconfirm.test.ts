@@ -133,6 +133,47 @@ test('burst ends after burstMaxMs even when nothing confirms', async () => {
     assert.deepEqual(s.burst, [true, false]);
 });
 
+test('burst past its blind window keeps the full rate only while replies show a subject (insects never do)', async () => {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', preRollS: 0, burstBlindMs: 80, burstEvidenceMs: 150 }, fast: true });
+    await eventually(() => ctl.starts.length === 1);
+    const s: any = ctl.starts[0];
+    h.raw(true);
+    await eventually(() => s.burst.length === 1);
+    s.o.onFrame(J, Date.now());
+    await eventually(() => h.calls.frame.length === 1);
+    h.calls.frame[0].d.res(idleReply);                                // nothing seen
+    await sleep(100);                                                 // past the blind window
+    s.o.onFrame(J, Date.now());
+    await eventually(() => s.burst.length === 2, 1000, 'burst off without evidence');
+    assert.deepEqual(s.burst, [true, false]);
+    await eventually(() => h.calls.frame.length === 2);
+    const weak = { person: { state: 'candidate', confirmed: false, present: false }, detections: [{ cls: 'person', score: 0.35, box: [0, 0, 1, 1] }] };
+    h.calls.frame[1].d.res(weak);                                     // a weak person box: back to full rate
+    await eventually(() => s.burst.length === 3, 1000, 'burst back on with evidence');
+    assert.deepEqual(s.burst, [true, false, true]);
+    await sleep(170);                                                 // evidence older than burstEvidenceMs
+    s.o.onFrame(J, Date.now());
+    await eventually(() => s.burst.length === 4, 1000, 'burst off again once the evidence is stale');
+});
+
+test('burst evidence: a parked car or a look-alike is not a subject; a moving vehicle, an animal or a person box is', async () => {
+    const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', preRollS: 0, burstBlindMs: 50, burstEvidenceMs: 1000 }, fast: true });
+    await eventually(() => ctl.starts.length === 1);
+    const s: any = ctl.starts[0];
+    h.raw(true);
+    await eventually(() => s.burst.length === 1);
+    s.o.onFrame(J, Date.now());
+    await eventually(() => h.calls.frame.length === 1);
+    h.calls.frame[0].d.res({ ...idleReply, vehicle: { moving: false, tracks: [{ id: 1, cls: 'car', parked: true, state: 'parked', since_ms: 0, box: [0, 0, 1, 1] }] },
+        detections: [{ cls: 'car', score: 0.9, box: [0, 0, 1, 1], group: 'vehicle' }, { cls: 'person', score: 0.5, box: [0, 0, 1, 1], group: 'person', lookalike: 3 }] });
+    await sleep(70);
+    s.o.onFrame(J, Date.now());
+    await eventually(() => s.burst.length === 2, 1000, 'parked car and look-alike: burst off');
+    await eventually(() => h.calls.frame.length === 2);
+    h.calls.frame[1].d.res({ ...idleReply, vehicle: { moving: true } });
+    await eventually(() => s.burst.length === 3, 1000, 'moving vehicle: burst on');
+});
+
 test('camera AI dog/cat: frames carry claim=animal (a person claim wins when both are claimed)', async () => {
     const h = make({ settings: { mode: 'Gate', frameProcess: 'Keep warm', preRollS: 0 }, fast: true });
     await eventually(() => ctl.starts.length === 1);

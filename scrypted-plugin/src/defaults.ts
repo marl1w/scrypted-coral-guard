@@ -19,6 +19,14 @@ export const DEFAULTS = {
     burstMaxMs: 6000,
     burstDeadlineMs: 300,
     /**
+     * Past its first burstBlindMs a burst keeps the full rate only while a reply within the last burstEvidenceMs showed a
+     * person, vehicle or animal (any box, tracked or not); otherwise it falls back to frameIntervalMs until such a reply
+     * arrives. At night most triggers are insects or light and never show one: a full-rate burst for the whole 6 s wait on
+     * each of them kept the Coral 70-80 % busy and pushed requests past frameTimeoutMs (fail open).
+     */
+    burstBlindMs: 1500,
+    burstEvidenceMs: 1000,
+    /**
      * Gate burst: a pixel-gate opening whose largest changed blob is above gateBurstBlob px (of the 128x72 gray frame) samples at burstFps
      * for gateBurstMs, extended by the next such opening, and opens an unflagged episode even inside the cooldown after a person-less one.
      * Someone in clear view for only ~1 s (an approach hidden by a pillar) is then seen in enough frames for the service's short-sighting

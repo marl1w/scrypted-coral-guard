@@ -298,6 +298,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private scanActive = false;
     /** 'Fast confirm' burst: monotonic end of the burst phase of the current scan (0 = none), the ffmpeg burst state, the newest frame waiting for the in-flight reply. */
     private burstUntil = 0;
+    /** start of the current burst window (scan start, or a gate burst opening on a camera not bursting) and the last reply that showed a subject. */
+    private burstFrom = 0;
+    private evidenceAt = 0;
     private burstOn = false;
     private burstNext: { jpeg: Buffer; t: number } | undefined;
     private warmRetry: NodeJS.Timeout | undefined;
@@ -1103,6 +1106,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 this.bridgeT = 0;
                 this.fast.scan(this.loopStartedAt);
                 this.burstUntil = this.plugin.fastConfirm ?? true ? this.loopStartedAt + DEFAULTS.burstMaxMs : 0;
+                this.burstFrom = this.loopStartedAt;
+                this.evidenceAt = 0;
                 this.burstNext = undefined;
                 this.syncBurst();
                 if (this.snapPaced && !this.frames)
@@ -1782,6 +1787,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             return;
         this.gateTokens -= until - paid;
         this.gateChargedUntil = until;
+        if (!started && !this.bursting(now))
+            this.burstFrom = now; // a new opening on a camera not bursting gets its own blind window
         if (until > from || started)
             this.burstUntil = until;
         gateBursting.set(this.id, until);
@@ -2075,7 +2082,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
 
     /** burst phase of the current scan: fast confirm on, not yet confirmed, within burstMaxMs of the scan start. */
     private bursting(now = monoNow()): boolean {
-        return this.scanActive && now < this.burstUntil && !this.episode.confirmedGroups && !this.episode.degraded;
+        if (!(this.scanActive && now < this.burstUntil && !this.episode.confirmedGroups && !this.episode.degraded))
+            return false;
+        return now - this.burstFrom < DEFAULTS.burstBlindMs || (this.evidenceAt >= this.burstFrom && now - this.evidenceAt <= DEFAULTS.burstEvidenceMs);
     }
 
     /** switch the warm ffmpeg's JPEG rate to the burst rate and back (best effort; a no-op for streams without the burst filter). */
@@ -2155,7 +2164,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 catch (e) { this.warnBadReply(e); }
                 this.probeAttempt = 0; // a real frame succeeded: only now is the service really back
                 let fx: Effects;
-                try { fx = this.episode.reply(this.masked(reply), monoNow(), item.t); }
+                try {
+                    const m = this.masked(reply);
+                    if (subjectSeen(m))
+                        this.evidenceAt = monoNow();
+                    fx = this.episode.reply(m, monoNow(), item.t);
+                }
                 catch (e) { this.warnBadReply(e); fx = this.episode.skip(monoNow()); } // a malformed field is a skipped frame, never an outage
                 this.apply(fx);
                 if (this.episode.synthetic && !this.synthRaised && this.mode !== 'off' && this.episode.wouldPublish) {
@@ -2500,6 +2514,16 @@ export function claimGroup(c: string): Group | undefined {
 }
 
 /** Groups the service reports present (parked vehicles are not 'moving' and never count). */
+/** the reply shows a person, a moving or new vehicle, or an animal at all (a box, a track, a candidate): worth a full-rate burst. */
+function subjectSeen(r: FrameReply): boolean {
+    if (r.person?.present || r.person?.state === 'candidate' || (r.person?.tracks ?? 0) > 0 || (r.person?.fast?.n ?? 0) > 0)
+        return true;
+    // vehicles only when not parked: a parked car is in view all night and would keep every burst at full rate
+    if (r.vehicle?.moving || (r.vehicle?.tracks ?? []).some(t => !t.parked) || r.animal?.present || (r.animal?.tracks?.length ?? 0) > 0)
+        return true;
+    return (r.detections ?? []).some(d => { const g = groupOf(d); return (g === 'person' || g === 'animal') && !d.lookalike; });
+}
+
 function groupsSeen(r: FrameReply): string[] {
     return [r.person?.present && 'person', r.vehicle?.moving && 'vehicle', r.animal?.present && 'animal'].filter(Boolean) as string[];
 }
