@@ -83,7 +83,8 @@ def test_metrics_requires_token_and_shape(box):
 def test_metrics_counts_frames_and_429(box):
     for i in range(3):
         assert box.frame("c1", T0 + i * 1000)[0] == 200
-    got429 = sum(box.frame("c2", T0 + i)[0] == 429 for i in range(30))
+    import server as SV
+    got429 = sum(box.frame("c2", T0 + i)[0] == 429 for i in range(SV.RATE_BURST + 15))
     m = box.req("GET", "/v1/metrics")[1]
     assert m["load"]["frames_60s"] >= 3 and m["load"]["rejected_429_60s"] == got429 > 0
     assert m["load"]["cameras_active"] == 2 and m["coral"]["invocations_per_s"] > 0 and m["coral"]["utilization_pct"] > 0

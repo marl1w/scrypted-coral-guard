@@ -50,7 +50,7 @@ Person state machine (per camera, internal defaults, overridable per camera): `i
 ## Contract rulings (v1, binding)
 
 1. Frame times: frames for one camera may carry `t` in the past (a pre-roll burst) and `t` must be non-decreasing per camera; an out-of-order `t` is clamped to the last one. All session timing (`since_ms`, `hold_s`, `confirm_m`, `still_s`) uses frame time. Pre-roll must be sent SEQUENTIALLY (wait for each reply): a deep parallel burst makes its oldest frames stale by design.
-2. Rate limit: a burst of up to 10 frames within 1 s per camera is accepted (pre-roll); the 429 limit of 4 fps per camera applies to the sustained rate (token bucket, 10 capacity, 4 per second refill).
+2. Rate limit: a burst of up to 32 frames per camera is accepted (pre-roll plus a confirm burst); the 429 limit of 16 fps per camera applies to the sustained rate (token bucket, 32 capacity, 16 per second refill).
 3. `reset` takes effect before any later request on the same connection and never clears per-camera config overrides; it also clears vehicle tracks. Clients wait for the 200 before sending frames.
 4. `person.confirmed` is true for the whole time the state is `confirmed` or `holding` (sticky for the episode, false in `idle` and `candidate`); `present` is the same today but is the field clients should use for "someone is there".
 5. `GET /v1/cameras/{camera}` and `GET /v1/cameras/{camera}/config` for an unknown camera return 404 with `{}`; `POST .../config` and `POST .../frame` create it. A camera is known while it has a live session or a config override.
@@ -68,7 +68,7 @@ The service never builds a backlog: the shared queue is bounded (internal `max_q
 
 ## Errors and limits
 
-`400` bad image / bad parameter (messages never contain internals), `401` bad token, `411` Content-Length required (chunked refused), `413` body larger than 2 MB, `429` too many frames from one camera (sustained 4 per second, burst 10, body `{retry_after_ms}`), `503` Coral unavailable (body `{coral:"stalled|missing"}`) or frame dropped as stale (body `{reason:"stale"}`, see Latency policy), `500` otherwise. Clients treat any non-200 or a request taking longer than 2 s as "service unavailable" and fail open. Frames are processed in order of ARRIVAL (measured when the request is received, before decoding) through one Coral queue shared by all cameras; the Coral is owned by a child process that the service kills and restarts when an invoke takes more than 2 s or fails; the service never lets a stalled Coral block the HTTP server.
+`400` bad image / bad parameter (messages never contain internals), `401` bad token, `411` Content-Length required (chunked refused), `413` body larger than 2 MB, `429` too many frames from one camera (sustained 16 per second, burst 32, body `{retry_after_ms}`), `503` Coral unavailable (body `{coral:"stalled|missing"}`) or frame dropped as stale (body `{reason:"stale"}`, see Latency policy), `500` otherwise. Clients treat any non-200 or a request taking longer than 2 s as "service unavailable" and fail open. Frames are processed in order of ARRIVAL (measured when the request is received, before decoding) through one Coral queue shared by all cameras; the Coral is owned by a child process that the service kills and restarts when an invoke takes more than 2 s or fails; the service never lets a stalled Coral block the HTTP server.
 
 ## Optional Home Assistant surface (phase 2)
 

@@ -3,18 +3,20 @@
 // here and rebuild. Tests override single fields on this object through the harness.
 
 export const DEFAULTS = {
-    /** JPEG sampling and posting interval during an episode, ms (2 fps; the service accepts 4 fps sustained, bursts of 10). The gray gate branch is fixed at 1 fps. */
+    /** JPEG sampling and posting interval during an episode, ms (2 fps; the service accepts 16 fps sustained, bursts of 32). The gray gate branch is fixed at 1 fps. */
     frameIntervalMs: 500,
     /** posting interval once an episode is confirmed (holding phase), ms: 1 fps; a re-pend (max hold) goes back to frameIntervalMs. */
     holdIntervalMs: 1000,
     /**
      * 'Fast confirm' burst: while an episode is not yet confirmed, from the scan start for at most burstMaxMs, frames are posted back to
-     * back (the next as soon as the previous reply arrives, one in flight, latest wins) and the warm ffmpeg samples JPEGs at burstFps
-     * instead of 1000 / frameIntervalMs (runtime switch, no idle cost). Burst frames carry deadline_ms = burstDeadlineMs so a busy
-     * service sheds them instead of queueing.
+     * back (the next as soon as the previous reply arrives, one in flight, latest wins) and the warm ffmpeg passes every frame of the
+     * stream when the camera plugin reports its frame rate (else it resamples to burstFps) instead of 1000 / frameIntervalMs (runtime
+     * switch, no idle cost). Burst frames carry deadline_ms = burstDeadlineMs so a busy service sheds them instead of queueing.
+     * burstMaxMs covers the whole wait for a verdict (confirmTimeoutS): a burst that ended at 1.5 s left the rest of the wait at
+     * 2 fps, where the fast rules (several frames within a second) can no longer fire, and those episodes took up to 5-9 s.
      */
     burstFps: 6,
-    burstMaxMs: 1500,
+    burstMaxMs: 6000,
     burstDeadlineMs: 300,
     /**
      * Gate burst: a pixel-gate opening whose largest changed blob is above gateBurstBlob px (of the 128x72 gray frame) samples at burstFps

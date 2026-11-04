@@ -35,12 +35,12 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.3.53"
+FALLBACK_VERSION = "0.3.54"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
-RATE_PER_S = 8      # sustained frames/s per camera: a 6 fps confirm burst (0.3.12) plus the normal pacing fits
-RATE_BURST = 20     # pre-roll (up to 6 frames) plus a 1.5 s burst at 6 fps, with margin
+RATE_PER_S = 16     # sustained frames/s per camera: a burst at the stream's own rate (up to 12 fps, 0.3.54) for the whole wait plus pacing
+RATE_BURST = 32     # pre-roll (up to 6 frames) plus the start of a 12 fps burst, with margin
 REPLY_MIN_SCORE = 0.2          # detections below this are omitted from replies unless verbose=1
 JOB_WAIT_S = 10.0
 IDLE_S = 15.0                  # keep-alive connection idle limit

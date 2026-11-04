@@ -112,13 +112,30 @@ def test_bad_requests_map_to_400_without_leaks(box):
 
 
 def test_rate_limit_429_per_camera(box):
-    codes = [box.frame("fast", T0 + i)[0] for i in range(26)]
-    assert codes[:20] == [200] * 20 and 429 in codes[20:]
+    # the 429 path end to end, with a tight limiter (the real one refills faster than this test can post)
+    import server as SV
+    box.app.limiter = SV.RateLimiter(per_s=4, burst=10)
+    codes = [box.frame("fast", T0 + i)[0] for i in range(16)]
+    assert codes[:10] == [200] * 10 and 429 in codes[10:]
     st, body = box.frame("fast")
-    assert st == 429 and 0 < body["retry_after_ms"] <= 1001
+    assert st == 429 and 0 < body["retry_after_ms"] <= 251
     assert box.frame("other")[0] == 200
     time.sleep(1.3)
     assert box.frame("fast")[0] == 200
+
+
+def test_rate_limit_admits_a_whole_burst_at_the_stream_rate():
+    # 0.3.54: a camera may burst at its own rate (up to 12 fps) for the whole 6 s wait for a verdict, after a 6-frame pre-roll
+    import server as SV
+    lim = SV.RateLimiter()
+    t, refused = 100.0, 0
+    for _ in range(6):
+        refused += lim.check("cam", t) > 0
+    for i in range(72):
+        refused += lim.check("cam", t + i / 12) > 0
+    assert refused == 0
+    lim2 = SV.RateLimiter()
+    assert sum(lim2.check("x", 5.0) > 0 for _ in range(SV.RATE_BURST + 1)) == 1, "an instant flood is cut after the burst capacity"
 
 
 def test_config_get_post(box):

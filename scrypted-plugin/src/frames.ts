@@ -191,22 +191,40 @@ export function burstCommand(on: boolean): string {
     return `c${BURST_FILTER} -1 enable ${on ? 0 : 1}\n`;
 }
 
-function chainHead(hw: boolean, fps: number, burstFps?: number): string {
+/** a stream's reported frame rate when it is usable (the camera plugin knows it, e.g. from the encoder's settings), else undefined. */
+export function validSourceFps(v: unknown): number | undefined {
+    return typeof v === 'number' && Number.isFinite(v) && v >= 1 && v <= 60 ? v : undefined;
+}
+
+/**
+ * With a known source rate the burst takes EVERY decoded frame and idle keeps every Nth real frame (N = source fps x interval,
+ * about the interval's rate): no `fps` resampling. Resampling a 7 fps stream to 6 lost a quarter of its frames and sent
+ * duplicates (RTMP rounds timestamps to 50 ms), and a 4 fps stream resampled to 6 sent two duplicate frames a second.
+ */
+export function sourceStep(fps: number, sourceFps: number): number {
+    return Math.max(1, Math.round(sourceFps / fps));
+}
+
+function chainHead(hw: boolean, fps: number, burstFps?: number, sourceFps?: number): string {
     // hardware decode returns system-memory frames (nv12): no hwdownload step
+    if (burstFps && sourceFps) {
+        const n = sourceStep(fps, sourceFps);
+        return n > 1 ? `${BURST_FILTER}=step=${n},` : '';
+    }
     const step = burstStep(fps, burstFps);
     return step > 1 ? `fps=${(fps * step).toFixed(4)},${BURST_FILTER}=step=${step},` : `fps=${fps.toFixed(4)},`;
 }
 
 /** Filter graph with two outputs: [v1] the JPEG frames, [v2] the tiny gray frames for the pixel gate (1 fps, area scaling). */
-export function grayGraph(hw: boolean, fps: number, maxWidth: number, gw: number, gh: number, burstFps?: number): string {
+export function grayGraph(hw: boolean, fps: number, maxWidth: number, gw: number, gh: number, burstFps?: number, sourceFps?: number): string {
     // fps first (JPEG branch rate), one full-size scale, then the gray branch is sampled at exactly 1 fps from the reduced picture
-    return `${chainHead(hw, fps, burstFps)}scale='min(${maxWidth},iw)':-2,split=2[v1][b];[b]fps=1,scale=${gw}:${gh}:flags=area,format=gray[v2]`;
+    return `${chainHead(hw, fps, burstFps, sourceFps)}scale='min(${maxWidth},iw)':-2,split=2[v1][b];[b]fps=1,scale=${gw}:${gh}:flags=area,format=gray[v2]`;
 }
 
 /** Video filter chain: optional hwdownload (never scale_vaapi: not available without VPP), fps, CPU scale. */
-export function filterChain(hw: boolean, fps: number, maxWidth: number, burstFps?: number): string {
+export function filterChain(hw: boolean, fps: number, maxWidth: number, burstFps?: number, sourceFps?: number): string {
     // fps FIRST: every frame is decoded, but only one per interval is downloaded, scaled and JPEG-encoded.
-    return `${chainHead(hw, fps, burstFps)}scale='min(${maxWidth},iw)':-2`;
+    return `${chainHead(hw, fps, burstFps, sourceFps)}scale='min(${maxWidth},iw)':-2`;
 }
 
 /** scheme://host:port of a stream URL, credentials and query dropped (safe to log). */
@@ -231,6 +249,7 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
     let args: string[];
     let streamWide = false;
     let streamDesc = '';
+    let sourceFps: number | undefined;
     let ffmpegPath: string | undefined;
     let env: NodeJS.ProcessEnv = process.env;
     if (o.inputUrl) {
@@ -283,6 +302,8 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
         const inArgs = buildInputArgs(input.inputArguments, input.url);
         args = [...decodeArgs(!!o.hwaccel), ...(o.longProbe ? withLongProbe(inArgs) : inArgs)];
         const mso: any = input.mediaStreamOptions || {};
+        const asked = explicit ?? (useId ? rawOpts.find((x: any) => x?.id === pick.choice?.id) : undefined);
+        sourceFps = validSourceFps(mso.video?.fps) ?? validSourceFps(asked?.video?.fps);
         if (!streamDesc)
             streamDesc = `${mso.name || mso.id || dest}${mso.video?.width && mso.video?.height ? ` ${mso.video.width}x${mso.video.height}` : ''}`;
         o.console.log(`frame source: getVideoStream asked ${explicit || useId ? 'stream ' + streamDesc : dest === 'low-resolution' ? 'destination low-resolution' : 'default stream'}${o.longProbe ? ' (long probe fallback)' : ''}, prebuffer ${o.prebufferMs} ms; stream reports prebuffer ${mso.prebuffer ?? 'n/a'} ms / ${mso.prebufferBytes ?? 'n/a'} bytes`);
@@ -300,15 +321,20 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
         ...args,
         '-an', '-sn',
         ...(o.gray
-            ? ['-filter_complex', grayGraph(!!o.hwaccel, fps, width, o.gray.width, o.gray.height, o.burstFps),
+            ? ['-filter_complex', grayGraph(!!o.hwaccel, fps, width, o.gray.width, o.gray.height, o.burstFps, sourceFps),
                 '-map', '[v1]', ...jpegOut,
                 '-map', '[v2]', '-c:v', 'rawvideo', '-pix_fmt', 'gray', '-f', 'rawvideo', 'pipe:3']
-            : ['-vf', filterChain(!!o.hwaccel, fps, width, o.burstFps), ...jpegOut]),
+            : ['-vf', filterChain(!!o.hwaccel, fps, width, o.burstFps, sourceFps), ...jpegOut]),
     ];
 
     if (o.hwaccel && o.vaDriver)
         env = { ...env, LIBVA_DRIVER_NAME: o.vaDriver };
-    const canBurst = burstStep(fps, o.burstFps) > 1;
+    const everyFrame = !!(o.burstFps && sourceFps);
+    const canBurst = everyFrame ? sourceStep(fps, sourceFps!) > 1 : burstStep(fps, o.burstFps) > 1;
+    // the safety net against bunched frames must let every real frame through: at most 40 % of the source's frame interval
+    const minGapMs = everyFrame && o.minGapMs ? Math.min(o.minGapMs, Math.round(400 / sourceFps!)) : o.minGapMs;
+    if (o.burstFps)
+        o.console.log(`frame source: ${everyFrame ? `source ${sourceFps} fps: bursts take every frame, idle every ${sourceStep(fps, sourceFps!)}th` : `source rate not reported: bursts resampled to ${o.burstFps} fps`}`);
     // stdin is a pipe only for the burst commands (ffmpeg reads its interactive commands from it); otherwise ignored as before
     const cp = child_process.spawn(ffmpegPath, args, { env, stdio: [canBurst ? 'pipe' : 'ignore', 'pipe', 'pipe', ...(o.gray ? ['pipe' as const] : [])] }) as unknown as child_process.ChildProcessWithoutNullStreams;
     cp.stdin?.on?.('error', () => { /* ffmpeg gone: a burst command is best effort */ });
@@ -358,7 +384,7 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
                 const dim = jpegDimensions(jpeg);
                 o.console.log(`frame source: analysis stream ${streamDesc}, posting ${dim ? `${dim.w}x${dim.h}` : 'unknown size'}`);
             }
-            if (o.minGapMs && now - lastJpeg < o.minGapMs)
+            if (minGapMs && now - lastJpeg < minGapMs)
                 return;
             lastJpeg = now;
             o.onFrame(jpeg, now);

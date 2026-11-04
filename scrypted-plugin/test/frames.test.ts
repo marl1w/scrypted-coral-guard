@@ -404,3 +404,38 @@ test('frames: the burst filter keeps idle cost (every Nth frame before scale/enc
     assert.equal(F.burstCommand(true), 'cframestep@burst -1 enable 0\n');
     assert.equal(F.burstCommand(false), 'cframestep@burst -1 enable 1\n');
 });
+
+test('frames: with the source rate known, bursts take every frame and idle every Nth real frame (no fps resampling)', () => {
+    const F = loadFrames();
+    assert.equal(F.sourceStep(2, 6), 3);
+    assert.equal(F.sourceStep(2, 7), 4);
+    assert.equal(F.sourceStep(2, 4), 2);
+    assert.equal(F.sourceStep(2, 12), 6);
+    assert.equal(F.sourceStep(2, 1), 1);
+    assert.equal(F.filterChain(false, 2, 960, 6, 7), "framestep@burst=step=4,scale='min(960,iw)':-2");
+    assert.equal(F.filterChain(false, 2, 960, 6, 2), "scale='min(960,iw)':-2", 'a source no faster than the interval: every frame, no switch');
+    assert.equal(F.filterChain(false, 2, 960, undefined, 7), "fps=2.0000,scale='min(960,iw)':-2", 'no burst wanted (per trigger): unchanged');
+    assert.match(F.grayGraph(false, 2, 960, 128, 72, 6, 12), /^framestep@burst=step=6,scale=.*split=2\[v1\]\[b\];\[b\]fps=1,/);
+    assert.equal(F.validSourceFps(7), 7);
+    for (const bad of [0, -1, 120, NaN, '7', undefined]) assert.equal(F.validSourceFps(bad), undefined);
+});
+
+test('frames: the stream reporting its fps switches the warm process to every-frame bursts; without it the old resampling stays', async () => {
+    setup();
+    const { startFrames } = loadFrames();
+    const logs: string[] = [];
+    const withFps = { ...opt('sub', 1536, 576), video: { ...opt('sub', 1536, 576).video, fps: 7 } };
+    const camera = { getVideoStreamOptions: async () => [withFps], getVideoStream: async () => ({}) };
+    const f = await startFrames({ bySize: true, camera: camera as any, intervalMs: 500, burstFps: 6, minGapMs: 100, prebufferMs: 0, maxWidth: 960, maxWidthWide: 1280, quality: 85, console: { log: (m: string) => logs.push(m), warn() { } } as any, onFrame: () => { } });
+    await sleep(300);
+    assert.match(args().join(' '), /-vf framestep@burst=step=4,scale=/);
+    assert.doesNotMatch(args().join(' '), /fps=6/);
+    assert.ok(logs.some(l => /source 7 fps: bursts take every frame, idle every 4th/.test(l)), logs.join('|'));
+    f.stop(); await f.exited;
+    const plain = { getVideoStreamOptions: async () => [opt('sub', 1536, 576)], getVideoStream: async () => ({}) };
+    const g = await startFrames({ bySize: true, camera: plain as any, intervalMs: 500, burstFps: 6, minGapMs: 100, prebufferMs: 0, maxWidth: 960, maxWidthWide: 1280, quality: 85, console: { log: (m: string) => logs.push(m), warn() { } } as any, onFrame: () => { } });
+    await sleep(300);
+    assert.match(args().join(' '), /-vf fps=6\.0000,framestep@burst=step=3,scale=/);
+    assert.ok(logs.some(l => /source rate not reported: bursts resampled to 6 fps/.test(l)));
+    g.stop(); await g.exited;
+});
