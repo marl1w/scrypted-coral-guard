@@ -217,14 +217,14 @@ test('decoder runs with one thread, before the input', async () => {
     await fsx.exited;
 });
 
-test('ffmpegVersion picks the per-output passthrough option by version (-fps_mode from 5.1, -vsync 0 before)', async () => {
+test('ffmpegVersion picks the per-output vfr option by version (-fps_mode from 5.1, -vsync before)', async () => {
     setup();
     const { ffmpegVersion } = loadFrames();
     const oldFake = path.join(dir, 'fake-old-ffmpeg.js');
     fs.writeFileSync(oldFake, `#!/usr/bin/env node\nconsole.log('ffmpeg version 4.4.2 Copyright');`);
     fs.chmodSync(oldFake, 0o755);
-    assert.deepEqual((await ffmpegVersion(oldFake)).passthrough, ['-vsync', '0']);
-    assert.deepEqual((await ffmpegVersion(fake)).passthrough, ['-fps_mode', 'passthrough']);
+    assert.deepEqual((await ffmpegVersion(oldFake)).vfr, ['-vsync', 'vfr']);
+    assert.deepEqual((await ffmpegVersion(fake)).vfr, ['-fps_mode', 'vfr']);
 });
 
 test('a VAAPI failure after the first frame (stderr names hwdownload) also resolves as hwaccel failed', async () => {
@@ -430,14 +430,14 @@ test('frames: the stream reporting its fps switches the warm process to every-fr
     await sleep(300);
     assert.match(args().join(' '), /-vf framestep@burst=step=4,scale=/);
     assert.doesNotMatch(args().join(' '), /fps=6/);
-    assert.match(args().join(' '), /-fps_mode passthrough -f image2pipe pipe:1/, 'one JPEG per decoded frame, no padding to the timestamp rate');
+    assert.match(args().join(' '), /-fps_mode vfr -f image2pipe pipe:1/, 'one JPEG per decoded frame, no padding; not passthrough (equal timestamps stop image2pipe)');
     assert.ok(logs.some(l => /source 7 fps: bursts take every frame, idle 1 in 4/.test(l)), logs.join('|'));
     f.stop(); await f.exited;
     const plain = { getVideoStreamOptions: async () => [opt('sub', 1536, 576)], getVideoStream: async () => ({}) };
     const g = await startFrames({ bySize: true, camera: plain as any, intervalMs: 500, burstFps: 6, minGapMs: 100, prebufferMs: 0, maxWidth: 960, maxWidthWide: 1280, quality: 85, console: { log: (m: string) => logs.push(m), warn() { } } as any, onFrame: () => { } });
     await sleep(300);
     assert.match(args().join(' '), /-vf fps=6\.0000,framestep@burst=step=3,scale=/);
-    assert.ok(!args().includes('-fps_mode'), 'the fps filter sets the output rate: no passthrough');
+    assert.ok(!args().includes('-fps_mode'), 'the fps filter sets the output rate: no vfr option');
     assert.ok(logs.some(l => /source rate not reported: bursts resampled to 6 fps/.test(l)));
     g.stop(); await g.exited;
 });

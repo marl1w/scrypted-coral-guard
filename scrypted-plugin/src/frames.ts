@@ -68,14 +68,16 @@ export interface FrameOptions {
     gray?: { width: number; height: number; minGapMs?: number; onGray: (frame: Uint8Array, arrivedAt: number) => void };
 }
 
-const versionCache = new Map<string, Promise<{ text: string; passthrough: string[] }>>();
+const versionCache = new Map<string, Promise<{ text: string; vfr: string[] }>>();
 
 /**
- * ffmpeg version line (logged once per start). `passthrough` is the per-output option that keeps one output frame per
- * decoded frame instead of constant frame rate: used on the JPEG output in every-frame mode (no fps filter sets the
- * output rate there). `-fps_mode` exists from 5.1, `-vsync` is removed in 9.
+ * ffmpeg version line (logged once per start). `vfr` is the per-output option that keeps one output frame per decoded
+ * frame instead of constant frame rate (never pads with duplicates): used on the JPEG output in every-frame mode, where
+ * no fps filter sets the output rate. Not passthrough: two frames with the same timestamp (a rebroadcast on a 50 ms grid
+ * does that) make image2pipe stop with 'non monotonically increasing dts'; vfr drops one of them instead.
+ * `-fps_mode` exists from 5.1, `-vsync` is removed in 9.
  */
-export function ffmpegVersion(ffmpegPath: string): Promise<{ text: string; passthrough: string[] }> {
+export function ffmpegVersion(ffmpegPath: string): Promise<{ text: string; vfr: string[] }> {
     let p = versionCache.get(ffmpegPath);
     if (!p) {
         p = new Promise(resolve => {
@@ -83,7 +85,7 @@ export function ffmpegVersion(ffmpegPath: string): Promise<{ text: string; passt
                 const text = String(out || '').split('\n')[0].trim() || 'unknown';
                 const m = /version\s+n?(\d+)\.(\d+)/i.exec(text);
                 const old = !!m && (Number(m[1]) < 5 || (Number(m[1]) === 5 && Number(m[2]) < 1));
-                resolve({ text, passthrough: old ? ['-vsync', '0'] : ['-fps_mode', 'passthrough'] });
+                resolve({ text, vfr: old ? ['-vsync', 'vfr'] : ['-fps_mode', 'vfr'] });
             });
         });
         versionCache.set(ffmpegPath, p);
@@ -321,8 +323,8 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
     const everyFrame = !!(o.burstFps && sourceFps);
     // Every-frame mode has no fps filter to set the output rate, so ffmpeg would pad to the rate it reads from the
     // timestamps (a 50 ms grid reads as 20 fps) with duplicates: 20 JPEGs a second per camera, mostly thrown away.
-    // Passthrough keeps one JPEG per decoded frame.
-    const jpegOut = ['-c:v', 'mjpeg', '-q:v', String(qualityToQscale(o.quality)), ...(everyFrame ? ver.passthrough : []), '-f', 'image2pipe', 'pipe:1'];
+    // vfr keeps one JPEG per decoded frame.
+    const jpegOut = ['-c:v', 'mjpeg', '-q:v', String(qualityToQscale(o.quality)), ...(everyFrame ? ver.vfr : []), '-f', 'image2pipe', 'pipe:1'];
     args = [
         '-hide_banner', '-loglevel', 'warning',
         ...args,
@@ -337,7 +339,7 @@ export async function startFrames(o: FrameOptions): Promise<FrameStream> {
     if (o.hwaccel && o.vaDriver)
         env = { ...env, LIBVA_DRIVER_NAME: o.vaDriver };
     const canBurst = everyFrame ? sourceStep(fps, sourceFps!) > 1 : burstStep(fps, o.burstFps) > 1;
-    // No arrival-time gap filter in every-frame mode: with passthrough there are no duplicates to drop, and real frames
+    // No arrival-time gap filter in every-frame mode: with vfr there are no duplicates to drop, and real frames
     // arrive bunched by the network (a 12 fps stream has gaps of 0-50 ms), so any gap would drop real frames. A bunch
     // during a burst is resolved by the caller (one request in flight, latest wins).
     const minGapMs = everyFrame ? undefined : o.minGapMs;
