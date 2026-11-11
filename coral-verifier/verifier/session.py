@@ -20,7 +20,7 @@ Out-of-order `t` is clamped to the last seen t. Time of the state seen by GET (`
 import math, re, threading, time
 
 import shape as SH
-from geom import iou, inside
+from geom import iou, inside, edge_iou, unclipped
 import spots as SP
 import lookalikes as LA
 
@@ -487,7 +487,8 @@ class VehicleTracker:
             tr = trks[i]; d = dets[j]; used.add(j); matched[id(tr)] = j
             tr.cls, tr.box, tr.last = d[0], d[2], t
             tr.moving = self._moved(tr, t, d[2])
-            if iou(d[2], tr.anchor) > (PARKED_BREAK_IOU if tr.parked else STILL_IOU):
+            # still: the box stays where it was (a side flipping out to the frame border does not count, 0.3.59); parked: plain IoU
+            if (iou(d[2], tr.anchor) > PARKED_BREAK_IOU) if tr.parked else (edge_iou(d[2], tr.anchor) > STILL_IOU):
                 if not tr.parked and tr.split is None and (t - tr.stable_since) > c.parked_after_s * 1000.0:
                     tr.parked = True
                     self._parked_now(tr, t, gray)
@@ -587,7 +588,8 @@ class VehicleTracker:
 
     @staticmethod
     def _moved(tr, t, box):
-        """Moving = centre displacement > MOVE_DIAG_FRAC of the normalised frame diagonal, or IoU < MOVE_IOU, against the box at least MOVE_REF_S earlier."""
+        """Moving = centre displacement > MOVE_DIAG_FRAC of the normalised frame diagonal, or IoU < MOVE_IOU, against the box at least MOVE_REF_S
+        earlier; a side where either box touches the frame border is left out (geom.unclipped)."""
         h = tr.hist
         h.append((t, box))
         while len(h) > 2 and t - h[1][0] >= MOVE_REF_S * 1000.0:
@@ -595,9 +597,15 @@ class VehicleTracker:
         t0, b0 = h[0]
         if t - t0 < MOVE_REF_S * 1000.0:
             return False
+        limit = MOVE_DIAG_FRAC * math.sqrt(2.0)
+        a, r = unclipped(box, b0)
+        if a != list(box) or r != list(b0):
+            # a side touches the frame border (0.3.59): that side is where the frame cuts the car and may flip between the border and the
+            # part the detector sees; the car moves when one of its other sides travels as far as the centre would have to
+            return max(abs(a[k] - r[k]) for k in range(4)) > limit
         dx = (box[0] + box[2] - b0[0] - b0[2]) / 2.0
         dy = (box[1] + box[3] - b0[1] - b0[3]) / 2.0
-        return math.hypot(dx, dy) > MOVE_DIAG_FRAC * math.sqrt(2.0) or iou(box, b0) < MOVE_IOU
+        return math.hypot(dx, dy) > limit or iou(box, b0) < MOVE_IOU
 
     def snapshot(self, eff):
         live = [tr for tr in self.tracks if self._alive(tr, eff)]
