@@ -171,11 +171,11 @@ TILING = {"auto_aspect": 2.2, "overlap": 0.3, "two_tile_frac": 0.55, "hybrid_con
 EDGE_MARGIN = 0.02              # multi-tile frames: a box within this fraction of the tile width of an INNER tile edge, fully inside the neighbour tile, is dropped
 VEHICLE_NMS_IOU = 0.5           # cross-class NMS over car/truck/bus/motorcycle
 VEHICLE_CONTAIN = 0.7           # a vehicle box with more than this share of its area inside a larger vehicle box is dropped
-# Vehicle movement (session): a track is `moving` when, against its box at least MOVE_REF_S of frame time earlier, the centre moved more than
-# MOVE_DIAG_FRAC of the (normalised) frame diagonal or the IoU fell below MOVE_IOU. New tracks are `still` until they move or become `parked`.
+# Vehicle movement (session): a track is `moving` when, against its box at least MOVE_REF_S of frame time earlier, two of its sides travelled more
+# than MOVE_DIAG_FRAC of the (normalised) frame diagonal, or one inner side of a box cut by the frame border did (geom.moved, 0.3.60).
+# New tracks are `still` until they move or become `parked`.
 MOVE_REF_S = 2.0
 MOVE_DIAG_FRAC = 0.03
-MOVE_IOU = 0.7
 
 # Load shedding: a prio=low frame (heartbeat / pixel gate) that reaches the worker while at least BUSY_DEPTH other frames wait runs only its BASE pass(es)
 # (single, or the hybrid whole + tiles) and skips the zoom-out pass and the second look; the reply says `reduced: true`.

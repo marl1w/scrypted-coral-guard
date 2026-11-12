@@ -4,8 +4,8 @@ once; best (highest score of the episode's groups) and last stay in memory until
 snapshot per snapshot_every_s of frame time (capped). JPEG bytes are stored exactly as received. Ids are validated (no path traversal)."""
 import json, logging, math, os, queue, re, shutil, threading, time
 from collections import deque
-from defaults import JOURNAL as J
-from geom import iou
+from defaults import JOURNAL as J, MOVE_DIAG_FRAC
+from geom import iou, moved
 import autovalidate
 
 log = logging.getLogger("journal")
@@ -29,12 +29,30 @@ def canon_truth(t):
     return "+".join(c for c in CLASSES if c in parts)
 
 
-def boxes_moved(frames, iou_same=0.7):
-    """Did any box move across an episode's stored frames? frames: one list of boxes per frame. A box with no near-identical box (IoU >=
-    iou_same) in some other frame moved, appeared or left. Fewer than two frames: unknown, taken as moved (it stays a miss to look at)."""
+def boxes_moved(frames):
+    """Did any box move across an episode's stored frames? frames: one list of boxes per frame. A box with no box at the same place
+    (geom.moved: one side redrawn by the detector is not a move) in some other frame moved, appeared or left. Fewer than two
+    frames: unknown, taken as moved (it stays a miss to look at)."""
     if len(frames) < 2:
         return True
-    return any(not any(iou(b, x) >= iou_same for x in other) for i, f in enumerate(frames) for b in f for j, other in enumerate(frames) if i != j)
+    limit = MOVE_DIAG_FRAC * math.sqrt(2.0)
+    return any(not any(not moved(b, x, limit) for x in other) for i, f in enumerate(frames) for b in f for j, other in enumerate(frames) if i != j)
+
+
+TRACK_MATCH_IOU = 0.3   # as the plugin matches a detection to a track (reply-view.ts vehicleState)
+
+
+def tag_vehicle_tracks(dets, tracks):
+    """Copies of a frame's detections for the journal: each vehicle one carries the tracker's track under it, `track: [id, state]`
+    (state moving / still / parked), so a stored frame shows why a vehicle was (or was not) taken as moving. The reply is untouched."""
+    out = []
+    for d in dets:
+        if d.get("group") == "vehicle" and isinstance(d.get("box"), (list, tuple)) and len(d["box"]) == 4:
+            best = max(((iou(d["box"], t["box"]), t) for t in tracks or () if len(t.get("box") or ()) == 4), default=(0.0, None), key=lambda x: x[0])
+            if best[1] is not None and best[0] > TRACK_MATCH_IOU:
+                d = {**d, "track": [best[1]["id"], best[1]["state"]]}
+        out.append(d)
+    return out
 ACTIONS = ("start", "update", "end")
 
 

@@ -84,3 +84,40 @@ def test_a_car_moving_away_from_the_edge_moves():
         s.update(T0 + i * 1000, [det(UP), det((x0, 0.56, 0.42 + 0.04 * i, 0.99))])
         moved = moved or s.snapshot()["vehicle"]["moving"]
     assert moved
+
+
+# ---- 0.3.60: one side redrawn anywhere (a fence or a post in front of the car) is not a move; a moving car moves two sides --------
+
+FAR = (0.42, 0.02, 0.50, 0.13)                                    # a car parked behind a fence at the top of the frame
+FAR_TALL = (0.42, 0.02, 0.50, 0.17)                               # the same car, more of it seen between the fence boards
+
+
+def test_a_box_redrawn_at_a_fence_never_moves_and_the_car_parks():
+    s = new()
+    rng = np.random.default_rng(11)
+    for k in range(200):
+        far = FAR_TALL if rng.random() < 0.5 else (0.42, 0.02, 0.50, float(rng.uniform(0.12, 0.17)))
+        s.update(T0 + k * 1000, [det(UP), det(jitter(far, rng, 0.003), score=0.7)])
+        assert not s.snapshot()["vehicle"]["moving"], f"moving at {k} s"
+    assert sorted(tr["state"] for tr in s.snapshot()["vehicle"]["tracks"]) == ["parked", "parked"]
+
+
+def test_a_car_driving_across_the_middle_moves() -> None:
+    s = new()
+    moved = None
+    for i in range(10):                                           # 0.04 of the frame a second, both sides travel
+        s.update(T0 + i * 1000, [det(UP), det((0.30 + 0.04 * i, 0.60, 0.55 + 0.04 * i, 0.90))])
+        if moved is None and s.snapshot()["vehicle"]["moving"]:
+            moved = i
+    assert moved is not None and moved <= 3
+
+
+def test_a_car_driving_towards_the_camera_moves() -> None:
+    s = new()
+    moved = None
+    for i in range(10):                                           # grows about its centre: every side travels
+        g = 0.025 * i
+        s.update(T0 + i * 1000, [det(UP), det((0.40 - g, 0.60 - g, 0.60 + g, 0.80 + g))])
+        if moved is None and s.snapshot()["vehicle"]["moving"]:
+            moved = i
+    assert moved is not None and moved <= 3

@@ -14,7 +14,7 @@ import detect as D
 import shape as SH
 import lookalikes as LA
 import secondlook as SL
-from journal import Journal, GROUPS
+from journal import Journal, GROUPS, tag_vehicle_tracks
 from coral import CoralManager, Job
 
 def _read_version():
@@ -35,7 +35,7 @@ def _read_version():
     return FALLBACK_VERSION
 
 
-FALLBACK_VERSION = "0.3.59"
+FALLBACK_VERSION = "0.3.60"
 VERSION = _read_version()
 DEFAULT_PORT = DF.SERVICE["port"]
 MAX_JSON_BYTES = 64 * 1024
@@ -711,7 +711,7 @@ class Handler(BaseHTTPRequestHandler):
             shape_ms = shape_prep_ms + (sn["vehicle"].get("shape") or {}).get("ms", 0.0)
             app.coral.note_stage("shape_ms", shape_ms)
             try:
-                app.journal.record_frame_async(cam, sn["t"], body, dets)
+                app.journal.record_frame_async(cam, sn["t"], body, tag_vehicle_tracks(dets, sn["vehicle"].get("tracks")))
             except Exception:
                 log.exception("journal record failed")
             shown = dets if verbose else [d for d in live if d["score"] >= REPLY_MIN_SCORE and not d.get("in_vehicle")]

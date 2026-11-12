@@ -38,6 +38,13 @@ def unclipped(a, b, border=FRAME_BORDER):
     return a, b
 
 
-def edge_iou(a, b):
-    """IoU of two boxes of one object, ignoring where the frame border cuts it (see unclipped)."""
-    return iou(*unclipped(a, b))
+def moved(a, b, limit):
+    """Two boxes of one object at different places? Compared where both are really drawn (see unclipped), it moved when two of its
+    sides travelled more than `limit` (a driving car shifts or grows: at least two sides go), or, cut by the frame border, one of
+    its inner sides did (a car entering or leaving through the border moves only that one). A single side alone is the
+    detector redrawing the part it sees: the border, or something in front of the object (a post, a fence), cutting it at
+    another place; nothing moved (0.3.60)."""
+    a2, b2 = unclipped(a, b)
+    cut = any(min(a[k], b[k]) <= FRAME_BORDER for k in (0, 1)) or any(max(a[k], b[k]) >= 1.0 - FRAME_BORDER for k in (2, 3))
+    sides = sum(abs(a2[k] - b2[k]) > limit for k in range(4))
+    return sides >= (1 if cut else 2)
