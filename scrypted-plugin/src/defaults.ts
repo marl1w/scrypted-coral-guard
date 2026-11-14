@@ -3,6 +3,12 @@
 // here and rebuild. Tests override single fields on this object through the harness.
 
 export const DEFAULTS = {
+    /**
+     * Gate: a motion true found in the shared state that this instance never published (left by an earlier instance, whose
+     * release cannot clear persisted state) and that no camera event explains for this long is cleared. A real raw "on" ends
+     * with an event within the camera's own timeout (50 s on Reolink), so 5 min only ever catches a leftover.
+     */
+    staleMotionMs: 300000,
     /** JPEG sampling and posting interval during an episode, ms (2 fps; the service accepts 16 fps sustained, bursts of 32). The gray gate branch is fixed at 1 fps. */
     frameIntervalMs: 500,
     /** posting interval once an episode is confirmed (holding phase), ms: 1 fps; a re-pend (max hold) goes back to frameIntervalMs. */

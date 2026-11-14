@@ -278,6 +278,9 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     /** true once a genuine event arrived from the underlying device; before that the mixin never writes motionDetected. */
     private thumbWarned = false;
     private touched = false;
+    /** when this instance started, and whether the leftover-motion check ran (see clearStaleMotion) */
+    private bornAt = monoNow();
+    private staleChecked = false;
     private cameraRaw = false;
     /** Gate mode: a pixel-gate opening drives the episode machine as synthetic raw motion (never raises motion by itself). */
     private synthRaised = false;
@@ -1005,6 +1008,26 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             profile: this.night === undefined ? undefined : this.night ? 'night' : 'day' });
     }
 
+    /**
+     * A motion true left in the shared state by an earlier instance of this mixin stays on until the camera's next
+     * motion event, which can be hours away: its release cannot clear it (once removed, a write is only an event), and
+     * startup is transparent (nothing is written before a genuine camera event). HomeKit then records one endless motion
+     * event (seen for ~1 h on a camera with a parked car and its raw motion off). Gate publishes motion only for a
+     * verified subject, and a real raw "on" ends with an event within the camera's own timeout, so a true that this
+     * instance never published, with no camera event and no confirmed episode for staleMotionMs, is cleared once.
+     */
+    private clearStaleMotion(now: number) {
+        if (this.staleChecked || this.touched || this.lastPublished || this.sensorless || this.mode !== 'gate')
+            return;
+        if (now - this.bornAt < DEFAULTS.staleMotionMs || this.episode.confirmedGroups)
+            return;
+        this.staleChecked = true;
+        if (!this.motionDetected)
+            return;
+        this.console.log(`motion was left on by an earlier instance (no camera event for ${Math.round(DEFAULTS.staleMotionMs / 1000)} s, nothing verified): cleared`);
+        this.publish(false);
+    }
+
     /** Write motionDetected and later check the write really became the shared state. */
     private publish(value: boolean) {
         this.lastPublished = value;
@@ -1061,6 +1084,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             return;
         this.expirePresence();
         const now = monoNow();
+        this.clearStaleMotion(now);
         if (this.tamper.state.on && (!this.tamperEnabled || now - Math.max(this.tamperSampleAt, this.tamperStartAt) >= TAMPER_STALE_MS))
             this.onTamperChange(this.tamper.clear(this.tamperEnabled ? `no frames to check for ${TAMPER_STALE_MS / 1000} s` : 'detection disabled'));
         this.findNightMode();

@@ -2616,3 +2616,30 @@ test('tamper: with a Night mode sibling (BinarySensor, -nightmode) day and night
         delete sm.listenDevice;
     }
 });
+
+test('Gate: a motion true left by an earlier instance is cleared once no camera event explains it for staleMotionMs', async () => {
+    // Gate, persisted true, no camera event: cleared after the stale time (on the 1 s tick), and only once
+    let h = make({ settings: { mode: 'Gate', staleMotionMs: 300 }, initial: true });
+    await sleep(150);
+    assert.equal(ctl.writes.length, 0, 'startup itself stays transparent');
+    await eventually(() => ctl.writes.length === 1, 3000, 'stale true cleared');
+    assert.ok(ctl.logs.some((l: any) => String(l).includes('left on by an earlier instance')), 'logged');
+    assert.equal(ctl.writes[0][1], false);
+    assert.equal(ctl.state.motionDetected, false);
+    await sleep(1200);
+    assert.equal(ctl.writes.length, 1, 'once');
+    await h.mixin.release();
+
+    // a camera event before the stale time: the normal path owns the value from then on, this rule never fires
+    h = make({ settings: { mode: 'Gate', staleMotionMs: 300 }, initial: true });
+    h.raw(true);
+    await sleep(1300);
+    assert.ok(!ctl.logs.some((l: any) => String(l).includes('left on by an earlier instance')), 'rule not applied after a camera event');
+    await h.mixin.release();
+
+    // Shadow mirrors the camera: never cleared by this rule
+    h = make({ settings: { mode: 'Shadow', staleMotionMs: 300 }, initial: true });
+    await sleep(1300);
+    assert.equal(ctl.writes.length, 0, 'Shadow: untouched');
+    await h.mixin.release();
+});
