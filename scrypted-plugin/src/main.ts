@@ -7,6 +7,9 @@ import { parsePresenceNativeId, PRESENCE_LABEL, presenceName, presenceNativeId, 
 import { PresenceSensor } from './presence-sensor';
 import { parseTamperNativeId, tamperName, tamperNativeId, TamperSensor } from './tamper-sensor';
 import { maskUrls, monoNow } from './util';
+import { monitorEventLoopDelay } from 'perf_hooks';
+/** event-loop stalls longer than this are logged (once a minute at most, see GuardProvider.watchStalls) */
+const STALL_LOG_MS = 500;
 import { AddonEntity, MqttAddon, slug } from './mqtt-addon';
 import { ANNOTATE_QUALITY, ANNOTATE_QUALITY_SMALLER, annotateJpeg, DrawBox, TOO_LARGE } from './annotate';
 import { renderOverview } from './overview';
@@ -235,6 +238,24 @@ export class GuardProvider extends ScryptedDeviceBase implements MixinProvider, 
         this.healthTimer = setInterval(() => this.checkHealth(), HEALTH_INTERVAL_MS);
         this.healthTimer.unref?.();
         process.nextTick(() => this.checkHealth());
+        this.watchStalls();
+    }
+
+    /**
+     * Event-loop stalls of this plugin process (2026-11-20: frame requests timed out on a CPU-starved box while the service replied in
+     * ~100 ms): once a minute, when the loop was blocked longer than STALL_LOG_MS, one log line with the worst stall and p99. Diagnostic only.
+     */
+    private watchStalls() {
+        let h: ReturnType<typeof monitorEventLoopDelay>;
+        try { h = monitorEventLoopDelay({ resolution: 20 }); h.enable(); }
+        catch { return; }
+        const t = setInterval(() => {
+            const max = h.max / 1e6;
+            if (max > STALL_LOG_MS)
+                this.console.warn(`event loop stalled up to ${Math.round(max)} ms in the last minute (p99 ${Math.round(h.percentile(99) / 1e6)} ms, mean ${Math.round(h.mean / 1e6)} ms): frame requests may time out`);
+            h.reset();
+        }, 60_000);
+        t.unref?.();
     }
 
     get config(): GlobalConfig {

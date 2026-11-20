@@ -7,7 +7,9 @@ import { SettingsMixinDeviceBase, SettingsMixinDeviceOptions } from '@scrypted/s
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
 import { OverviewCamera, ViewInfo, viewInfoOf } from './overview';
 import { randomUUID } from 'crypto';
-import { EpisodeEvent, FrameReply, groupOf, slugify, TrackerConfig } from './client';
+import { EpisodeEvent, FrameReply, groupOf, slugify, TrackerConfig, VerifierError } from './client';
+/** consecutive frame timeouts that fail a camera open; a single one is a skipped frame (2026-11-20: process stalls on a busy box). */
+const FAIL_OPEN_AFTER_TIMEOUTS = 2;
 import { DEFAULTS } from './defaults';
 import { CameraStatus, StatusState } from './status';
 import { backoffMs, Effects, Episode, Group, vehicleView, VEHICLE_HOLD_WINDOW_MS, EpisodeConfig, EpisodeSummary, formatSummary, Mode } from './episode';
@@ -321,6 +323,8 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private resetPromise: Promise<void> = Promise.resolve();
     private probeTimer: NodeJS.Timeout | undefined;
     private probeAttempt = 0;
+    /** consecutive frame requests that timed out (see FAIL_OPEN_AFTER_TIMEOUTS) */
+    private frameTimeouts = 0;
     private configPosted = false;
     private dupWarned = false;
     private lastPublished = false;
@@ -2219,6 +2223,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 }
                 catch (e) { this.warnBadReply(e); }
                 this.probeAttempt = 0; // a real frame succeeded: only now is the service really back
+                this.frameTimeouts = 0;
                 let fx: Effects;
                 try {
                     const m = this.masked(reply);
@@ -2237,8 +2242,17 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         }
         catch (e: any) {
             if (gen === this.scanGen && !this.released) {
-                this.queue = [];
-                this.apply(this.episode.failure(maskUrls(e?.message || String(e)), monoNow()));
+                if (e instanceof VerifierError && e.timeout && ++this.frameTimeouts < FAIL_OPEN_AFTER_TIMEOUTS) {
+                    // one timed-out frame is a skipped frame, not an outage: a stall of this process (CPU-starved box) must not fail the
+                    // camera open and fan out into reset / health retries; the next frame decides. A second one in a row fails open.
+                    this.status.onFrameSkipped();
+                    this.apply(this.episode.skip(monoNow()));
+                }
+                else {
+                    this.frameTimeouts = 0;
+                    this.queue = [];
+                    this.apply(this.episode.failure(maskUrls(e?.message || String(e)), monoNow()));
+                }
             }
         }
         finally {

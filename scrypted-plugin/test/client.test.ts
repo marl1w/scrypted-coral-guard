@@ -159,3 +159,32 @@ test('only http(s) service URLs are accepted; malformed detections are dropped, 
     assert.equal(r.detections.length, 1);
     assert.equal(r.vehicle.tracks.length, 1);
 });
+
+test('a reply that arrived during an event-loop stall longer than the timeout is used, not thrown away (2026-11-20 fail-opens)', async () => {
+    // the service runs in ANOTHER process, so it answers at once while this process is blocked, as on a CPU-starved box
+    const { spawn } = require('child_process') as typeof import('child_process');
+    const srv = spawn(process.execPath, ['-e', `require('http').createServer((q, s) => { q.resume(); q.on('end', () => setTimeout(() => { s.setHeader('Content-Type', 'application/json'); s.end(process.argv[1]); }, 40)); }).listen(0, '127.0.0.1', function () { console.log(this.address().port); });`, JSON.stringify(idle)]);
+    try {
+        const port = await new Promise<number>(r => srv.stdout!.once('data', d => r(Number(String(d).trim()))));
+        const c = new VerifierClient(() => ({ baseUrl: `http://127.0.0.1:${port}`, timeoutMs: 2000, frameTimeoutMs: 100 }));
+        await c.health().catch(() => undefined);                       // keep-alive socket warm, as in production
+        const p = c.frame('cam', Buffer.from([0xff, 0xd8, 0xff]), Date.now());
+        await new Promise(r => setTimeout(r, 15));                     // the request is on the wire
+        // stall in the check phase (setImmediate work, e.g. frame handling): the next loop turn starts with the timers phase, where the
+        // expired request timer runs BEFORE the poll phase that would read the reply that landed during the stall
+        setImmediate(() => { const until = Date.now() + 300; while (Date.now() < until) { /* 3x the frame timeout */ } });
+        const reply = await p;
+        assert.deepEqual(reply, idle, 'the reply that was already there wins');
+    }
+    finally { srv.kill(); }
+});
+
+test('a frame timeout is marked as a timeout; other failures are not', () => withServer(async (m, c) => {
+    m.script.delayMs = 1000;
+    m.script.frames = [idle];
+    const e: any = await c.frame('c', Buffer.from([1]), 0).catch(x => x);
+    assert.equal(e.timeout, true);
+    const c2 = new VerifierClient(() => ({ baseUrl: 'http://127.0.0.1:1', timeoutMs: 300 }));
+    const e2: any = await c2.health().catch(x => x);
+    assert.equal(!!e2.timeout && !/timeout/.test(e2.message), false);
+}));

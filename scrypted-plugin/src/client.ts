@@ -151,8 +151,12 @@ export function httpText(status: number): string {
     return `${what} (HTTP ${status})`;
 }
 
+/** a request timer firing this much later than due means this process was stalled; the request then gets STALL_GRACE_MS more. */
+const STALL_LAG_MS = 50;
+const STALL_GRACE_MS = 200;
+
 export class VerifierError extends Error {
-    constructor(message: string, public status?: number) {
+    constructor(message: string, public status?: number, public timeout = false) {
         super(message);
     }
 }
@@ -176,7 +180,17 @@ export class VerifierClient {
         const o = this.opts();
         const timeoutMs = timeoutOverride ?? o.timeoutMs;
         const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), timeoutMs);
+        // A timer that fires late means THIS process was stalled (a CPU-starved box), not that the service was slow: the expired timer
+        // runs before the I/O poll phase and would kill a reply already sitting in the socket. Such a timer gets one grace period so
+        // pending I/O is read first; a timer that fires on time (the service really is late) aborts at once.
+        const startedAt = performance.now();
+        let late: ReturnType<typeof setTimeout> | undefined;
+        const timer = setTimeout(() => {
+            if (performance.now() - startedAt - timeoutMs > STALL_LAG_MS)
+                late = setTimeout(() => ac.abort(), STALL_GRACE_MS);
+            else
+                ac.abort();
+        }, timeoutMs);
         try {
             const headers: Record<string, string> = {};
             if (contentType)
@@ -191,7 +205,7 @@ export class VerifierClient {
                 res = await fetch(o.baseUrl.replace(/\/+$/, '') + path, { method, headers, body: body as any, signal: ac.signal, redirect: 'error' });
             }
             catch (e: any) {
-                throw new VerifierError(ac.signal.aborted ? `timeout after ${timeoutMs} ms` : `network error: ${e?.cause?.code || e?.message || e}`);
+                throw ac.signal.aborted ? new VerifierError(`timeout after ${timeoutMs} ms`, undefined, true) : new VerifierError(`network error: ${e?.cause?.code || e?.message || e}`);
             }
             if (res.status !== 200) {
                 // Skip (not an outage): 429 (too many frames from this camera) and 503 {reason:"stale"}
@@ -214,7 +228,7 @@ export class VerifierClient {
                 text = await readCapped(res, MAX_BODY_BYTES);
             }
             catch (e: any) {
-                throw new VerifierError(ac.signal.aborted ? `timeout after ${timeoutMs} ms` : (e instanceof VerifierError ? e.message : 'body read failed'));
+                throw ac.signal.aborted ? new VerifierError(`timeout after ${timeoutMs} ms`, undefined, true) : new VerifierError(e instanceof VerifierError ? e.message : 'body read failed');
             }
             try {
                 return JSON.parse(text) as T;
@@ -225,6 +239,8 @@ export class VerifierClient {
         }
         finally {
             clearTimeout(timer);
+            if (late)
+                clearTimeout(late);
         }
     }
 

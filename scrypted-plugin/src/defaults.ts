@@ -74,8 +74,12 @@ export const DEFAULTS = {
     confirmTimeoutS: 6,
     /** safety ceiling: longest time motion is held after a confirmation, seconds. */
     maxHoldS: 600,
-    /** frame request timeout, ms: a later verdict is useless, so frames fail open fast. */
-    frameTimeoutMs: 800,
+    /**
+     * frame request timeout, ms. The service itself answers 503 "stale" for any frame that waited more than 400 ms in its queue, so a
+     * reply can never be late by service delay; what pushed requests past the old 800 ms were stalls of this Node process on a
+     * CPU-starved box (2026-11-20: ~660 fail-opens a day, the service replying in 107 ms median / 246 ms p95). 1500 ms rides those out.
+     */
+    frameTimeoutMs: 1500,
     /** health / config / reset request timeout, ms. */
     timeoutMs: 2000,
     /** stream requested for analysis: 'default' = the camera's default stream (no destination: attaches to the rebroadcast session Scrypted usually keeps open); 'low-resolution' = that destination. */

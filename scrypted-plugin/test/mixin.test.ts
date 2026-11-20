@@ -287,6 +287,32 @@ test('M27: a frame request error fails open (raw passes through)', async () => {
     await h.mixin.release();
 });
 
+test('one frame timeout is a skipped frame (no fail open); two in a row fail open (2026-11-20: ~660 fail-opens a day from process stalls)', async () => {
+    const { VerifierError } = require('../src/client') as typeof import('../src/client');
+    const h = make({ settings: { mode: 'Gate' } });
+    h.raw(true);
+    await eventually(() => ctl.starts.length === 1);
+    frame(ctl.starts[0]);
+    await eventually(() => h.calls.frame.length === 1);
+    h.calls.frame[0].d.rej(new VerifierError('timeout after 1500 ms', undefined, true));
+    await sleep(60);
+    assert.equal(h.mixin['episode'].degraded, undefined, 'one timeout: not degraded');
+    assert.equal(motion(), false, 'one timeout: motion not passed through');
+    frame(ctl.starts[0], Date.now() + 5);
+    await eventually(() => h.calls.frame.length === 2, 3000, 'the next frame is posted');
+    h.calls.frame[1].d.res(idleReply);                                     // a success resets the count
+    frame(ctl.starts[0], Date.now() + 10);
+    await eventually(() => h.calls.frame.length === 3);
+    h.calls.frame[2].d.rej(new VerifierError('timeout after 1500 ms', undefined, true));
+    await sleep(60);
+    assert.equal(h.mixin['episode'].degraded, undefined, 'a timeout after a success is again only a skip');
+    frame(ctl.starts[0], Date.now() + 15);
+    await eventually(() => h.calls.frame.length === 4);
+    h.calls.frame[3].d.rej(new VerifierError('timeout after 1500 ms', undefined, true));
+    await eventually(() => motion() === true, 3000, 'two timeouts in a row fail open');
+    await h.mixin.release();
+});
+
 test('M26: a stream that never delivers frames fails open before the confirm timeout', async () => {
     const h = make({ settings: { mode: 'Gate', confirmTimeoutS: 4 } });
     h.raw(true);
