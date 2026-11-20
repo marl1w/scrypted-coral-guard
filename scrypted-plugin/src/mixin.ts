@@ -23,7 +23,9 @@ import type { DrawBox } from './annotate';
 import type { Box } from './status';
 import { PixelGate } from './gate';
 import { TamperChange, TamperDetector, TamperSnapshot } from './tamper';
-import { maskUrls, monoNow, validCameraId, validStreamUrl } from './util';
+import { boxMoved, maskUrls, monoNow, validCameraId, validStreamUrl } from './util';
+/** a reported person moved when two box sides travelled more than this (normalised): the verifier's vehicle limit, 0.03 of the frame diagonal. */
+const REPORTED_MOVE = 0.03 * Math.SQRT2;
 import type { GlobalConfig, GuardProvider } from './main';
 
 const DETECT_CHOICES = ['Person', 'Vehicle', 'Animal'];
@@ -276,11 +278,13 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private hbVehSeenAt = 0;
     private hbPresentAt = 0;
     /**
-     * service person track ids a confirmed episode already reported (since the last reset of the session). A heartbeat finding only these,
-     * all stationary, is the same subject still held (or a look-alike that took over its track: laundry next to where someone stood): it
-     * opens no new episode and does not spare the session its reset, so a still subject is never announced again.
+     * service person track ids a confirmed episode already reported (since the last reset of the session), each with its box as last seen
+     * in that episode. A heartbeat finding only these, none of them moved away from that box (boxMoved: two sides, not one redrawn), is the
+     * same subject still held (or a look-alike that took over its track: laundry next to where someone stood): it opens no new episode and
+     * does not spare the session its reset, so a still subject is never announced again. The service's own `stationary` flag is not used:
+     * laundry blown wider breaks its IoU on one side and read as moving (replay of 2026-11-20).
      */
-    private reportedPersonIds = new Set<number>();
+    private reportedPersonIds = new Map<number, number[]>();
     /** true once a genuine event arrived from the underlying device; before that the mixin never writes motionDetected. */
     private thumbWarned = false;
     private touched = false;
@@ -1601,15 +1605,18 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         if (!this.episode.confirmedGroups?.includes('person') || !r.person?.present)
             return;
         for (const tr of r.person.tracks_detail || [])
-            if (Number.isInteger(tr.id)) this.reportedPersonIds.add(tr.id);
+            if (Number.isInteger(tr.id) && Array.isArray(tr.box) && tr.box.length === 4) { this.reportedPersonIds.delete(tr.id); this.reportedPersonIds.set(tr.id, tr.box.slice()); }
         while (this.reportedPersonIds.size > 64) // bounded: the oldest ids go first (a reset clears them all anyway)
-            this.reportedPersonIds.delete(this.reportedPersonIds.values().next().value as number);
+            this.reportedPersonIds.delete(this.reportedPersonIds.keys().next().value as number);
     }
 
-    /** the service holds person tracks and every one of them was already reported and is stationary now. */
+    /** the service holds person tracks and every one of them was already reported and has not moved from where it was then. */
     private onlyReportedStill(r: FrameReply): boolean {
         const live = r.person?.present ? r.person.tracks_detail || [] : [];
-        return live.length > 0 && live.every(tr => tr.stationary === true && this.reportedPersonIds.has(tr.id));
+        return live.length > 0 && live.every(tr => {
+            const was = this.reportedPersonIds.get(tr.id);
+            return !!was && Array.isArray(tr.box) && tr.box.length === 4 && !boxMoved(tr.box, was, REPORTED_MOVE);
+        });
     }
 
     private heartbeatFrame(jpeg: Buffer, t: number) {

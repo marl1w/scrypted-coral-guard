@@ -1414,10 +1414,14 @@ test('heartbeat: a person already reported, held still by the service (laundry t
     await answer(walking);                       // heartbeat: a person -> verified scan
     await answer(walking);                       // the scan confirms her
     await eventually(() => motion() === true, 3000, 'the real person is announced');
+    await answer(rack);                          // she has left; the episode still runs, the rack carries her track (12:46:17 - 12:47:16)
     await answer(idleReply);                     // the episode ends (max hold, a verifier timeout, ...)
     await eventually(() => motion() === false);
     h.mixin['synthCooldownUntil'] = 0;           // the 5 s re-open cooldown is over (the real re-opens came 4-9 s later)
     for (let i = 0; i < 3; i++) await answer(rack);   // heartbeats: only the reported track, still, on the rack
+    // the 13:20 frame: the laundry blown wider (right side 0.705 -> 0.720) and the service calls the track not stationary: still nothing
+    await answer({ person: { state: 'confirmed', confirmed: true, present: true, tracks_detail: [{ id: 3, box: [0.671, 0.159, 0.720, 0.32], stationary: false }] },
+        detections: [{ cls: 'person', score: 0.41, box: [0.671, 0.159, 0.720, 0.32], second_look: 'not_found' }] });
     assert.equal(h.mixin['episode'].scanning, false, 'no new episode for the same still subject');
     assert.equal(ctl.writes.filter(w => w[1] === true).length, 1, 'announced once');
     const resets = h.calls.reset.length;
@@ -1430,8 +1434,8 @@ test('heartbeat: a reported person that moves again, or a new track, still opens
     const h = hb('Gate');
     await eventually(() => ctl.starts.length === 1);
     const s = ctl.starts[0];
-    const p = (id: number, stationary: boolean) => ({ person: { state: 'confirmed', confirmed: true, present: true, tracks_detail: [{ id, box: [0.1, 0.1, 0.4, 0.8], stationary }] },
-        detections: [{ cls: 'person', score: 0.9, box: [0.1, 0.1, 0.4, 0.8] }] });
+    const p = (id: number, stationary: boolean, dx = 0) => ({ person: { state: 'confirmed', confirmed: true, present: true, tracks_detail: [{ id, box: [0.1 + dx, 0.1, 0.4 + dx, 0.8], stationary }] },
+        detections: [{ cls: 'person', score: 0.9, box: [0.1 + dx, 0.1, 0.4 + dx, 0.8] }] });
     let n = 0;
     const answer = async (r: object) => { frame(s, Date.now() + n * 5); await eventually(() => h.calls.frame.length === n + 1); h.calls.frame[n++].d.res(r); await sleep(30); };
     await answer(p(1, false)); await answer(p(1, false));
@@ -1441,8 +1445,10 @@ test('heartbeat: a reported person that moves again, or a new track, still opens
     h.mixin['synthCooldownUntil'] = 0;
     await answer(p(1, true));
     assert.equal(h.mixin['episode'].scanning, false, 'still and reported: nothing');
-    await answer(p(1, false));
-    assert.equal(h.mixin['episode'].scanning, true, 'the same person moving again opens a scan');
+    await answer(p(1, false, 0.02));
+    assert.equal(h.mixin['episode'].scanning, false, 'a wobble below the move limit, whatever the stationary flag says: nothing');
+    await answer(p(1, false, 0.15));
+    assert.equal(h.mixin['episode'].scanning, true, 'the same person walking away from where she was reported opens a scan');
     await h.mixin.release();
     const k = hb('Gate');
     await eventually(() => ctl.starts.length === 1);   // make() resets the harness

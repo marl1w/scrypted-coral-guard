@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { maskSecrets, monoNow, validCameraId, validStreamUrl } from '../src/util';
+import { boxMoved, maskSecrets, monoNow, validCameraId, validStreamUrl } from '../src/util';
 import { JpegSplitter } from '../src/jpeg';
 
 test('L4: maskSecrets removes credentials and query strings', () => {
@@ -37,4 +37,14 @@ test('L2: the splitter accumulator is capped and resyncs after an overflow', () 
     s.push(good, f => out.push(f));
     assert.equal(out.length, 1);
     assert.ok(out[0].equals(good));
+});
+
+test('boxMoved: two sides travelling move a box; one side redrawn (laundry blown wider) or a wobble does not; at the border one inner side does', () => {
+    const L = 0.03 * Math.SQRT2;
+    const rack = [0.67, 0.156, 0.705, 0.321];
+    assert.equal(boxMoved([0.671, 0.159, 0.720, 0.32], rack, L), false, 'the 13:20 laundry: one side 0.015 wider');
+    assert.equal(boxMoved([0.60, 0.156, 0.80, 0.321], rack, L), true, 'both x sides far apart: moved (or a much larger box)');
+    assert.equal(boxMoved([0.25, 0.1, 0.55, 0.8], [0.1, 0.1, 0.4, 0.8], L), true, 'walking sideways: both x sides moved');
+    assert.equal(boxMoved([0.1, 0.1, 0.4, 0.95], [0.1, 0.1, 0.4, 0.8], L), false, 'only the bottom redrawn');
+    assert.equal(boxMoved([0.0, 0.1, 0.25, 0.8], [0.0, 0.1, 0.4, 0.8], L), true, 'cut by the left border: the inner (right) side moved');
 });
