@@ -404,7 +404,13 @@ class Handler(BaseHTTPRequestHandler):
     def handle_one_request(self):
         self.deadline = time.monotonic() + (FIRST_BYTE_S if self.first else IDLE_S)
         self.first = False
-        super().handle_one_request()
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, BrokenPipeError) as e:
+            # the client hung up: most often the plugin aborting a request at its own deadline while this keep-alive thread waited for
+            # the next one (its reply was already sent). Not a service fault: no traceback (2026-11-20: 40-130 tracebacks an hour)
+            log.debug("%s closed the connection (%s)", self.address_string(), type(e).__name__)
+            self.close_connection = True
 
     def parse_request(self):
         self.deadline = time.monotonic() + self.server.app.cfg["request_timeout_s"]       # headers must arrive within this, in total

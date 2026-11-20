@@ -377,3 +377,21 @@ def test_version_is_read_from_build_arg_or_config_yaml(monkeypatch):
     assert SV._read_version() == want                                                                         # an empty build arg does not mask the file
     docker = open(os.path.join(here, "..", "Dockerfile")).read()
     assert "ARG BUILD_VERSION" in docker and docker.count("COPY config.yaml /app/config.yaml") == 2          # runtime and test stage read the real version
+
+
+def test_client_reset_on_keepalive_is_not_a_traceback(box, capfd):
+    """2026-11-20: every plugin request aborted at its deadline left a ConnectionResetError traceback (40-130/h) in the add-on log."""
+    import socket, struct
+    s = socket.create_connection(("127.0.0.1", box.port))
+    s.sendall(b"GET /v1/health HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n")
+    data = b""
+    while b"\r\n\r\n" not in data:
+        data += s.recv(4096)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))   # close with RST, like an aborted fetch
+    s.close()
+    time.sleep(0.5)
+    err = capfd.readouterr().err
+    assert "ConnectionResetError" not in err and "Traceback" not in err, err[-500:]
+    c = http.client.HTTPConnection("127.0.0.1", box.port, timeout=5)                 # the server keeps serving
+    c.request("GET", "/v1/health")
+    assert c.getresponse().status == 200
