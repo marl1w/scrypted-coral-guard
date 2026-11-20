@@ -275,6 +275,12 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private hbTicks: boolean[] = [];
     private hbVehSeenAt = 0;
     private hbPresentAt = 0;
+    /**
+     * service person track ids a confirmed episode already reported (since the last reset of the session). A heartbeat finding only these,
+     * all stationary, is the same subject still held (or a look-alike that took over its track: laundry next to where someone stood): it
+     * opens no new episode and does not spare the session its reset, so a still subject is never announced again.
+     */
+    private reportedPersonIds = new Set<number>();
     /** true once a genuine event arrived from the underlying device; before that the mixin never writes motionDetected. */
     private thumbWarned = false;
     private touched = false;
@@ -871,6 +877,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
         else if (fx.reset) {
             // frames wait for this (contract: the reset must complete before the episode's frames).
             this.presenceResetAt = monoNow();
+            this.reportedPersonIds.clear(); // the service numbers its tracks again from scratch
             this.resetPromise = this.plugin.client.reset(this.verifierId).then(() => undefined, e => {
                 this.apply(this.episode.failure(`reset failed: ${maskUrls(String(e?.message || e))}`, monoNow()));
             });
@@ -1589,6 +1596,22 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
      * (hold, release and max-hold re-pend are the episode's) and is only logged and counted in Shadow. A heartbeat never
      * publishes motion by itself; failures, timeouts and stale replies are silent.
      */
+    /** while an episode is confirmed for a person, the service tracks it shows are reported (see reportedPersonIds). */
+    private notePersonReported(r: FrameReply) {
+        if (!this.episode.confirmedGroups?.includes('person') || !r.person?.present)
+            return;
+        for (const tr of r.person.tracks_detail || [])
+            if (Number.isInteger(tr.id)) this.reportedPersonIds.add(tr.id);
+        while (this.reportedPersonIds.size > 64) // bounded: the oldest ids go first (a reset clears them all anyway)
+            this.reportedPersonIds.delete(this.reportedPersonIds.values().next().value as number);
+    }
+
+    /** the service holds person tracks and every one of them was already reported and is stationary now. */
+    private onlyReportedStill(r: FrameReply): boolean {
+        const live = r.person?.present ? r.person.tracks_detail || [] : [];
+        return live.length > 0 && live.every(tr => tr.stationary === true && this.reportedPersonIds.has(tr.id));
+    }
+
     private heartbeatFrame(jpeg: Buffer, t: number) {
         const D = DEFAULTS;
         const now = monoNow();
@@ -1628,12 +1651,14 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
             if (this.hbTicks.length > 3) this.hbTicks.shift();
             if (veh.hold) this.hbVehSeenAt = at;
             const vehiclePresent = veh.hold || (this.hbVehSeenAt > 0 && at - this.hbVehSeenAt <= VEHICLE_HOLD_WINDOW_MS);
-            const present = (enabled.includes('person') && !!reply.person?.present) || (enabled.includes('animal') && !!reply.animal?.present) || (enabled.includes('vehicle') && vehiclePresent);
+            // a person an episode already reported, held still by the service, is no new subject (see reportedPersonIds)
+            const reported = this.onlyReportedStill(reply);
+            const present = (enabled.includes('person') && !!reply.person?.present && !reported) || (enabled.includes('animal') && !!reply.animal?.present) || (enabled.includes('vehicle') && vehiclePresent);
             this.hbPresentAt = present ? at : 0; // the session holds a present subject: a camera episode must not reset it away
             const seen: string[] = [];
             // a person only HELD by the service (gone behind a pillar or indoors, no box in this frame) never opens a new episode
             const personBox = (reply.detections || []).some(d => groupOf(d) === 'person' && d.score >= this.thresholds.personKeep && d.lookalike === undefined && !d.lookalike_place);
-            if (enabled.includes('person') && (reply.person?.confirmed || reply.person?.present) && personBox) seen.push('person');
+            if (enabled.includes('person') && (reply.person?.confirmed || reply.person?.present) && personBox && !reported) seen.push('person');
             if (enabled.includes('animal') && reply.animal?.confirmed) seen.push('animal');
             if (enabled.includes('vehicle') && this.hbTicks.filter(Boolean).length >= 2) seen.push('vehicle');
             if (!seen.length)
@@ -2196,6 +2221,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
                 }
                 catch (e) { this.warnBadReply(e); fx = this.episode.skip(monoNow()); } // a malformed field is a skipped frame, never an outage
                 this.apply(fx);
+                this.notePersonReported(reply);
                 if (this.episode.synthetic && !this.synthRaised && this.mode !== 'off' && this.episode.wouldPublish) {
                     this.synthRaised = true;
                     this.console.log(`${groupsSeen(reply).join('+') || 'person'} seen but camera did not trigger: ${this.mode === 'gate' ? 'raised motion' : 'would raise motion (Shadow)'} (${this.synthReason})`);
@@ -2459,6 +2485,7 @@ export class GuardMixin extends SettingsMixinDeviceBase<VideoCamera & MotionSens
     private viewChanged() {
         if (this.scanActive || this.released)
             return;
+        this.reportedPersonIds.clear();
         this.plugin.client.reset(this.verifierId, true).catch(() => undefined);
     }
 

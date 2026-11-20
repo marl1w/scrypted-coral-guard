@@ -1399,6 +1399,66 @@ test('heartbeat Gate: a static person confirmed over the heartbeat raises motion
     await h.mixin.release();
 });
 
+test('heartbeat: a person already reported, held still by the service (laundry took over the track), never opens a new episode; the next trigger resets', async () => {
+    // 2026-11-20, a balcony camera: someone hung the laundry and left; the service kept her track on the drying rack (person 0.2-0.5,
+    // stationary) and every heartbeat after an episode ended re-opened one at once (no reset): 10 notifications of an empty balcony in 54 min.
+    const h = hb('Gate');
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    const walking = { person: { state: 'confirmed', confirmed: true, present: true, tracks_detail: [{ id: 3, box: [0.60, 0.02, 0.68, 0.36], stationary: false }] },
+        detections: [{ cls: 'person', score: 0.77, box: [0.60, 0.02, 0.68, 0.36] }] };
+    const rack = { person: { state: 'confirmed', confirmed: true, present: true, tracks_detail: [{ id: 3, box: [0.67, 0.16, 0.70, 0.32], stationary: true }] },
+        detections: [{ cls: 'person', score: 0.42, box: [0.67, 0.16, 0.70, 0.32], second_look: 'not_found' }] };
+    let n = 0;
+    const answer = async (r: object) => { frame(s, Date.now() + n * 5); await eventually(() => h.calls.frame.length === n + 1); h.calls.frame[n++].d.res(r); await sleep(30); };
+    await answer(walking);                       // heartbeat: a person -> verified scan
+    await answer(walking);                       // the scan confirms her
+    await eventually(() => motion() === true, 3000, 'the real person is announced');
+    await answer(idleReply);                     // the episode ends (max hold, a verifier timeout, ...)
+    await eventually(() => motion() === false);
+    h.mixin['synthCooldownUntil'] = 0;           // the 5 s re-open cooldown is over (the real re-opens came 4-9 s later)
+    for (let i = 0; i < 3; i++) await answer(rack);   // heartbeats: only the reported track, still, on the rack
+    assert.equal(h.mixin['episode'].scanning, false, 'no new episode for the same still subject');
+    assert.equal(ctl.writes.filter(w => w[1] === true).length, 1, 'announced once');
+    const resets = h.calls.reset.length;
+    h.raw(true);                                 // the wind moves the laundry: the camera triggers
+    await eventually(() => h.calls.reset.length === resets + 1, 2000, 'the session is reset: the rack must confirm afresh (it cannot)');
+    await h.mixin.release();
+});
+
+test('heartbeat: a reported person that moves again, or a new track, still opens an episode', async () => {
+    const h = hb('Gate');
+    await eventually(() => ctl.starts.length === 1);
+    const s = ctl.starts[0];
+    const p = (id: number, stationary: boolean) => ({ person: { state: 'confirmed', confirmed: true, present: true, tracks_detail: [{ id, box: [0.1, 0.1, 0.4, 0.8], stationary }] },
+        detections: [{ cls: 'person', score: 0.9, box: [0.1, 0.1, 0.4, 0.8] }] });
+    let n = 0;
+    const answer = async (r: object) => { frame(s, Date.now() + n * 5); await eventually(() => h.calls.frame.length === n + 1); h.calls.frame[n++].d.res(r); await sleep(30); };
+    await answer(p(1, false)); await answer(p(1, false));
+    await eventually(() => motion() === true);
+    await answer(idleReply);
+    await eventually(() => motion() === false);
+    h.mixin['synthCooldownUntil'] = 0;
+    await answer(p(1, true));
+    assert.equal(h.mixin['episode'].scanning, false, 'still and reported: nothing');
+    await answer(p(1, false));
+    assert.equal(h.mixin['episode'].scanning, true, 'the same person moving again opens a scan');
+    await h.mixin.release();
+    const k = hb('Gate');
+    await eventually(() => ctl.starts.length === 1);   // make() resets the harness
+    const s2 = ctl.starts[0];
+    let m = 0;
+    const ans2 = async (r: object) => { frame(s2, Date.now() + m * 5); await eventually(() => k.calls.frame.length === m + 1); k.calls.frame[m++].d.res(r); await sleep(30); };
+    await ans2(p(1, false)); await ans2(p(1, false));
+    await eventually(() => motion() === true);
+    await ans2(idleReply);
+    await eventually(() => motion() === false);
+    k.mixin['synthCooldownUntil'] = 0;
+    await ans2(p(2, true));
+    assert.equal(k.mixin['episode'].scanning, true, 'a track never reported opens a scan even when still');
+    await k.mixin.release();
+});
+
 test('heartbeat: a person the service only holds (no box in the frame, only known look-alikes) never opens an episode', async () => {
     const h = hb('Gate');
     await eventually(() => ctl.starts.length === 1);
