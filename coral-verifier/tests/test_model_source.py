@@ -31,7 +31,8 @@ def test_empty_url_is_the_builtin_model_and_downloads_nothing(tmp_path):
 def test_good_model_is_stored_and_used(tmp_path):
     calls = []
     spec, origin = MS.resolve({"model_url": URL, "model_sha256": SHA.upper(), "model_token": "t0k"}, BUILTIN, str(tmp_path), fetcher(calls=calls))
-    assert spec["path"] == str(tmp_path / f"{SHA}.tflite") and spec["size"] == 512 and spec["kind"] == "edgetpu"
+    assert spec["path"] == str(tmp_path / f"{SHA}.tflite") and spec["kind"] == "edgetpu"
+    assert spec["size"] is None                      # a downloaded model runs at its own input size (e.g. 416), read when it loads
     assert origin == {"source": "url", "file": "model_edgetpu.tflite", "sha256": SHA}
     assert calls == [(URL, "t0k")]
     assert open(spec["path"], "rb").read() == MODEL

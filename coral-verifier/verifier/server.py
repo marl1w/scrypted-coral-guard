@@ -314,7 +314,6 @@ class App:
         self.cfg = parse_options(opts)
         c = self.cfg
         self.token = c["token"].encode("utf-8")
-        self.size = c["model"]
         self.origin = spec.get("origin", {"source": "built-in"})        # built-in model or model_url (model_source.resolve)
         self.registry = S.Registry(c["defaults"], c["max_cameras"])
         self.limiter = RateLimiter()
@@ -335,6 +334,11 @@ class App:
         self.ingress_ips = set(DF.JOURNAL["ingress_ips"])
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html"), "rb") as f:
             self.ui_html = f.read().replace(b"__VERSION__", VERSION.encode())       # the served page names its version (never a stale page after an update)
+
+    @property
+    def size(self):
+        """Input size of the model the Coral runs (a model from model_url brings its own, e.g. 416); before it has loaded: the option."""
+        return self.coral.size or self.cfg["model"]
 
     def model_source(self):
         o = self.origin

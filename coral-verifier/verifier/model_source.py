@@ -95,7 +95,7 @@ def resolve(opts, builtin, store=STORE, fetcher=fetch):
         log.error("model_url not used, running the built-in model: %s", reason)
         return builtin, {"source": "built-in", "fallback": reason}
     log.info("model %s (sha256 %s...) from model_url", name, sha[:12])
-    return {**builtin, "path": path}, {"source": "url", "file": name, "sha256": sha}
+    return {**builtin, "path": path, "size": None}, {"source": "url", "file": name, "sha256": sha}   # size None: the model's own input size
 
 
 def mark_failed(origin, store=STORE):

@@ -17,6 +17,7 @@ The required three: `token` (REQUIRED, a password: with an empty one the service
 `model_url`, `model_sha256` and `model_token` replace the built-in model (dbro's YOLOv9-s ReLU6 512, baked into the image) with another compiled 512 Edge TPU model of the same family (17 classes, same outputs), for example one fine-tuned on your own cameras. Left empty (the default), nothing changes and nothing is downloaded.
 
 - `model_url`: an https URL of the `_edgetpu.tflite` file. For a file in a private GitHub repository use the API form, pinned to a commit: `https://api.github.com/repos/<owner>/<repo>/contents/<path/to/model_edgetpu.tflite>?ref=<commit>`.
+- The model may use any square input size that is a multiple of 32 (for example 416): the verifier reads it from the file. It may have the usual 2 outputs or the 6 per-scale outputs (3 scales x boxes / classes) of a model that runs entirely on the Edge TPU.
 - `model_sha256`: the file's sha256 (`shasum -a 256 <file>`). A file with any other hash is not used.
 - `model_token`: only for a private repository, a GitHub fine-grained token limited to that repository with `Contents: read`. It is sent as a bearer token and never logged.
 

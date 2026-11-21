@@ -198,9 +198,14 @@ class EdgeTpuYolo:
         except Exception as e:                     # no Edge TPU delegate / device
             raise CoralLoadError(f"cannot load Edge TPU delegate (no Edge TPU found, or USB not accessible?): {e}") from e
         self.load_s = time.perf_counter() - t0
-        self.size = size
         self.inp = self.interp.get_input_details()[0]
         self.outs = self.interp.get_output_details()
+        if size is None:                           # a model from model_url: its own input size (any multiple of 32, e.g. 416)
+            h, w = int(self.inp["shape"][1]), int(self.inp["shape"][2])
+            if h != w or h % 32:
+                raise ValueError(f"model input {list(self.inp['shape'])}: must be square and a multiple of 32")
+            size = h
+        self.size = size
         self.dec = Decoder(size)
         plan = plan_outputs(self.outs, size)
         self.bpos, self.cpos = plan[1], plan[2]
