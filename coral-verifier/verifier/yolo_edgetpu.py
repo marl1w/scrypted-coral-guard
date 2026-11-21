@@ -17,6 +17,7 @@ import cv2
 cv2.setNumThreads(1)
 STRIDES = (8, 16, 32)
 REG_MAX = 16
+BOX_CHANNELS = (4 * REG_MAX, 4)   # DFL logits (dbro, YOLOv9/11) or l,t,r,b distances in stride units (YOLO26, reg_max 1)
 THR = 0.05
 NMS_IOU = 0.45
 class CoralError(RuntimeError):
@@ -75,7 +76,7 @@ def pick_tensors(details):
     bi = ci = None
     for i, d in enumerate(details):
         sh = tuple(d["shape"])
-        if len(sh) == 3 and sh[2] == 64:
+        if len(sh) == 3 and sh[2] in BOX_CHANNELS:
             bi = i
         elif len(sh) == 3 and sh[2] > 1:
             ci = i
@@ -94,10 +95,12 @@ def plan_outputs(details, size):
     grids = [size // st for st in STRIDES]
     boxes, cls = {}, {}
     for i, (_, h, w, c) in four:
-        if h != w or h not in grids or (c == 4 * REG_MAX and h in boxes) or (c != 4 * REG_MAX and h in cls):
+        is_box = c in BOX_CHANNELS
+        if h != w or h not in grids or (is_box and h in boxes) or (not is_box and h in cls):
             raise ValueError(f"unrecognised output tensors: {[sh for _, sh in four]}")
-        (boxes if c == 4 * REG_MAX else cls)[h] = i
-    if sorted(boxes) != sorted(grids) or sorted(cls) != sorted(grids) or len({sh[3] for _, sh in four if sh[3] != 4 * REG_MAX}) != 1:
+        (boxes if is_box else cls)[h] = i
+    if sorted(boxes) != sorted(grids) or sorted(cls) != sorted(grids) or len({sh[3] for _, sh in four if sh[3] not in BOX_CHANNELS}) != 1 \
+            or len({sh[3] for _, sh in four if sh[3] in BOX_CHANNELS}) != 1:
         raise ValueError(f"unrecognised output tensors: {[sh for _, sh in four]}")
     return ("split", [boxes[g] for g in grids], [cls[g] for g in grids])
 
@@ -143,7 +146,7 @@ class Decoder:
         per-class NMS, sorted by prob descending. Only classes in `classes` are considered. thr: float or {class: float}.
         Cheap path: the threshold is applied on the int8 logits (no float work for background anchors), at most MAX_CAND candidates per
         class survive, and the DFL softmax runs only on those anchors."""
-        if scores_q.shape[0] != self.n or boxes_q.shape != (self.n, 4 * REG_MAX):
+        if scores_q.shape[0] != self.n or boxes_q.shape[0] != self.n or boxes_q.shape[1] not in BOX_CHANNELS:
             raise ValueError(f"shape mismatch: scores {scores_q.shape} boxes {boxes_q.shape} anchors {self.n}")
         per = {}
         for c in classes:
@@ -158,10 +161,13 @@ class Decoder:
             return []
         allidx = np.unique(np.concatenate([v[0] for v in per.values()]))
         b = (boxes_q[allidx].astype(np.float32) - b_zp) * b_scale
-        d = b.reshape(-1, 4, REG_MAX)
-        d = np.exp(d - d.max(axis=2, keepdims=True))
-        d /= d.sum(axis=2, keepdims=True)
-        dist = d @ self.project                                   # (K, 4) expectation over the 16 bins
+        if b.shape[1] == 4:                                       # YOLO26: the distances themselves (stride units)
+            dist = b
+        else:
+            d = b.reshape(-1, 4, REG_MAX)
+            d = np.exp(d - d.max(axis=2, keepdims=True))
+            d /= d.sum(axis=2, keepdims=True)
+            dist = d @ self.project                               # (K, 4) expectation over the 16 bins
         a, st = self.anchors[allidx], self.strides[allidx]
         xyxy = np.concatenate(((a - dist[:, :2]) * st, (a + dist[:, 2:]) * st), 1)
         out = []
@@ -220,6 +226,8 @@ class EdgeTpuYolo:
         if tuple(self.inp["shape"][1:3]) != (size, size):
             raise ValueError(f"model input {self.inp['shape']} != {size}")
         self.lut = input_lut(self.inp["dtype"], *self.inp["quantization"])
+        bshape = self.outs[self.bpos[0] if isinstance(self.bpos, list) else self.bpos]["shape"]
+        self.box_ch = int(bshape[-1])               # 64 (DFL) or 4 (distances)
         self.timing = {}
         self._qbuf = None
 

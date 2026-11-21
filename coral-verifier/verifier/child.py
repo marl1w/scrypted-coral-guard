@@ -33,7 +33,7 @@ def child_main(conn, spec):
         info = {"size": size, "cd_q": tuple(model.cd["quantization"]), "bd_q": tuple(model.bd["quantization"])}
         import yolo_edgetpu as Y
         n = Y.n_anchors(size)
-        info["scores_shape"] = (n, 17); info["boxes_shape"] = (n, 64)
+        info["scores_shape"] = (n, 17); info["boxes_shape"] = (n, getattr(model, "box_ch", 64))
     except BaseException as e:                                              # includes CoralLoadError: report, then exit
         try:
             conn.send(("load_error", f"{e}"))

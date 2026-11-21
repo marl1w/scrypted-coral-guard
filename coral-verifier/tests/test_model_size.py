@@ -48,3 +48,9 @@ def test_odd_inputs_are_refused(monkeypatch, shape):
     fake_runtime(monkeypatch, shape, split_shapes(416))
     with pytest.raises(ValueError, match="square and a multiple of 32"):
         Y.EdgeTpuYolo("x.tflite", None)
+
+
+def test_yolo26_style_model_loads(monkeypatch):
+    fake_runtime(monkeypatch, [1, 416, 416, 3], [[1, 416 // s, 416 // s, c] for s in Y.STRIDES for c in (4, 17)])
+    m = Y.EdgeTpuYolo("x.tflite", None)
+    assert m.size == 416 and m.box_ch == 4 and m.split is not None

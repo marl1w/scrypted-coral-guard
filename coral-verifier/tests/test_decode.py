@@ -166,6 +166,23 @@ class T(unittest.TestCase):
             self.assertEqual(a[0], b[0]); self.assertAlmostEqual(a[1], b[1], delta=0.01)
             self.assertTrue(np.allclose(a[2:], b[2:], atol=1.0))
 
+    # ---- YOLO26-style boxes: 4 channels = l,t,r,b distances in stride units (reg_max 1), no DFL ----
+    def test_four_channel_boxes(self):
+        size = 512; dec = Y.Decoder(size)
+        n = Y.n_anchors(size)
+        a = anchor_index(size, 16, 5, 7)                   # centre (88, 120)
+        sc = np.full((n, 17), int(round(-6 / S_SC)) + Z_SC, np.int8); sc[a, 0] = int(round(3.0 / S_SC)) + Z_SC
+        bx = np.zeros((n, 4), np.int8); bx[a] = np.array([2, 3, 4, 1]) / S_BX       # distances 2,3,4,1 strides
+        r = dec.decode(sc, bx, S_SC, Z_SC, S_BX, Z_BX)
+        self.assertEqual(len(r), 1)
+        c, p, x0, y0, x1, y1 = r[0]
+        self.assertTrue(np.allclose([x0, y0, x1, y1], [88 - 32, 120 - 48, 88 + 64, 120 + 16], atol=1e-3))
+        self.assertEqual(Y.pick_tensors([{"shape": [1, n, 17], "index": 1}, {"shape": [1, n, 4], "index": 2}]), (1, 0))
+        g = [size // st for st in Y.STRIDES]
+        d = [{"shape": [1, k, k, c], "index": i} for i, (k, c) in enumerate((k, c) for k in g for c in (4, 17))]
+        self.assertEqual(Y.plan_outputs(d, size), ("split", [0, 2, 4], [1, 3, 5]))
+        mixed = list(d); mixed[0] = {"shape": [1, g[0], g[0], 64], "index": 0}     # boxes must agree in kind across scales
+        with self.assertRaises(ValueError): Y.plan_outputs(mixed, size)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

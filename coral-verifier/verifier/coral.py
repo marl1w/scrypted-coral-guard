@@ -76,6 +76,7 @@ class ChildModel:
         self.size = info["size"]
         self.cd_q, self.bd_q = info["cd_q"], info["bd_q"]
         self.n = info["scores_shape"][0]
+        self.box_ch = info["boxes_shape"][1]                 # 64 (DFL) or 4 (YOLO26 distances)
         self.dec = Y.Decoder(self.size)
 
     def _exitcode(self):
@@ -122,7 +123,7 @@ class ChildModel:
             if head[0] != "ok":
                 raise Y.CoralError(head[1])
             s = np.frombuffer(self.conn.recv_bytes(), np.int8).reshape(self.n, 17)
-            b = np.frombuffer(self.conn.recv_bytes(), np.int8).reshape(self.n, 64)
+            b = np.frombuffer(self.conn.recv_bytes(), np.int8).reshape(self.n, self.box_ch)
         except Y.CoralError:
             raise
         except (EOFError, OSError, BrokenPipeError) as e:
