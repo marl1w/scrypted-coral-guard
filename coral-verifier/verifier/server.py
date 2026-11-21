@@ -957,8 +957,8 @@ def main():
     app.coral.start()
     app.sampler.start()
     app.start_background()
-    log.info("coral_verifier %s listening on :%s (model %s %s, auth %s)", VERSION, httpd.server_address[1], app.size,
-             app.origin.get("file", "built-in") if app.origin.get("source") == "url" else "built-in", "token" if app.token else "NONE (allow_no_token, dev only)")
+    log.info("coral_verifier %s listening on :%s (model %s, auth %s)", VERSION, httpd.server_address[1],
+             f"{app.origin['file']} from model_url, input size from the file" if app.origin.get("source") == "url" else f"built-in {app.size}", "token" if app.token else "NONE (allow_no_token, dev only)")
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=httpd.shutdown, daemon=True).start())
     try:
         httpd.serve_forever()
