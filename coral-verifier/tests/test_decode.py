@@ -112,6 +112,60 @@ class T(unittest.TestCase):
         l = Y.input_lut(np.uint8, 1 / 255, 0)
         self.assertTrue((l == np.arange(256)).all())
 
+    # ---- 6 per-scale outputs (export with HEAD_OUTPUTS=split: nothing left on the CPU) ----
+    def split_details(self, size, order=(0, 1, 2, 3, 4, 5), nc=17):
+        g = [size // st for st in Y.STRIDES]
+        shapes = [[1, g[0], g[0], 64], [1, g[0], g[0], nc], [1, g[1], g[1], 64], [1, g[1], g[1], nc], [1, g[2], g[2], 64], [1, g[2], g[2], nc]]
+        return [{"shape": shapes[k], "index": 10 + k} for k in order]
+
+    def test_plan_outputs(self):
+        flat = [{"shape": [1, 5376, 17], "index": 5}, {"shape": [1, 5376, 64], "index": 4}]
+        self.assertEqual(Y.plan_outputs(flat, 512), ("flat", 1, 0))                     # today's 2-output model: unchanged
+        self.assertEqual(Y.plan_outputs(self.split_details(512), 512), ("split", [0, 2, 4], [1, 3, 5]))
+        d = self.split_details(512, order=(5, 2, 1, 4, 0, 3))                           # any tensor order: P3 first by shape
+        kind, b, c = Y.plan_outputs(d, 512)
+        self.assertEqual([d[i]["shape"][1] for i in b], [64, 32, 16]); self.assertEqual([d[i]["shape"][1] for i in c], [64, 32, 16])
+        self.assertTrue(all(d[i]["shape"][3] == 64 for i in b) and all(d[i]["shape"][3] == 17 for i in c))
+        bad = self.split_details(512); bad[1] = {"shape": [1, 17, 64, 64], "index": 11}  # NCHW classes: refused, not misread
+        with self.assertRaises(ValueError): Y.plan_outputs(bad, 512)
+        with self.assertRaises(ValueError): Y.plan_outputs(self.split_details(320), 512)  # wrong grid for the input size
+
+    def test_common_quant(self):
+        (c, z), luts = Y.common_quant([(0.08, -47), (0.08, -47)])
+        self.assertAlmostEqual(c, 0.08); self.assertEqual(z, -47)
+        q = np.arange(-128, 128).astype(np.int8)
+        self.assertTrue(np.array_equal(luts[0][q.view(np.uint8)], q))                  # identical inputs: identity
+        qs = [(0.0799, -47), (0.0770, -45), (0.0831, -40)]
+        (c, z), luts = Y.common_quant(qs)
+        for (sc, zp), lut in zip(qs, luts):
+            real = (q.astype(np.float32) - zp) * sc
+            back = (lut[q.view(np.uint8)].astype(np.float32) - z) * c
+            self.assertLessEqual(np.abs(back - real).max(), c / 2 + 1e-6)              # every value kept within half a common step
+
+    def test_split_decodes_like_flat(self):
+        """The same planted detections, once as dbro's 2 outputs (one quantization) and once as 6 per-scale outputs with their own
+        quantizations, merged by merge_split: same classes, probabilities within 0.01, boxes within 1 px."""
+        size = 512; dec = Y.Decoder(size)
+        items = [(anchor_index(size, 8, 10, 20), 0, 2.5, (3, 2, 4, 5)), (anchor_index(size, 16, 5, 7), 0, 1.2, (2, 3, 4, 1)),
+                 (anchor_index(size, 32, 3, 9), 2, 3.0, (1, 1, 2, 2))]
+        sc, bx = make(size, items)
+        r_flat = dec.decode(sc, bx, S_SC, Z_SC, S_BX, Z_BX, classes=(0, 2))
+        fsc, fbx = (sc.astype(np.float32) - Z_SC) * S_SC, (bx.astype(np.float32) - Z_BX) * S_BX
+        qs_c, qs_b = [(0.06, -12), (0.064, -8), (0.07, 0)], [(0.24, 3), (0.26, -5), (0.25, 0)]
+        tc, tb, off = [], [], 0
+        for k, st in enumerate(Y.STRIDES):
+            g = size // st; n = g * g
+            q = lambda f, sz: np.clip(np.round(f / sz[0]) + sz[1], -128, 127).astype(np.int8)
+            tc.append(q(fsc[off:off + n], qs_c[k]).reshape(1, g, g, 17)); tb.append(q(fbx[off:off + n], qs_b[k]).reshape(1, g, g, 64)); off += n
+        cq, cl = Y.common_quant(qs_c); bq, bl = Y.common_quant(qs_b)
+        s2, b2 = Y.merge_split(tc, cl), Y.merge_split(tb, bl)
+        self.assertEqual(s2.shape, (5376, 17)); self.assertEqual(b2.shape, (5376, 64))
+        r_split = dec.decode(s2, b2, *cq, *bq, classes=(0, 2))
+        self.assertEqual(len(r_split), len(r_flat)); self.assertEqual(len(r_flat), 3)
+        for a, b in zip(sorted(r_flat), sorted(r_split)):
+            self.assertEqual(a[0], b[0]); self.assertAlmostEqual(a[1], b[1], delta=0.01)
+            self.assertTrue(np.allclose(a[2:], b[2:], atol=1.0))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

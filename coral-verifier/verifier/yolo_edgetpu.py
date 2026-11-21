@@ -84,6 +84,42 @@ def pick_tensors(details):
     return bi, ci
 
 
+def plan_outputs(details, size):
+    """Which output tensors hold what. Returns ("flat", boxes_pos, classes_pos) for the 2-output model (N,64) / (N,NC) (dbro's export, the
+    built-in model), or ("split", [boxes_pos P3, P4, P5], [classes_pos P3, P4, P5]) for a model exported with its 6 per-scale outputs
+    (1,H,W,64) / (1,H,W,NC) (no RESHAPE / CONCATENATION left for the CPU). Recognised by shape only, like pick_tensors."""
+    four = [(i, tuple(int(x) for x in d["shape"])) for i, d in enumerate(details) if len(d["shape"]) == 4]
+    if len(four) != 6:
+        return ("flat",) + pick_tensors(details)
+    grids = [size // st for st in STRIDES]
+    boxes, cls = {}, {}
+    for i, (_, h, w, c) in four:
+        if h != w or h not in grids or (c == 4 * REG_MAX and h in boxes) or (c != 4 * REG_MAX and h in cls):
+            raise ValueError(f"unrecognised output tensors: {[sh for _, sh in four]}")
+        (boxes if c == 4 * REG_MAX else cls)[h] = i
+    if sorted(boxes) != sorted(grids) or sorted(cls) != sorted(grids) or len({sh[3] for _, sh in four if sh[3] != 4 * REG_MAX}) != 1:
+        raise ValueError(f"unrecognised output tensors: {[sh for _, sh in four]}")
+    return ("split", [boxes[g] for g in grids], [cls[g] for g in grids])
+
+
+def common_quant(qs):
+    """qs: [(scale, zero_point)] of int8 tensors -> ((scale, zero_point) covering all their ranges, [LUT per tensor]). A LUT (256,) int8 is
+    indexed by the tensor's bytes (uint8 view) and gives the value in the common quantization (error <= half a common step). Identical
+    inputs give the identity."""
+    lo = min((-128 - z) * sc for sc, z in qs)
+    hi = max((127 - z) * sc for sc, z in qs)
+    c = (hi - lo) / 255.0
+    zc = int(round(-128 - lo / c))
+    q = np.arange(256, dtype=np.int64)
+    q = np.where(q < 128, q, q - 256)                             # byte -> int8 value
+    return (c, zc), [np.clip(np.round((q - z) * sc / c) + zc, -128, 127).astype(np.int8) for sc, z in qs]
+
+
+def merge_split(tensors, luts):
+    """Per-scale int8 tensors (1,H,W,C), P3 first, -> one (N,C) int8 array in the common quantization, anchors in Decoder order."""
+    return np.concatenate([lut[np.ascontiguousarray(t).reshape(-1).view(np.uint8)].reshape(-1, t.shape[-1]) for t, lut in zip(tensors, luts)])
+
+
 MAX_CAND = 100          # per class, kept after the logit pre-filter and before NMS
 
 
@@ -166,8 +202,16 @@ class EdgeTpuYolo:
         self.inp = self.interp.get_input_details()[0]
         self.outs = self.interp.get_output_details()
         self.dec = Decoder(size)
-        self.bpos, self.cpos = pick_tensors(self.outs)
-        self.bd, self.cd = self.outs[self.bpos], self.outs[self.cpos]
+        plan = plan_outputs(self.outs, size)
+        self.bpos, self.cpos = plan[1], plan[2]
+        self.split = None
+        if plan[0] == "flat":
+            self.bd, self.cd = self.outs[self.bpos], self.outs[self.cpos]
+        else:                                      # 6 per-scale outputs: merged into the 2-output layout (one quantization per kind)
+            bq, bl = common_quant([tuple(self.outs[i]["quantization"]) for i in self.bpos])
+            cq, cl = common_quant([tuple(self.outs[i]["quantization"]) for i in self.cpos])
+            self.split = ([self.outs[i]["index"] for i in self.bpos], bl, [self.outs[i]["index"] for i in self.cpos], cl)
+            self.bd, self.cd = {"quantization": bq}, {"quantization": cq}
         if tuple(self.inp["shape"][1:3]) != (size, size):
             raise ValueError(f"model input {self.inp['shape']} != {size}")
         self.lut = input_lut(self.inp["dtype"], *self.inp["quantization"])
@@ -194,8 +238,13 @@ class EdgeTpuYolo:
             t0 = time.perf_counter()
             self.interp.set_tensor(self.inp["index"], x)
             self.interp.invoke()
-            s = self.interp.get_tensor(self.cd["index"])[0]
-            b = self.interp.get_tensor(self.bd["index"])[0]
+            if self.split is None:
+                s = self.interp.get_tensor(self.cd["index"])[0]
+                b = self.interp.get_tensor(self.bd["index"])[0]
+            else:
+                bi, bl, ci, cl = self.split
+                s = merge_split([self.interp.get_tensor(i) for i in ci], cl)
+                b = merge_split([self.interp.get_tensor(i) for i in bi], bl)
             self.timing = {"infer_ms": (time.perf_counter() - t0) * 1e3}
         except Exception as e:                     # USB reset / firmware reload / delegate error
             raise CoralError(f"invoke failed: {e!r}") from e
