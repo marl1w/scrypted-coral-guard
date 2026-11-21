@@ -10,7 +10,7 @@ The tracker values can additionally be overridden per camera through POST /v1/ca
 import os
 
 # Public add-on options: the only keys read from /data/options.json (anything else there is ignored).
-PUBLIC_OPTIONS = ("token", "port", "log_level")
+PUBLIC_OPTIONS = ("token", "port", "log_level", "model_url", "model_sha256", "model_token")
 
 # Service settings (name -> default). Ranges are enforced by server.parse_options.
 SERVICE = {

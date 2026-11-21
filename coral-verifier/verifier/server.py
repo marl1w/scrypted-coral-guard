@@ -14,6 +14,7 @@ import detect as D
 import shape as SH
 import lookalikes as LA
 import secondlook as SL
+import model_source as MS
 from journal import Journal, GROUPS, tag_vehicle_tracks
 from coral import CoralManager, Job
 
@@ -314,6 +315,7 @@ class App:
         c = self.cfg
         self.token = c["token"].encode("utf-8")
         self.size = c["model"]
+        self.origin = spec.get("origin", {"source": "built-in"})        # built-in model or model_url (model_source.resolve)
         self.registry = S.Registry(c["defaults"], c["max_cameras"])
         self.limiter = RateLimiter()
         self.decode_sem = threading.BoundedSemaphore(c["decode_concurrency"])
@@ -334,11 +336,17 @@ class App:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui.html"), "rb") as f:
             self.ui_html = f.read().replace(b"__VERSION__", VERSION.encode())       # the served page names its version (never a stale page after an update)
 
+    def model_source(self):
+        o = self.origin
+        if o.get("source") == "url":
+            return {"source": "url", "file": o["file"], "sha256": o["sha256"][:12]}
+        return {"source": "built-in", **({"fallback": o["fallback"]} if o.get("fallback") else {})}
+
     def health(self):
         st = self.coral.stats()
         r1 = lambda v: None if v is None else round(v, 1)
         return {"ok": st["coral"] == "ok", "version": VERSION,
-                "model": {"name": f"yolov9s_relu6_{self.size}_edgetpu", "input": self.size, "coral": st["coral"]},
+                "model": {"name": f"yolov9s_relu6_{self.size}_edgetpu", "input": self.size, "coral": st["coral"], **self.model_source()},
                 "coral_ms": {"median": r1(st["infer"]["median"]), "p95": r1(st["infer"]["p95"]), "last": r1(st["last"])},
                 "stages": st["stages"], "dropped_stale": st["dropped_stale"], "t_clamped": self.t_clamped,
                 "resets": st["resets"], "queue_depth": st["queue_depth"],
@@ -927,11 +935,16 @@ def main():
     holder = {}
 
     def die():                                         # Coral recovery keeps failing: exit non-zero, Supervisor (watchdog) restarts the add-on
+        MS.mark_failed(holder.get("origin", {}))       # a model from model_url is not used again: the restart runs the built-in one
         logging.shutdown()
         os._exit(3)
 
     try:
-        httpd, app = make_server(opts, default_spec(opts), on_fatal=die)
+        spec = default_spec(opts)
+        if spec["kind"] == "edgetpu":
+            spec, holder["origin"] = MS.resolve(opts, spec)
+            spec = {**spec, "origin": holder["origin"]}
+        httpd, app = make_server(opts, spec, on_fatal=die)
     except OptionsError as e:
         log.error("refusing to start: %s", e)
         logging.shutdown()
@@ -940,7 +953,8 @@ def main():
     app.coral.start()
     app.sampler.start()
     app.start_background()
-    log.info("coral_verifier %s listening on :%s (model %s, auth %s)", VERSION, httpd.server_address[1], app.size, "token" if app.token else "NONE (allow_no_token, dev only)")
+    log.info("coral_verifier %s listening on :%s (model %s %s, auth %s)", VERSION, httpd.server_address[1], app.size,
+             app.origin.get("file", "built-in") if app.origin.get("source") == "url" else "built-in", "token" if app.token else "NONE (allow_no_token, dev only)")
     signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=httpd.shutdown, daemon=True).start())
     try:
         httpd.serve_forever()

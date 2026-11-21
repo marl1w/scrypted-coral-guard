@@ -172,10 +172,10 @@ def test_defaults_are_the_validated_values():
     d = st["defaults"]
     assert (d.start_thr, d.cont_thr, d.confirm_n, d.confirm_m, d.hold_s, d.still_s, d.still_hold_s, d.max_hold_s, d.parked_after_s, d.session_ttl_s) == \
         (0.65, 0.2, 2, 3, 8, 3, 30, 600, 120, 120)
-    assert DF.PUBLIC_OPTIONS == ("token", "port", "log_level") and d.second_look is True
+    assert DF.PUBLIC_OPTIONS == ("token", "port", "log_level", "model_url", "model_sha256", "model_token") and d.second_look is True
 
 
-def test_config_yaml_exposes_only_three_options():
+def test_config_yaml_exposes_only_the_known_options():
     import re
     here = os.path.dirname(os.path.abspath(__file__))
     for p in (os.path.join(here, "..", "config.yaml"), "/config.yaml"):
@@ -186,8 +186,10 @@ def test_config_yaml_exposes_only_three_options():
     def keys(block):
         m = re.search(r"^" + block + r":\n((?:  .*\n)+)", txt, re.M)
         return [re.match(r"  (\w+):", l).group(1) for l in m.group(1).splitlines()]
-    assert keys("options") == ["token", "port", "log_level"] and keys("schema") == ["token", "port", "log_level"]
-    assert 'token: "password"' in txt and "port: 8750" in txt and "log_level: info" in txt
+    # three set options; the model_* ones are optional (empty = the built-in model) and only in the schema
+    assert keys("options") == ["token", "port", "log_level"]
+    assert keys("schema") == ["token", "port", "log_level", "model_url", "model_sha256", "model_token"]
+    assert 'token: "password"' in txt and "port: 8750" in txt and "log_level: info" in txt and 'model_token: "password?"' in txt
 
 
 def test_env_overrides_are_dev_only_and_main_ignores_non_public_options(monkeypatch):

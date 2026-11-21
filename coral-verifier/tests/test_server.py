@@ -14,7 +14,7 @@ def box():
 def test_health_shape_and_no_auth_needed(box):
     st, h = box.req("GET", "/v1/health", auth=False)
     assert st == 200 and h["ok"] is True and h["version"]
-    assert h["model"] == {"name": "yolov9s_relu6_512_edgetpu", "input": 512, "coral": "ok"}
+    assert h["model"] == {"name": "yolov9s_relu6_512_edgetpu", "input": 512, "coral": "ok", "source": "built-in"}
     assert set(h["coral_ms"]) == {"median", "p95", "last"} and h["resets"] == 0 and h["queue_depth"] == 0
     assert h["cameras_active"] == 0 and h["uptime_s"] >= 0 and h["t_clamped"] == 0 and h["dropped_stale"] == 0
     box.frame("c1", T0)

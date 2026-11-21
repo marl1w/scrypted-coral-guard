@@ -10,7 +10,17 @@ The HTTP contract is [API.md](API.md), the source of truth for endpoints, JSON s
 
 ## Options
 
-Three, and only three: `token` (REQUIRED, a password: with an empty one the service refuses to start, exit 2, reason in the log; clients send it as `X-Verifier-Token`), `port` (default 8750, host network; if you change it, update the `watchdog` URL in `config.yaml`) and `log_level` (default `info`). Everything else (model, thresholds, hold times, queue and safety limits) is a validated internal default in `verifier/defaults.py`; it is not user-tunable. Tracker values and the `second_look` switch (default on: borderline or brand-new detections are re-checked on a full-resolution crop inside the same request, at most 2 extra Coral passes per frame, see API.md) can be set per camera at runtime with `POST /v1/cameras/{camera}/config` (see API.md).
+The required three: `token` (REQUIRED, a password: with an empty one the service refuses to start, exit 2, reason in the log; clients send it as `X-Verifier-Token`), `port` (default 8750, host network; if you change it, update the `watchdog` URL in `config.yaml`) and `log_level` (default `info`). Everything else (model, thresholds, hold times, queue and safety limits) is a validated internal default in `verifier/defaults.py`; it is not user-tunable. Tracker values and the `second_look` switch (default on: borderline or brand-new detections are re-checked on a full-resolution crop inside the same request, at most 2 extra Coral passes per frame, see API.md) can be set per camera at runtime with `POST /v1/cameras/{camera}/config` (see API.md).
+
+### Another model (optional)
+
+`model_url`, `model_sha256` and `model_token` replace the built-in model (dbro's YOLOv9-s ReLU6 512, baked into the image) with another compiled 512 Edge TPU model of the same family (17 classes, same outputs), for example one fine-tuned on your own cameras. Left empty (the default), nothing changes and nothing is downloaded.
+
+- `model_url`: an https URL of the `_edgetpu.tflite` file. For a file in a private GitHub repository use the API form, pinned to a commit: `https://api.github.com/repos/<owner>/<repo>/contents/<path/to/model_edgetpu.tflite>?ref=<commit>`.
+- `model_sha256`: the file's sha256 (`shasum -a 256 <file>`). A file with any other hash is not used.
+- `model_token`: only for a private repository, a GitHub fine-grained token limited to that repository with `Contents: read`. It is sent as a bearer token and never logged.
+
+The file is downloaded once into the add-on's storage (`/data/models`) and reused on later starts without the network. Any problem (download, hash, not a TFLite file) means the built-in model runs, with the reason in the log and in `/v1/health` (`model.source`, `model.fallback`). If the Coral cannot run the model (the service gives up recovering it and exits), the model is marked as failed and the restart runs the built-in model; set another model, or delete `/data/models/<sha256>.tflite.failed`, to retry. A model that was never run on an Edge TPU can hang the USB stick until it is unplugged: try it by hand first.
 
 ## Health
 
