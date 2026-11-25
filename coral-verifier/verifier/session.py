@@ -24,7 +24,7 @@ from geom import iou, inside, moved
 import spots as SP
 import lookalikes as LA
 
-from defaults import TRACKER as _T, SPOTS as _SP, WEAK_VEHICLE_THR, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR, FAST_SINGLE_SECOND_LOOK, SHORT_SIGHTING as _SS, SECOND_LOOK as _SL
+from defaults import FROZEN as _FZ, TRACKER as _T, SPOTS as _SP, WEAK_VEHICLE_THR, DETECT_THR, ANIMAL as _A, PERSON_ANIMAL_OVERLAP, MOVE_REF_S, MOVE_DIAG_FRAC, PERSON_IN_VEHICLE, FAST_IOU, FAST_MIN_SPAN_MS, FAST_SINGLE_CLAIM, FAST_SINGLE_CLAIM_ANIMAL, FAST_B_THR, FAST_SINGLE_SECOND_LOOK, SHORT_SIGHTING as _SS, SECOND_LOOK as _SL
 from dataclasses import dataclass, fields, asdict
 
 VEHICLES = tuple(DETECT_THR["vehicle"])       # bicycle included: same tracking and parked logic as the motor vehicles
@@ -764,6 +764,8 @@ class Session:
         self.frames = 0
         self.lookalikes = None            # the camera's lookalikes.Lookalikes (set by the Registry; kept across sessions)
         self.lookalike_hits = 0
+        self.frozen_ref = None            # 0.3.65: person boxes of the episode's first frame not yet seen moving (see _drop_frozen)
+        self.frozen_hits = 0
         self.started_ms = None
         self.last_t = None
         self.wall = wall_now          # monotonic seconds when the last frame was RECEIVED (server clock), for TTL and GET-time expiry
@@ -851,6 +853,33 @@ class Session:
             out.append(d)
         return out
 
+    def _drop_frozen(self, detections, claim=None):
+        """0.3.65: person boxes already present in the episode's first frame that never moved are still objects (defaults.FROZEN): marked
+        `frozen` and left out. The first frame's boxes are the reference; one seen moved (overlap below iou, at least moved_iou) leaves it.
+        A frame where the camera's own AI says person (claim=person) switches it off for the rest of the episode: the 23-24 Nov false alarms
+        all started without one (heartbeat, pixel gate), and a camera that sees a person must never have it hidden as an object."""
+        if not _FZ["enabled"]:
+            return detections
+        boxes = [tuple(d["box"]) for d in detections if d["cls"] == "person" and d["score"] >= self.cfg.cont_thr]
+        if self.frozen_ref is None:
+            self.frozen_ref = boxes
+        if claim == "person":
+            self.frozen_ref = []
+        out, ref = [], self.frozen_ref
+        for d in detections:
+            if d["cls"] == "person" and ref:
+                b = tuple(d["box"])
+                best = max(ref, key=lambda r: iou(r, b))
+                o = iou(best, b)
+                if o >= _FZ["iou"]:
+                    d["frozen"] = True
+                    self.frozen_hits += 1
+                    continue
+                if o >= _FZ["moved_iou"]:
+                    ref.remove(best)                                          # it moved: from now on it is an ordinary detection
+            out.append(d)
+        return out
+
     def update(self, t_ms, detections, wall_now=None, claim=None, gray=None):
         """detections: [{"cls": str, "score": float, "box": [x0,y0,x1,y1]}]. gray: the frame from shape.gray_small (shape hold; None = off for
         this frame). Returns the effective (clamped) t."""
@@ -865,6 +894,7 @@ class Session:
         detections = person_animal_overlap(detections)
         detections = self._drop_in_vehicle(t, detections)
         detections = self._drop_lookalikes(t, detections, gray)
+        detections = self._drop_frozen(detections, claim)
         pdets = [(float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] == "person"]
         vdets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in VEHICLES and not d.get("weak") and d["score"] >= (DETECT_THR["vehicle"][d["cls"]] if d["cls"] == "bicycle" else self.cfg.vehicle_thr)]
         adets = [(d["cls"], float(d["score"]), tuple(d["box"])) for d in detections if d["cls"] in ANIMALS and not d.get("same_object") and d["score"] >= self.cfg.animal_cont_thr]
@@ -965,7 +995,7 @@ class Session:
                        "hold_until_ms": int(max(tr.last + p._hold(tr) * 1000.0 for tr in live)) if live else None},
             "vehicle": self.vehicle.snapshot(eff),
             "animal": self.animal.snapshot(eff),
-            "session": {"frames": self.frames, "started_ms": self.started_ms, "lookalikes": self.lookalike_hits},
+            "session": {"frames": self.frames, "started_ms": self.started_ms, "lookalikes": self.lookalike_hits, "frozen": self.frozen_hits},
         }
 
 

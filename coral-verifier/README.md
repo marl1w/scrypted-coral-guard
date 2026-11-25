@@ -39,6 +39,8 @@ Latency policy: bounded queue ordered by request arrival, oldest shed first, fra
 
 Exposure hardening: JPEG only (FFD8 and a parsable frame header, dimensions checked against the pixel cap before any decode), token checked before any body is read, 2 MB body cap from Content-Length, chunked refused (411), total (not per-recv) deadlines for headers and body, 64 connection cap, 2 concurrent decodes, 64 cameras, no internals in error messages.
 
+Still objects (0.3.65): a person box that was already in the episode's first frame, before anything moved, and stays put (>= 95 % overlap) is a still object such as a bin or an appliance: it is marked `frozen` and never confirms. Once it moves, or when the camera's own AI says person, it counts as usual; someone who walks in always counts, also at the same place. The second look also never raises a box whose own score is below 0.25. Details in API.md.
+
 Micro-benchmark of the non-Coral cost per frame: `tests/bench_overhead.py` (fake TPU with instant invoke).
 
 ## Install

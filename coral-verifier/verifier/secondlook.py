@@ -113,7 +113,7 @@ def crop_for(box, W, H, margin=None, min_px=None):
 
 def _apply(d, status, score, cfg):
     d["second_look"] = status
-    if status in ("not_found", "not_upgraded"):                                           # nothing found in the window: the detection stays exactly as it was
+    if status in ("not_found", "not_upgraded", "not_raised"):                                           # nothing found in the window: the detection stays exactly as it was
         return
     d["first_score"] = d["score"]
     d["score"] = round(float(score), 3)
@@ -164,7 +164,10 @@ def second_look(engine, img, dets, cfg, tracks, cache, now, reduced=False):
         if best is None:
             status, score = "not_found", 0.0                             # e.g. a half-occluded parked car: never dropped for this
         elif best[0] >= d["score"]:
-            status, score = "confirmed", best[0]
+            if g == "person" and best[0] > d["score"] and d["score"] < _SL["raise_min"]:
+                status, score = "not_raised", 0.0                        # 0.3.65: a near-nothing first score is never lifted to a person
+            else:
+                status, score = "confirmed", best[0]
         elif best[0] < _SL["reject_factor"] * keep_thr(d, cfg) and d["score"] < confirm_thr(g, cfg):
             status, score = "rejected", best[0]                          # positively found again, far below the keep floor: confident downgrade
         elif best[0] < keep_thr(d, cfg):

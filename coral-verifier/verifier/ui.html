@@ -188,7 +188,7 @@ function icon(name){const NS="http://www.w3.org/2000/svg",s=document.createEleme
 function btn(cls,text,ic,fn){const b=E("button",cls);if(ic)b.appendChild(icon(ic));b.appendChild(document.createTextNode(text));b.onclick=fn;return b}
 
 /* ---------- boxes ---------- */
-function mark(d){const s=d.second_look;if(s==="rejected")return"✗";if(d.second_look_doubt||s==="not_found"||s==="not_upgraded"||s==="skipped")return"?";if(s==="confirmed"||s==="lowered")return"✓";return""}
+function mark(d){const s=d.second_look;if(s==="rejected")return"✗";if(d.second_look_doubt||s==="not_found"||s==="not_upgraded"||s==="not_raised"||s==="skipped")return"?";if(s==="confirmed"||s==="lowered")return"✓";return""}
 function boxLayer(dets,focus){                                                // focus: group to highlight, others are dimmed ("none" dims all)
   const o=E("div","ov");
   for(const d of dets||[]){if(d.not_detected)continue;                          // a group the camera does not detect (0.3.44): never drawn
@@ -197,7 +197,7 @@ function boxLayer(dets,focus){                                                //
     r.style.borderColor=col;if(d.weak||d.second_look==="rejected"||d.second_look_doubt||ex)r.style.borderStyle="dashed";
     const t=E("span","bl",(d.cls||"")+" "+Number(d.score).toFixed(2)+(mark(d)?" "+mark(d):"")+(ex?" · "+ex:""));t.style.background=col;r.appendChild(t);o.appendChild(r)}
   return o}
-const excluded=d=>d.lookalike_place?"known place":d.lookalike!=null?"look-alike":"";          // left out of the trackers by a known look-alike (0.3.31 / 0.3.36)
+const excluded=d=>d.frozen?"still since start":d.lookalike_place?"known place":d.lookalike!=null?"look-alike":"";          // left out of the trackers by a known look-alike (0.3.31 / 0.3.36)
 function frameBox(id,f,cls,label,focus,onEx){                                  // onEx(): called when the frame has a box a known look-alike excluded
   const w=E("div",cls);const img=E("img");img.loading="lazy";img.src=`${API}/${eid(id)}/${f.name}.jpg`;img.alt=f.name;w.appendChild(img);
   if(label)w.appendChild(E("b","",label));

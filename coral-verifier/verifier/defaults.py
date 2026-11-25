@@ -184,9 +184,16 @@ BUSY_DEPTH = 1
 # Second look (internal constants): `confirm_min` = the score the re-check must find the SAME group at for a person/animal detection to count toward starting or
 # confirming a track (otherwise it is doubtful: fed to the tracker capped at cont_thr + 0.05); at most `max` re-checks per frame, ttl of a re-check result per object, crop margin (fraction of the box size on each side), minimum crop side in
 # pixels, `reject_factor` (a re-check that finds the group again below reject_factor x its keep floor, with a first score below the confirm threshold, rejects), a NEW track is re-checked when its score is below `new_track_max`, and the vehicle confirm threshold used for the borderline band and priority.
-SECOND_LOOK = {"max": 2, "confirm_min": {"person": 0.40, "animal": 0.40}, "reject_factor": 0.5, "ttl_s": 10.0, "margin": 0.6, "min_crop_px": 96, "new_track_max": 0.8, "vehicle_confirm": 0.6, "person_skip_area": 0.03}
+# 0.3.65 frozen objects: a person box already in the episode's FIRST frame (the pre-roll, before anything moved) that keeps overlapping that box
+# by FROZEN["iou"] or more in every later frame is a still object (a bin, an appliance): marked "frozen" and left out of every person path. Once it
+# moves (overlap below FROZEN["iou"] but still FROZEN["moved_iou"] or more) it counts like any detection for the rest of the episode. Live 23-24 Nov:
+# the night false alarms on a black bin stayed at 0.98-1.00 of their pre-roll box, real people standing still at 0.50-0.87.
+FROZEN = {"enabled": True, "iou": 0.95, "moved_iou": 0.5}
+SECOND_LOOK = {"max": 2, "confirm_min": {"person": 0.40, "animal": 0.40}, "reject_factor": 0.5, "ttl_s": 10.0, "margin": 0.6, "min_crop_px": 96, "new_track_max": 0.8, "vehicle_confirm": 0.6, "person_skip_area": 0.03, "raise_min": 0.25}
 # 0.3.24 labels: a person box covering >= person_skip_area of the frame is never re-checked. Its window (box + 0.6 margin each side) is larger than
 # the frame, so the re-check SHRINKS the person; it put 5 % of real people in doubt and caught 1 false box in 12.
+# 0.3.65 raise_min: a person box whose own score is below this is never RAISED by the re-check (second_look "not_raised", kept unchanged): live
+# 24 Nov a black bin at 0.20-0.22 was raised to 0.82 twice at night; no real person in 390 episodes needed a raise from that low.
 
 # Display-only weak vehicles: car/truck/bus/motorcycle (not bicycle) are decoded down to WEAK_VEHICLE_THR and reported with "weak": true when the
 # score is below the vehicle threshold. They never reach the vehicle tracker or any session state.
